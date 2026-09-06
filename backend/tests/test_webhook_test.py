@@ -16,6 +16,7 @@ from app.api.settings import (
 
 FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test"
 WECOM_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+DINGTALK_URL = "https://oapi.dingtalk.com/robot/send?access_token=test-token"
 
 
 def test_feishu_sends_saved_url_and_secret(monkeypatch):
@@ -54,6 +55,7 @@ def test_feishu_send_failure_returns_ok_false(monkeypatch):
 @pytest.mark.parametrize("channel,url_getter", [
     ("feishu", "app.services.preferences.get_feishu_webhook_url"),
     ("wecom", "app.services.preferences.get_wecom_webhook_url"),
+    ("dingtalk", "app.services.preferences.get_dingtalk_webhook_url"),
 ])
 def test_not_configured_returns_ok_false(monkeypatch, channel, url_getter):
     monkeypatch.setattr(url_getter, lambda: "")
@@ -85,6 +87,24 @@ def test_wecom_sends_saved_url(monkeypatch):
 
     assert result["ok"] is True
     assert calls["url"] == WECOM_URL
+    assert calls["title"] == "TickFlow Stock Panel 推送测试"
+    assert "推送配置正确" in calls["body"]
+
+
+def test_dingtalk_sends_saved_url_and_secret(monkeypatch):
+    calls = {}
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_url", lambda: DINGTALK_URL)
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_secret", lambda: "dingtalk-secret")
+    monkeypatch.setattr(
+        "app.services.webhook_adapter.send_dingtalk",
+        lambda url, title, body, secret="": calls.update(url=url, title=title, body=body, secret=secret) or True,
+    )
+
+    result = run_webhook_test(WebhookTestIn(channel="dingtalk"))
+
+    assert result["ok"] is True
+    assert calls["url"] == DINGTALK_URL
+    assert calls["secret"] == "dingtalk-secret"
     assert calls["title"] == "TickFlow Stock Panel 推送测试"
     assert "推送配置正确" in calls["body"]
 
@@ -129,7 +149,7 @@ def test_email_sends_with_saved_smtp_config(monkeypatch):
         "to_addresses": ["alerts@example.com"],
     }
     monkeypatch.setattr("app.services.preferences.get_email_smtp_config", lambda: config)
-    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "password")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_password", lambda: "password")
     monkeypatch.setattr(
         "app.services.email_adapter.send_email",
         lambda cfg, password, subject, body, max_attempts=2:

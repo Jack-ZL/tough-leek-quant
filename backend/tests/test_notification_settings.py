@@ -48,11 +48,15 @@ def test_email_settings_validate_and_store_password_separately(monkeypatch):
         lambda config: saved.update(config=config) or config,
     )
     monkeypatch.setattr(
+        "app.services.preferences.set_email_auth_code",
+        lambda code: saved.update(auth_code=code) or code,
+    )
+    monkeypatch.setattr(
         "app.secrets_store.set_email_smtp_password",
         lambda password: saved.update(password=password) or password,
     )
     monkeypatch.setattr(
-        "app.secrets_store.get_email_smtp_password",
+        "app.services.preferences.get_email_smtp_password",
         lambda: saved.get("password", ""),
     )
 

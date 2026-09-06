@@ -90,6 +90,25 @@ export function PriceAlertDialog({
       below: all.filter(level => level.value < currentPrice).slice(0, 6),
     }
   }, [currentPrice, levelsQuery.data?.levels])
+  const feishuWebhookUrl = prefs?.push_notification?.feishu?.feishu_webhook_url ?? prefs?.feishu_webhook_url ?? ''
+  const wecomWebhookUrl = prefs?.push_notification?.wecom?.wecom_webhook_url ?? prefs?.wecom_webhook_url ?? ''
+  const dingtalkWebhookUrl = prefs?.push_notification?.dingtalk?.dingtalk_webhook_url ?? prefs?.dingtalk_webhook_url ?? ''
+  const nestedEmail = prefs?.push_notification?.email
+  const emailConfig = prefs?.email_smtp_config ?? {
+    host: nestedEmail?.email_smtp_host ?? nestedEmail?.host ?? '',
+    from_address: nestedEmail?.from_address ?? nestedEmail?.email_sender ?? '',
+    to_addresses: nestedEmail?.to_addresses ?? nestedEmail?.email_recipients ?? [],
+    username: nestedEmail?.username ?? (nestedEmail?.email_auth_code ? (nestedEmail?.email_sender ?? '') : ''),
+  }
+  const emailPasswordSet = prefs?.email_smtp_password_set
+    ?? nestedEmail?.email_smtp_password_set
+    ?? !!nestedEmail?.email_auth_code
+  const emailConfigured = !!(
+    emailConfig.host
+    && emailConfig.from_address
+    && emailConfig.to_addresses.length
+    && (!emailConfig.username || emailPasswordSet)
+  )
 
   useEffect(() => {
     if (target || currentPrice == null) return
@@ -104,12 +123,13 @@ export function PriceAlertDialog({
     if (channelsInitialized.current || !prefs) return
     channelsInitialized.current = true
     const configured = new Set<string>()
-    if (prefs.feishu_webhook_url) configured.add('feishu')
-    if (prefs.wecom_webhook_url) configured.add('wecom')
+    if (feishuWebhookUrl) configured.add('feishu')
+    if (wecomWebhookUrl) configured.add('wecom')
+    if (dingtalkWebhookUrl) configured.add('dingtalk')
     if (prefs.custom_webhook_url) configured.add('custom')
-    if (prefs.email_smtp_config?.host && prefs.email_smtp_config.from_address && prefs.email_smtp_config.to_addresses.length && (!prefs.email_smtp_config.username || prefs.email_smtp_password_set)) configured.add('email')
-    setChannels((prefs.webhook_default_channels ?? []).filter(channel => configured.has(channel)))
-  }, [prefs])
+    if (emailConfigured) configured.add('email')
+    setChannels((prefs.webhook_default_channels ?? prefs.alert_default_channels ?? []).filter(channel => configured.has(channel)))
+  }, [prefs, feishuWebhookUrl, wecomWebhookUrl, dingtalkWebhookUrl, emailConfigured])
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -330,10 +350,11 @@ export function PriceAlertDialog({
                   <input type="checkbox" checked disabled className="h-3.5 w-3.5 accent-sky-500" />站内
                 </label>
                 {([
-                  { key: 'feishu', label: '飞书', configured: !!prefs?.feishu_webhook_url },
-                  { key: 'wecom', label: '企业微信', configured: !!prefs?.wecom_webhook_url },
+                  { key: 'feishu', label: '飞书', configured: !!feishuWebhookUrl },
+                  { key: 'wecom', label: '企业微信', configured: !!wecomWebhookUrl },
+                  { key: 'dingtalk', label: '钉钉', configured: !!dingtalkWebhookUrl },
                   { key: 'custom', label: '第三方系统', configured: !!prefs?.custom_webhook_url },
-                  { key: 'email', label: '邮件', configured: !!(prefs?.email_smtp_config?.host && prefs.email_smtp_config.from_address && prefs.email_smtp_config.to_addresses.length && (!prefs.email_smtp_config.username || prefs.email_smtp_password_set)) },
+                  { key: 'email', label: '邮件', configured: emailConfigured },
                 ]).map(channel => (
                   <label key={channel.key} className={`inline-flex items-center gap-2 text-xs ${channel.configured ? 'text-foreground' : 'text-muted/60'}`}>
                     <input type="checkbox" checked={channels.includes(channel.key)} disabled={!channel.configured} onChange={() => toggleChannel(channel.key)} className="h-3.5 w-3.5 accent-sky-500" />

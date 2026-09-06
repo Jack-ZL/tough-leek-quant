@@ -2,6 +2,8 @@
 //
 // 机制:
 //   - 状态存 localStorage('tf-theme'), 默认 dark (保持老用户体验不变)
+//   - 手动覆盖存 localStorage('tf-theme-override'), 格式 {theme, expiresAt}, 24h 过期
+//   - 无手动覆盖(或已过期)时, 按时间自动切换: 7:00-19:00 亮色, 19:00-7:00 暗色
 //   - 生效方式: html.dark class (index.css 的 CSS variables + Tailwind darkMode:class)
 //   - index.html 里有预渲染内联脚本, 首屏前就设好 class, 避免闪烁 (FOUC)
 //   - UI token (bg-surface/text-foreground 等) 自动跟随;
@@ -9,28 +11,97 @@
 import { useEffect, useState } from 'react'
 
 const KEY = 'tf-theme'
+const OVERRIDE_KEY = 'tf-theme-override'
 const EVENT = 'tf-theme-change'
+const OVERRIDE_TTL_MS = 24 * 60 * 60 * 1000 // 24 小时
 
 export type Theme = 'dark' | 'light'
 
-export function getTheme(): Theme {
+interface OverrideEntry {
+  theme: Theme
+  expiresAt: number // 时间戳, 过期后自动清除
+}
+
+/** 根据时间自动判断主题: 7:00-19:00 亮色, 其余暗色 */
+function getAutoTheme(): Theme {
+  const h = new Date().getHours()
+  return h >= 7 && h < 19 ? 'light' : 'dark'
+}
+
+/** 读取覆盖值, 过期则自动清除 */
+function readOverride(): OverrideEntry | null {
   try {
-    return localStorage.getItem(KEY) === 'light' ? 'light' : 'dark'
+    const raw = localStorage.getItem(OVERRIDE_KEY)
+    if (!raw) return null
+    const entry: OverrideEntry = JSON.parse(raw)
+    if (Date.now() > entry.expiresAt) {
+      localStorage.removeItem(OVERRIDE_KEY)
+      return null
+    }
+    return entry
   } catch {
-    return 'dark'
+    // 旧格式(纯字符串)兼容: 直接清除
+    localStorage.removeItem(OVERRIDE_KEY)
+    return null
   }
 }
 
+/** 是否有未过期的手动覆盖 */
+function hasOverride(): boolean {
+  return readOverride() !== null
+}
+
+/** 获取手动覆盖的主题(未过期时) */
+function getOverrideTheme(): Theme | null {
+  const entry = readOverride()
+  return entry?.theme ?? null
+}
+
+export function getTheme(): Theme {
+  // 优先手动覆盖
+  if (hasOverride()) {
+    return getOverrideTheme() ?? getAutoTheme()
+  }
+  // 无覆盖则自动
+  return getAutoTheme()
+}
+
 export function setTheme(theme: Theme) {
-  try { localStorage.setItem(KEY, theme) } catch { /* ignore */ }
+  try {
+    localStorage.setItem(KEY, theme)
+  } catch {
+    /* ignore */
+  }
   document.documentElement.classList.toggle('dark', theme === 'dark')
   window.dispatchEvent(new CustomEvent(EVENT, { detail: theme }))
 }
 
+/** 手动切换主题 — 写入覆盖值, 24 小时后自动恢复 */
 export function toggleTheme(): Theme {
-  const next: Theme = getTheme() === 'dark' ? 'light' : 'dark'
+  const current = getTheme()
+  const next: Theme = current === 'dark' ? 'light' : 'dark'
+  try {
+    const entry: OverrideEntry = {
+      theme: next,
+      expiresAt: Date.now() + OVERRIDE_TTL_MS,
+    }
+    localStorage.setItem(OVERRIDE_KEY, JSON.stringify(entry))
+  } catch {
+    /* ignore */
+  }
   setTheme(next)
   return next
+}
+
+/** 清除手动覆盖, 恢复自动切换 */
+export function clearThemeOverride() {
+  try {
+    localStorage.removeItem(OVERRIDE_KEY)
+  } catch {
+    /* ignore */
+  }
+  const next = getAutoTheme()
+  setTheme(next)
 }
 
 /** 订阅当前主题 (本页切换 + 其他标签页切换均同步)。 */
@@ -39,10 +110,22 @@ export function useTheme(): Theme {
   useEffect(() => {
     const onChange = () => set(getTheme())
     window.addEventListener(EVENT, onChange)
-    window.addEventListener('storage', onChange)  // 跨标签页同步
+    window.addEventListener('storage', onChange) // 跨标签页同步
+
+    // 无手动覆盖时, 每分钟检查一次是否需要自动切换
+    const id = setInterval(() => {
+      if (!hasOverride()) {
+        const next = getAutoTheme()
+        if (next !== getTheme()) {
+          setTheme(next)
+        }
+      }
+    }, 60_000)
+
     return () => {
       window.removeEventListener(EVENT, onChange)
       window.removeEventListener('storage', onChange)
+      clearInterval(id)
     }
   }, [])
   return theme

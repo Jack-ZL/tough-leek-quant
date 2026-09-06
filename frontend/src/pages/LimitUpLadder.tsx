@@ -409,7 +409,7 @@ function MonitorMenu({ stock, direction, sealMode, monitorRule, anchorRect, hasD
 
   // 推送渠道默认值: 取偏好设置中的全局默认 (已有规则沿用其值)
   const { data: prefs } = usePreferences()
-  const webhookDefaultChannels = prefs?.webhook_default_channels ?? []
+  const webhookDefaultChannels = prefs?.webhook_default_channels ?? prefs?.alert_default_channels ?? []
   const backdrop = useDialogBackdrop(onClose)
 
   // 单位倍率: 输入值 × 倍率 = 原始单位 (量=手, 额=元)
@@ -579,6 +579,7 @@ function MonitorMenu({ stock, direction, sealMode, monitorRule, anchorRect, hasD
               {([
                 { key: 'feishu', label: '飞书' },
                 { key: 'wecom', label: '企微' },
+                { key: 'dingtalk', label: '钉钉' },
                 { key: 'custom', label: '第三方' },
                 { key: 'email', label: '邮件' },
               ] as const).map(ch => {

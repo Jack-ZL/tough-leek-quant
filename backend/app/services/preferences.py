@@ -161,6 +161,36 @@ def _normalize_ext_field(raw) -> dict | None:
     return None
 
 
+def _get_nested(d: dict, *keys: str, default=None):
+    """安全获取嵌套字典值。"""
+    current = d
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+        if current is None:
+            return default
+    return current
+
+
+def _save_nested(section: str, channel: str, updates: dict, *, mirror: dict | None = None) -> dict:
+    """保存嵌套配置，并可同步镜像顶层字段用于向后兼容。"""
+    data = load()
+    section_data = data.get(section)
+    if not isinstance(section_data, dict):
+        section_data = {}
+    channel_data = section_data.get(channel)
+    if not isinstance(channel_data, dict):
+        channel_data = {}
+    channel_data.update(updates)
+    section_data[channel] = channel_data
+
+    merged = {section: section_data}
+    if mirror:
+        merged.update(mirror)
+    return save(merged)
+
+
 def get_monitor_ext_fields() -> dict:
     """监控中心个股通知要展示的 ext 字段 (concept/industry)。
 
@@ -588,7 +618,7 @@ def set_depth_finalize_time(hour: int, minute: int) -> dict:
 
 # 监控与复盘共用的外部推送渠道白名单。
 # 多选: 不推送 = 空数组, 而非 'none'
-PUSH_CHANNELS = {"feishu", "wecom", "custom", "email"}
+PUSH_CHANNELS = {"feishu", "wecom", "dingtalk", "custom", "email"}
 
 
 def get_review_schedule() -> dict:
@@ -784,23 +814,43 @@ def set_system_notify_enabled(enabled: bool) -> bool:
 
 def get_feishu_webhook_url() -> str:
     """飞书自定义机器人 Webhook 地址 — 全局共用一处, 所有启用推送的规则都推到这一个群。"""
-    return load().get("feishu_webhook_url", "")
+    data = load()
+    nested = _get_nested(data, "push_notification", "feishu", "feishu_webhook_url", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("feishu_webhook_url") or "").strip()
 
 
 def get_feishu_webhook_secret() -> str:
     """飞书自定义机器人签名密钥 — 机器人启用「签名校验」时必填, 留空表示不验签。"""
-    return load().get("feishu_webhook_secret", "")
+    data = load()
+    nested = _get_nested(data, "push_notification", "feishu", "feishu_webhook_secret", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("feishu_webhook_secret") or "").strip()
 
 
 def set_feishu_webhook_url(url: str) -> str:
     """保存飞书 Webhook 地址。传入空串表示清空配置。"""
-    save({"feishu_webhook_url": str(url or "").strip()})
+    value = str(url or "").strip()
+    _save_nested(
+        "push_notification",
+        "feishu",
+        {"feishu_webhook_url": value},
+        mirror={"feishu_webhook_url": value},
+    )
     return get_feishu_webhook_url()
 
 
 def set_feishu_webhook_secret(secret: str) -> str:
     """保存飞书签名密钥。传入空串表示不验签。"""
-    save({"feishu_webhook_secret": str(secret or "").strip()})
+    value = str(secret or "").strip()
+    _save_nested(
+        "push_notification",
+        "feishu",
+        {"feishu_webhook_secret": value},
+        mirror={"feishu_webhook_secret": value},
+    )
     return get_feishu_webhook_secret()
 
 
@@ -810,7 +860,11 @@ def get_wecom_webhook_url() -> str:
     存储完整 URL (https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx);
     用户也可只填 key, 由 webhook_adapter.normalize_wecom_url 自动补全。
     """
-    return load().get("wecom_webhook_url", "")
+    data = load()
+    nested = _get_nested(data, "push_notification", "wecom", "wecom_webhook_url", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("wecom_webhook_url") or "").strip()
 
 
 def set_wecom_webhook_url(url: str) -> str:
@@ -819,8 +873,58 @@ def set_wecom_webhook_url(url: str) -> str:
     存储时统一补全为完整 URL, 避免后续每次推送都要再判一次。
     """
     from app.services.webhook_adapter import normalize_wecom_url
-    save({"wecom_webhook_url": normalize_wecom_url(url)})
+    normalized = normalize_wecom_url(url)
+    _save_nested(
+        "push_notification",
+        "wecom",
+        {"wecom_webhook_url": normalized},
+        mirror={"wecom_webhook_url": normalized},
+    )
     return get_wecom_webhook_url()
+
+
+def get_dingtalk_webhook_url() -> str:
+    """钉钉群推送 Webhook 地址 (或 access_token 规范化后的完整地址)。"""
+    data = load()
+    nested = _get_nested(data, "push_notification", "dingtalk", "dingtalk_webhook_url", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("dingtalk_webhook_url") or "").strip()
+
+
+def set_dingtalk_webhook_url(url: str) -> str:
+    """保存钉钉群推送 Webhook 地址。传入空串表示清空配置。"""
+    from app.services.webhook_adapter import normalize_dingtalk_url
+
+    normalized = normalize_dingtalk_url(url)
+    _save_nested(
+        "push_notification",
+        "dingtalk",
+        {"dingtalk_webhook_url": normalized},
+        mirror={"dingtalk_webhook_url": normalized},
+    )
+    return get_dingtalk_webhook_url()
+
+
+def get_dingtalk_webhook_secret() -> str:
+    """钉钉群推送加签密钥。机器人未启用加签时可留空。"""
+    data = load()
+    nested = _get_nested(data, "push_notification", "dingtalk", "dingtalk_webhook_secret", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("dingtalk_webhook_secret") or "").strip()
+
+
+def set_dingtalk_webhook_secret(secret: str) -> str:
+    """保存钉钉群推送加签密钥。传入空串表示不加签。"""
+    value = str(secret or "").strip()
+    _save_nested(
+        "push_notification",
+        "dingtalk",
+        {"dingtalk_webhook_secret": value},
+        mirror={"dingtalk_webhook_secret": value},
+    )
+    return get_dingtalk_webhook_secret()
 
 
 def get_custom_webhook_url() -> str:
@@ -847,7 +951,34 @@ _EMAIL_SMTP_DEFAULTS = {
 
 def get_email_smtp_config() -> dict:
     """Return non-secret SMTP settings for the email notification channel."""
-    raw = load().get("email_smtp_config")
+    data = load()
+    legacy = _get_nested(data, "push_notification", "email", default={})
+    raw = data.get("email_smtp_config")
+    # tough 结构优先，确保手工迁移过来的配置可直接生效。
+    if isinstance(legacy, dict) and (
+        legacy.get("email_smtp_host")
+        or legacy.get("email_sender")
+        or legacy.get("email_recipients")
+    ):
+        legacy_host = str(legacy.get("email_smtp_host") or "").strip()
+        legacy_sender = str(legacy.get("email_sender") or "").strip()
+        legacy_auth_code = str(legacy.get("email_auth_code") or "").strip()
+        legacy_recipients = legacy.get("email_recipients")
+        if isinstance(legacy_recipients, str):
+            legacy_recipients = [r.strip() for r in legacy_recipients.split(",") if r.strip()]
+        elif not isinstance(legacy_recipients, list):
+            legacy_recipients = []
+        raw = {
+            "host": legacy_host,
+            "port": legacy.get("email_smtp_port", 465),
+            "security": "ssl" if bool(legacy.get("email_use_ssl", True)) else "none",
+            # tough 老结构不区分 username/sender；有 auth_code 时默认用 sender 登录。
+            "username": legacy_sender if legacy_auth_code else "",
+            "from_address": legacy_sender,
+            "to_addresses": legacy_recipients,
+        }
+    elif not isinstance(raw, dict):
+        raw = {}
     if not isinstance(raw, dict):
         raw = {}
     security = raw.get("security", _EMAIL_SMTP_DEFAULTS["security"])
@@ -884,8 +1015,41 @@ def set_email_smtp_config(config: dict) -> dict:
             str(item).strip() for item in config.get("to_addresses", []) if str(item).strip()
         ],
     }
-    save({"email_smtp_config": normalized})
+    _save_nested(
+        "push_notification",
+        "email",
+        {
+            "email_smtp_host": normalized["host"],
+            "email_smtp_port": normalized["port"],
+            "email_use_ssl": normalized["security"] == "ssl",
+            "email_sender": normalized["from_address"],
+            "email_recipients": normalized["to_addresses"],
+        },
+        mirror={"email_smtp_config": normalized},
+    )
     return get_email_smtp_config()
+
+
+def get_email_auth_code() -> str:
+    """兼容 tough 结构: 从 push_notification.email 读取邮件授权码。"""
+    return str(_get_nested(load(), "push_notification", "email", "email_auth_code", default="") or "").strip()
+
+
+def set_email_auth_code(code: str) -> str:
+    """兼容 tough 结构: 保存邮件授权码到 push_notification.email。"""
+    value = (code or "").strip()
+    _save_nested("push_notification", "email", {"email_auth_code": value})
+    return get_email_auth_code()
+
+
+def get_email_smtp_password() -> str:
+    """SMTP 密码读取兼容: 优先 secrets_store, 其次 tough 的 email_auth_code。"""
+    from app import secrets_store
+
+    password = secrets_store.get_email_smtp_password()
+    if password:
+        return password
+    return get_email_auth_code()
 
 
 # ===== 企业微信智能机器人 (API 模式 / 长连接) =====
@@ -893,35 +1057,118 @@ def set_email_smtp_config(config: dict) -> dict:
 
 def get_wecom_bot_id() -> str:
     """企业微信智能机器人 BotID — 机器人的唯一标识。"""
-    return load().get("wecom_bot_id", "")
+    data = load()
+    nested = _get_nested(data, "smart_bots", "wecom", "wecom_bot_id", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("wecom_bot_id") or "").strip()
 
 
 def set_wecom_bot_id(bot_id: str) -> str:
     """保存智能机器人 BotID。传入空串表示清空。"""
-    save({"wecom_bot_id": (bot_id or "").strip()})
+    value = (bot_id or "").strip()
+    _save_nested("smart_bots", "wecom", {"wecom_bot_id": value}, mirror={"wecom_bot_id": value})
     return get_wecom_bot_id()
 
 
 def get_wecom_bot_secret() -> str:
     """企业微信智能机器人 Secret — 长连接专用密钥。"""
-    return load().get("wecom_bot_secret", "")
+    data = load()
+    nested = _get_nested(data, "smart_bots", "wecom", "wecom_bot_secret", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("wecom_bot_secret") or "").strip()
 
 
 def set_wecom_bot_secret(secret: str) -> str:
     """保存智能机器人 Secret。传入空串表示清空。"""
-    save({"wecom_bot_secret": (secret or "").strip()})
+    value = (secret or "").strip()
+    _save_nested("smart_bots", "wecom", {"wecom_bot_secret": value}, mirror={"wecom_bot_secret": value})
     return get_wecom_bot_secret()
 
 
 def get_wecom_bot_enabled() -> bool:
     """智能机器人长连接是否启用。默认 False(需用户配置凭证后手动开启)。"""
-    return load().get("wecom_bot_enabled", False)
+    data = load()
+    nested = _get_nested(data, "smart_bots", "wecom", "wecom_bot_enabled", default=None)
+    if nested is not None:
+        return bool(nested)
+    return bool(data.get("wecom_bot_enabled", False))
 
 
 def set_wecom_bot_enabled(enabled: bool) -> bool:
     """保存智能机器人启用状态。"""
-    save({"wecom_bot_enabled": bool(enabled)})
+    value = bool(enabled)
+    _save_nested(
+        "smart_bots",
+        "wecom",
+        {"wecom_bot_enabled": value},
+        mirror={"wecom_bot_enabled": value},
+    )
     return get_wecom_bot_enabled()
+
+
+def get_dingtalk_bot_id() -> str:
+    """钉钉智能机器人 ClientId/AppKey。"""
+    data = load()
+    nested = _get_nested(data, "smart_bots", "dingtalk", "dingtalk_bot_id", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("dingtalk_bot_id") or "").strip()
+
+
+def set_dingtalk_bot_id(bot_id: str) -> str:
+    """保存钉钉智能机器人 ClientId/AppKey。"""
+    value = (bot_id or "").strip()
+    _save_nested(
+        "smart_bots",
+        "dingtalk",
+        {"dingtalk_bot_id": value},
+        mirror={"dingtalk_bot_id": value},
+    )
+    return get_dingtalk_bot_id()
+
+
+def get_dingtalk_bot_secret() -> str:
+    """钉钉智能机器人 ClientSecret/AppSecret。"""
+    data = load()
+    nested = _get_nested(data, "smart_bots", "dingtalk", "dingtalk_bot_secret", default="")
+    if nested:
+        return str(nested).strip()
+    return str(data.get("dingtalk_bot_secret") or "").strip()
+
+
+def set_dingtalk_bot_secret(secret: str) -> str:
+    """保存钉钉智能机器人 ClientSecret/AppSecret。"""
+    value = (secret or "").strip()
+    _save_nested(
+        "smart_bots",
+        "dingtalk",
+        {"dingtalk_bot_secret": value},
+        mirror={"dingtalk_bot_secret": value},
+    )
+    return get_dingtalk_bot_secret()
+
+
+def get_dingtalk_bot_enabled() -> bool:
+    """钉钉智能机器人长连接是否启用。默认 False。"""
+    data = load()
+    nested = _get_nested(data, "smart_bots", "dingtalk", "dingtalk_bot_enabled", default=None)
+    if nested is not None:
+        return bool(nested)
+    return bool(data.get("dingtalk_bot_enabled", False))
+
+
+def set_dingtalk_bot_enabled(enabled: bool) -> bool:
+    """保存钉钉智能机器人启用状态。"""
+    value = bool(enabled)
+    _save_nested(
+        "smart_bots",
+        "dingtalk",
+        {"dingtalk_bot_enabled": value},
+        mirror={"dingtalk_bot_enabled": value},
+    )
+    return get_dingtalk_bot_enabled()
 
 
 
@@ -952,6 +1199,10 @@ def get_webhook_default_channels() -> list[str]:
     这里把 True 迁移为 ['feishu','wecom'], 还原当时的实际行为。
     """
     d = load()
+    # tough 结构: alert_default_channels
+    raw = d.get("alert_default_channels")
+    if isinstance(raw, list):
+        return [c for c in raw if c in PUSH_CHANNELS]
     raw = d.get("webhook_default_channels")
     if isinstance(raw, list):
         return [c for c in raw if c in PUSH_CHANNELS]
@@ -969,8 +1220,21 @@ def set_webhook_default_channels(channels: list[str]) -> list[str]:
         if c in PUSH_CHANNELS and c not in seen:
             seen.add(c)
             cleaned.append(c)
-    save({"webhook_default_channels": cleaned})
+    save({
+        "webhook_default_channels": cleaned,
+        "alert_default_channels": cleaned,
+    })
     return cleaned
+
+
+def get_alert_default_channels() -> list[str]:
+    """兼容 tough 命名: alert_default_channels。"""
+    return get_webhook_default_channels()
+
+
+def set_alert_default_channels(channels: list[str]) -> list[str]:
+    """兼容 tough 命名: alert_default_channels。"""
+    return set_webhook_default_channels(channels)
 
 
 def get_screener_auto_run() -> bool:

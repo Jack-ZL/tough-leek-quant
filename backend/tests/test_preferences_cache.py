@@ -123,13 +123,13 @@ def test_mining_schedule_setter_rejects_invalid_profile():
         preferences.set_mining_schedule(True, 4, "exploratory")
 
 
-def test_external_push_channel_whitelists_include_custom_and_email(_isolated):
+def test_external_push_channel_whitelists_include_dingtalk_custom_and_email(_isolated):
     assert preferences.set_webhook_default_channels([
-        "custom", "email", "custom", "unsupported",
-    ]) == ["custom", "email"]
+        "custom", "dingtalk", "email", "custom", "unsupported",
+    ]) == ["custom", "dingtalk", "email"]
     assert preferences.set_review_push_channels([
-        "email", "wecom", "unsupported",
-    ]) == ["email", "wecom"]
+        "email", "wecom", "dingtalk", "unsupported",
+    ]) == ["email", "wecom", "dingtalk"]
 
 
 def test_email_smtp_config_falls_back_from_malformed_stored_values(_isolated):
@@ -150,3 +150,87 @@ def test_email_smtp_config_falls_back_from_malformed_stored_values(_isolated):
         "from_address": "",
         "to_addresses": [],
     }
+
+
+def test_notification_getters_support_tough_nested_structure(_isolated):
+    preferences.save({
+        "push_notification": {
+            "feishu": {
+                "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/x",
+                "feishu_webhook_secret": "fs-secret",
+            },
+            "wecom": {
+                "wecom_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=w-key",
+            },
+            "dingtalk": {
+                "dingtalk_webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=d-token",
+                "dingtalk_webhook_secret": "dt-secret",
+            },
+            "email": {
+                "email_smtp_host": "smtp.example.com",
+                "email_smtp_port": 465,
+                "email_use_ssl": True,
+                "email_sender": "bot@example.com",
+                "email_auth_code": "legacy-auth",
+                "email_recipients": ["alerts@example.com"],
+            },
+        },
+        "smart_bots": {
+            "wecom": {
+                "wecom_bot_id": "wecom-bot",
+                "wecom_bot_secret": "wecom-secret",
+                "wecom_bot_enabled": True,
+            },
+            "dingtalk": {
+                "dingtalk_bot_id": "ding-bot",
+                "dingtalk_bot_secret": "ding-secret",
+                "dingtalk_bot_enabled": True,
+            },
+        },
+        "alert_default_channels": ["wecom", "dingtalk", "email"],
+    })
+
+    assert preferences.get_feishu_webhook_url().endswith("/x")
+    assert preferences.get_feishu_webhook_secret() == "fs-secret"
+    assert "key=w-key" in preferences.get_wecom_webhook_url()
+    assert "access_token=d-token" in preferences.get_dingtalk_webhook_url()
+    assert preferences.get_dingtalk_webhook_secret() == "dt-secret"
+    assert preferences.get_wecom_bot_id() == "wecom-bot"
+    assert preferences.get_wecom_bot_secret() == "wecom-secret"
+    assert preferences.get_wecom_bot_enabled() is True
+    assert preferences.get_dingtalk_bot_id() == "ding-bot"
+    assert preferences.get_dingtalk_bot_secret() == "ding-secret"
+    assert preferences.get_dingtalk_bot_enabled() is True
+    assert preferences.get_webhook_default_channels() == ["wecom", "dingtalk", "email"]
+    assert preferences.get_alert_default_channels() == ["wecom", "dingtalk", "email"]
+    assert preferences.get_email_smtp_config() == {
+        "host": "smtp.example.com",
+        "port": 465,
+        "security": "ssl",
+        "username": "bot@example.com",
+        "from_address": "bot@example.com",
+        "to_addresses": ["alerts@example.com"],
+    }
+
+
+def test_webhook_default_channels_mirrors_alert_key(_isolated):
+    saved = preferences.set_webhook_default_channels(["wecom", "dingtalk", "unsupported"])
+    assert saved == ["wecom", "dingtalk"]
+    payload = preferences.load()
+    assert payload["webhook_default_channels"] == ["wecom", "dingtalk"]
+    assert payload["alert_default_channels"] == ["wecom", "dingtalk"]
+
+
+def test_email_password_prefers_secrets_then_legacy_auth_code(_isolated, monkeypatch):
+    preferences.save({
+        "push_notification": {
+            "email": {
+                "email_auth_code": "legacy-auth-code",
+            },
+        },
+    })
+    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "")
+    assert preferences.get_email_smtp_password() == "legacy-auth-code"
+
+    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "new-secret-password")
+    assert preferences.get_email_smtp_password() == "new-secret-password"

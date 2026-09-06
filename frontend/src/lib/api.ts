@@ -1557,6 +1557,20 @@ export interface EndpointManifest {
   source?: 'remote' | 'fallback'
 }
 
+export interface AiProfile {
+  name: string
+  provider: string
+  base_url: string
+  api_key?: string
+  model: string
+  reasoning_effort?: string
+  codex_command?: string
+  codex_reasoning_effort?: string
+  user_agent?: string
+  max_output_tokens?: number
+  context_window?: number
+}
+
 export interface SettingsState {
   mode: 'none' | 'free' | 'api_key'
   tickflow_api_key_masked: string
@@ -1569,6 +1583,7 @@ export interface SettingsState {
   // 首次使用引导
   onboarding_completed: boolean
   // AI 配置
+  ai_profiles: AiProfile[]
   ai_provider: string
   ai_base_url: string
   ai_api_key_masked: string
@@ -1782,6 +1797,8 @@ export interface Preferences {
   feishu_webhook_url?: string
   feishu_webhook_secret?: string
   wecom_webhook_url?: string
+  dingtalk_webhook_url?: string
+  dingtalk_webhook_secret?: string
   custom_webhook_url?: string
   custom_webhook_secret_set?: boolean
   email_smtp_config?: EmailSmtpConfig
@@ -1789,8 +1806,57 @@ export interface Preferences {
   wecom_bot_id?: string
   wecom_bot_secret?: string
   wecom_bot_enabled?: boolean
+  dingtalk_bot_id?: string
+  dingtalk_bot_secret?: string
+  dingtalk_bot_enabled?: boolean
+  push_notification?: {
+    email?: {
+      email_enabled?: boolean
+      email_smtp_host?: string
+      email_smtp_port?: number
+      email_use_ssl?: boolean
+      email_sender?: string
+      email_auth_code?: string
+      email_recipients?: string[]
+      host?: string
+      port?: number
+      security?: 'ssl' | 'starttls' | 'none'
+      username?: string
+      from_address?: string
+      to_addresses?: string[]
+      email_smtp_password_set?: boolean
+    }
+    dingtalk?: {
+      dingtalk_webhook_url?: string
+      dingtalk_webhook_secret?: string
+    }
+    wecom?: {
+      wecom_webhook_url?: string
+    }
+    feishu?: {
+      feishu_webhook_url?: string
+      feishu_webhook_secret?: string
+    }
+    custom?: {
+      custom_webhook_url?: string
+      custom_webhook_secret_set?: boolean
+    }
+  }
+  smart_bots?: {
+    wecom?: {
+      wecom_bot_id?: string
+      wecom_bot_secret?: string
+      wecom_bot_enabled?: boolean
+    }
+    dingtalk?: {
+      dingtalk_bot_id?: string
+      dingtalk_bot_secret?: string
+      dingtalk_bot_enabled?: boolean
+    }
+  }
   webhook_enabled_default?: boolean
   webhook_default_channels?: string[]
+  alert_default_channels?: string[]
   nav_order: string[]
   nav_hidden: string[]
   screener_auto_run: boolean
@@ -1873,9 +1939,30 @@ export const api = {
 
   /** 保存 AI 配置 */
   saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number }) =>
-    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number }>('/api/settings/ai', {
+    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; profiles?: AiProfile[] }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
+    }),
+
+  /** 保存 AI 配置到 profiles 列表（不激活） */
+  saveAiProfile: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number }) =>
+    request<{ ok: boolean; profiles: AiProfile[] }>('/api/settings/ai/profiles', {
+      method: 'POST',
+      body: JSON.stringify(ai),
+    }),
+
+  /** 激活指定的 AI 模型配置 */
+  activateAiProfile: (name: string, provider: string) =>
+    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number }>('/api/settings/ai/activate', {
+      method: 'POST',
+      body: JSON.stringify({ name, provider }),
+    }),
+
+  /** 删除指定的 AI 模型配置 */
+  deleteAiProfile: (name: string, provider: string) =>
+    request<{ ok: boolean; profiles: AiProfile[] }>('/api/settings/ai/profiles', {
+      method: 'DELETE',
+      body: JSON.stringify({ name, provider }),
     }),
 
   /** 一键清空 AI 配置(保留自定义 UA) */
@@ -2104,6 +2191,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ url }),
     }),
+  updateDingtalkWebhook: (url: string, secret: string = '') =>
+    request<{ dingtalk_webhook_url: string; dingtalk_webhook_secret: string }>('/api/settings/preferences/dingtalk-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url, secret }),
+    }),
   updateCustomWebhook: (url: string, secret?: string) =>
     request<{ custom_webhook_url: string; custom_webhook_secret_set: boolean }>('/api/settings/preferences/custom-webhook', {
       method: 'PUT',
@@ -2114,7 +2206,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
     }),
-  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'custom' | 'email') =>
+  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
     request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
       method: 'POST',
       body: JSON.stringify({ channel }),
@@ -2131,6 +2223,21 @@ export const api = {
     }),
   toggleWecomBot: (enabled: boolean) =>
     request<{ wecom_bot_enabled: boolean; wecom_bot_status: WecomBotStatus }>('/api/settings/preferences/wecom-bot-toggle', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
+    request<{
+      dingtalk_bot_id: string
+      dingtalk_bot_secret: string
+      dingtalk_bot_enabled: boolean
+      dingtalk_bot_status: WecomBotStatus
+    }>('/api/settings/preferences/dingtalk-bot', {
+      method: 'PUT',
+      body: JSON.stringify({ bot_id: botId, secret, enabled }),
+    }),
+  toggleDingtalkBot: (enabled: boolean) =>
+    request<{ dingtalk_bot_enabled: boolean; dingtalk_bot_status: WecomBotStatus }>('/api/settings/preferences/dingtalk-bot-toggle', {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),

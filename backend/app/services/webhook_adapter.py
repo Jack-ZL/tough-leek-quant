@@ -1,7 +1,7 @@
 """Webhook 推送适配器 — 把告警事件推送到外部 IM / 量化软件。
 
 职责: 把后端产生的告警事件, 通过用户配置的 Webhook 地址推送到外部。
-     目前支持飞书、企业微信和通用第三方 JSON Webhook。
+     目前支持飞书、企业微信、钉钉和通用第三方 JSON Webhook。
 
 飞书自定义机器人接入:
   1. 飞书群 → 群设置 → 群推送 Webhook → 添加「自定义机器人」
@@ -345,6 +345,118 @@ def send_wecom_markdown(webhook_url: str, title: str, body_md: str) -> bool:
 
     payload: dict = {"msgtype": "markdown", "markdown": {"content": content}}
     return _post_wecom(webhook_url, payload)
+
+
+# ================================================================
+# 钉钉群推送 Webhook
+# ================================================================
+
+_DINGTALK_MAX_ATTEMPTS = 3
+DINGTALK_HOOK_PREFIX = "https://oapi.dingtalk.com/robot/send"
+
+
+def is_valid_dingtalk_url(url: str) -> bool:
+    """校验是否为合法的钉钉自定义机器人 Webhook 地址。"""
+    if not url:
+        return False
+    if url.startswith(DINGTALK_HOOK_PREFIX):
+        return True
+    token = url.strip()
+    if " " in token or "/" in token or "?" in token:
+        return False
+    return len(token) >= 20
+
+
+def normalize_dingtalk_url(url: str) -> str:
+    """把纯 access_token 补全为完整 Webhook URL。"""
+    normalized = (url or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith(DINGTALK_HOOK_PREFIX):
+        return normalized
+    return f"{DINGTALK_HOOK_PREFIX}?access_token={normalized}"
+
+
+def _gen_dingtalk_sign(timestamp: str, secret: str) -> str:
+    """计算钉钉机器人加签参数 sign。"""
+    from urllib.parse import quote_plus
+
+    string_to_sign = f"{timestamp}\n{secret}"
+    hmac_code = hmac.new(
+        secret.encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).digest()
+    return quote_plus(base64.b64encode(hmac_code).decode("utf-8"))
+
+
+def _post_dingtalk(webhook_url: str, payload: dict, secret: str = "") -> bool:
+    """发送钉钉 webhook 请求并判定成败。"""
+    import httpx
+
+    last_err = ""
+    for attempt in range(1, _DINGTALK_MAX_ATTEMPTS + 1):
+        try:
+            url = webhook_url
+            if secret:
+                timestamp = str(int(time.time() * 1000))
+                sign = _gen_dingtalk_sign(timestamp, secret)
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}timestamp={timestamp}&sign={sign}"
+
+            resp = httpx.post(url, json=payload, timeout=5.0)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    return True
+                if isinstance(data, dict):
+                    if data.get("errcode") == 0:
+                        return True
+                    logger.warning("钉钉推送业务失败(不重试): %s", data)
+                    return False
+                return True
+            last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            if resp.status_code < 500:
+                logger.warning("钉钉推送失败(不重试, 客户端错误): %s", last_err)
+                return False
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+
+        if attempt < _DINGTALK_MAX_ATTEMPTS:
+            time.sleep(min(2 ** (attempt - 1), 3))
+
+    logger.warning("钉钉 Webhook 推送最终失败(已重试 %d 次): %s", _DINGTALK_MAX_ATTEMPTS, last_err)
+    return False
+
+
+def send_dingtalk(webhook_url: str, title: str, body: str, secret: str = "") -> bool:
+    """推送一条文本消息到钉钉群推送 Webhook。"""
+    webhook_url = normalize_dingtalk_url(webhook_url)
+    if not is_valid_dingtalk_url(webhook_url):
+        return False
+
+    text = _truncate(f"{title}\n{body}".strip())
+    if not text:
+        return False
+
+    payload: dict = {"msgtype": "text", "text": {"content": text}}
+    return _post_dingtalk(webhook_url, payload, secret)
+
+
+def send_dingtalk_markdown(webhook_url: str, title: str, body_md: str, secret: str = "") -> bool:
+    """推送一条 Markdown 消息到钉钉群推送 Webhook。"""
+    webhook_url = normalize_dingtalk_url(webhook_url)
+    if not is_valid_dingtalk_url(webhook_url):
+        return False
+
+    raw = f"# {title}\n\n{body_md}".strip()
+    content = raw[:20000] + ("…" if len(raw) > 20000 else "")
+    if not content.strip():
+        return False
+
+    payload: dict = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
+    return _post_dingtalk(webhook_url, payload, secret)
 
 
 # ================================================================

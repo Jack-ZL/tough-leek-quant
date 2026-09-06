@@ -403,7 +403,9 @@ def normalize(rule: dict) -> dict:
     else:
         # 防御性过滤, 只保留合法渠道
         r["webhook_channels"] = [
-            c for c in r["webhook_channels"] if c in ("feishu", "wecom", "custom", "email")
+            c
+            for c in r["webhook_channels"]
+            if c in ("feishu", "wecom", "dingtalk", "custom", "email")
         ]
     r.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     return r

@@ -81,6 +81,7 @@ def get_settings() -> dict:
         # 首次使用引导
         "onboarding_completed": preferences.get_onboarding_completed(),
         # AI 配置
+        "ai_profiles": secrets_store.load().get("ai_profiles", []),
         "ai_provider": ai_provider,
         "ai_base_url": secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
         "ai_api_key_masked": secrets_store.mask(secrets_store.get_ai_key()),
@@ -259,6 +260,63 @@ class AiSettingsIn(BaseModel):
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
 
 
+def _upsert_ai_profile(req: AiSettingsIn) -> list[dict]:
+    """把当前 AI 配置写入 ai_profiles（同名+同 provider 视为更新）。"""
+    from app.services.ai_provider import (
+        OPENAI_PROVIDER,
+        normalize_codex_command,
+        normalize_codex_model,
+        normalize_codex_reasoning_effort,
+    )
+
+    stored = secrets_store.load()
+    profiles = stored.get("ai_profiles", [])
+    if not isinstance(profiles, list):
+        profiles = []
+    is_codex = req.provider == "codex_cli"
+    codex_model = normalize_codex_model(req.model) if is_codex else ""
+    codex_command = normalize_codex_command(req.codex_command, strict=False) if is_codex else ""
+    codex_reasoning_effort = normalize_codex_reasoning_effort(req.codex_reasoning_effort) if is_codex else ""
+    profile_name = (codex_model if is_codex else req.model) or req.base_url or "未命名"
+    existing_idx = next(
+        (
+            i for i, profile in enumerate(profiles)
+            if profile.get("name") == profile_name and profile.get("provider") == req.provider
+        ),
+        -1,
+    )
+
+    existing_profile = profiles[existing_idx] if existing_idx >= 0 else {}
+    api_key = req.api_key
+    if api_key is None:
+        api_key = existing_profile.get("api_key")
+    if api_key is None and not is_codex:
+        api_key = secrets_store.get_ai_key()
+    if api_key is None:
+        api_key = ""
+
+    profile = {
+        "name": profile_name,
+        "provider": req.provider,
+        "base_url": req.base_url,
+        "api_key": api_key,
+        "model": codex_model if is_codex else req.model,
+        "reasoning_effort": req.reasoning_effort if req.provider == OPENAI_PROVIDER else "",
+        "codex_command": codex_command,
+        "codex_reasoning_effort": codex_reasoning_effort,
+        "user_agent": req.user_agent,
+        "max_output_tokens": req.max_output_tokens,
+        "context_window": req.context_window,
+    }
+    if existing_idx >= 0:
+        profiles[existing_idx] = profile
+    else:
+        profiles.append(profile)
+
+    secrets_store.save({"ai_profiles": profiles})
+    return profiles
+
+
 @router.post("/ai")
 def save_ai_settings(req: AiSettingsIn) -> dict:
     """保存 AI 配置（全部持久化到 secrets.json）"""
@@ -330,6 +388,122 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if updates:
         secrets_store.save(updates)
 
+    profiles = _upsert_ai_profile(req)
+    provider = current_ai_provider()
+    return {
+        "ok": True,
+        "ai_provider": provider,
+        "ai_model": current_ai_model(),
+        "ai_openai_model": current_openai_model(),
+        "ai_reasoning_effort": current_openai_reasoning_effort(),
+        "ai_codex_model": current_codex_model(),
+        "ai_codex_command": current_codex_command(),
+        "ai_codex_reasoning_effort": current_codex_reasoning_effort(),
+        "ai_configured": ai_configured(provider),
+        "ai_max_output_tokens": current_ai_max_output_tokens(),
+        "ai_context_window": current_ai_context_window(),
+        "profiles": profiles,
+    }
+
+
+@router.get("/ai/profiles")
+def get_ai_profiles() -> dict:
+    """返回所有已配置的 AI 模型列表 + 当前激活模型。"""
+    from app.services.ai_provider import current_ai_model, current_ai_provider
+
+    stored = secrets_store.load()
+    profiles = stored.get("ai_profiles", [])
+    if not isinstance(profiles, list):
+        profiles = []
+    return {
+        "profiles": profiles,
+        "active": {
+            "provider": current_ai_provider(),
+            "model": current_ai_model(),
+        },
+    }
+
+
+@router.post("/ai/profiles")
+def save_ai_profile(req: AiSettingsIn) -> dict:
+    """保存一个 AI 模型配置到 profiles 列表（不改变当前激活模型）。"""
+    profiles = _upsert_ai_profile(req)
+    return {"ok": True, "profiles": profiles}
+
+
+class ActivateProfileIn(BaseModel):
+    name: str
+    provider: str
+
+
+@router.post("/ai/activate")
+def activate_ai_profile(req: ActivateProfileIn) -> dict:
+    """激活指定的 AI 模型配置。"""
+    from app.config import settings
+    from app.services.ai_provider import (
+        ai_configured,
+        current_ai_context_window,
+        current_ai_max_output_tokens,
+        current_ai_model,
+        current_ai_provider,
+        current_codex_command,
+        current_codex_model,
+        current_codex_reasoning_effort,
+        current_openai_model,
+        current_openai_reasoning_effort,
+        normalize_codex_command,
+        normalize_codex_model,
+        normalize_codex_reasoning_effort,
+    )
+
+    stored = secrets_store.load()
+    profiles = stored.get("ai_profiles", [])
+    if not isinstance(profiles, list):
+        profiles = []
+    profile = next(
+        (
+            p for p in profiles
+            if p.get("name") == req.name and p.get("provider") == req.provider
+        ),
+        None,
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="配置不存在")
+
+    is_codex = req.provider == "codex_cli"
+    codex_model = normalize_codex_model(profile.get("model", "")) if is_codex else ""
+    codex_command = normalize_codex_command(profile.get("codex_command"), strict=False) if is_codex else ""
+    codex_reasoning_effort = normalize_codex_reasoning_effort(profile.get("codex_reasoning_effort")) if is_codex else ""
+
+    updates = {
+        "ai_provider": profile.get("provider", ""),
+        "ai_base_url": profile.get("base_url", ""),
+        "ai_model": codex_model if is_codex else profile.get("model", ""),
+        "ai_reasoning_effort": profile.get("reasoning_effort", ""),
+        "ai_codex_model": codex_model,
+        "ai_codex_command": codex_command,
+        "ai_codex_reasoning_effort": codex_reasoning_effort,
+        "ai_user_agent": profile.get("user_agent", ""),
+    }
+    profile_api_key = profile.get("api_key", "")
+    updates["ai_api_key"] = profile_api_key
+    if profile.get("max_output_tokens") is not None:
+        updates["ai_max_output_tokens"] = profile["max_output_tokens"]
+    if profile.get("context_window") is not None:
+        updates["ai_context_window"] = profile["context_window"]
+
+    secrets_store.save(updates)
+    settings.ai_provider = str(updates["ai_provider"] or "openai_compat")
+    settings.ai_base_url = str(updates["ai_base_url"] or "")
+    settings.ai_model = str(updates["ai_model"] or "")
+    settings.ai_api_key = str(profile_api_key or "")
+    settings.ai_codex_command = str(updates["ai_codex_command"] or "codex")
+    settings.ai_codex_reasoning_effort = str(updates["ai_codex_reasoning_effort"] or "")
+    if profile.get("max_output_tokens") is not None:
+        settings.ai_max_output_tokens = int(profile["max_output_tokens"])
+    if profile.get("context_window") is not None:
+        settings.ai_context_window = int(profile["context_window"])
+
     provider = current_ai_provider()
     return {
         "ok": True,
@@ -344,6 +518,29 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         "ai_max_output_tokens": current_ai_max_output_tokens(),
         "ai_context_window": current_ai_context_window(),
     }
+
+
+class DeleteProfileIn(BaseModel):
+    name: str
+    provider: str
+
+
+@router.delete("/ai/profiles")
+def delete_ai_profile(req: DeleteProfileIn) -> dict:
+    """删除指定的 AI 模型配置。"""
+    stored = secrets_store.load()
+    profiles = stored.get("ai_profiles", [])
+    if not isinstance(profiles, list):
+        profiles = []
+    profiles = [
+        profile for profile in profiles
+        if not (
+            profile.get("name") == req.name
+            and profile.get("provider") == req.provider
+        )
+    ]
+    secrets_store.save({"ai_profiles": profiles})
+    return {"ok": True, "profiles": profiles}
 
 
 @router.delete("/ai")
@@ -495,6 +692,21 @@ class MiningSchedulePrefs(BaseModel):
 def get_preferences() -> dict:
     """返回用户偏好设置。"""
     from app.services import preferences
+    email_smtp_config = preferences.get_email_smtp_config()
+    feishu_webhook_url = preferences.get_feishu_webhook_url()
+    feishu_webhook_secret = preferences.get_feishu_webhook_secret()
+    wecom_webhook_url = preferences.get_wecom_webhook_url()
+    dingtalk_webhook_url = preferences.get_dingtalk_webhook_url()
+    dingtalk_webhook_secret = preferences.get_dingtalk_webhook_secret()
+    custom_webhook_url = preferences.get_custom_webhook_url()
+    wecom_bot_id = preferences.get_wecom_bot_id()
+    wecom_bot_secret = preferences.get_wecom_bot_secret()
+    wecom_bot_enabled = preferences.get_wecom_bot_enabled()
+    dingtalk_bot_id = preferences.get_dingtalk_bot_id()
+    dingtalk_bot_secret = preferences.get_dingtalk_bot_secret()
+    dingtalk_bot_enabled = preferences.get_dingtalk_bot_enabled()
+    webhook_default_channels = preferences.get_webhook_default_channels()
+    email_password_set = bool(preferences.get_email_smtp_password())
     return {
         "realtime_quotes_enabled": preferences.get_realtime_quotes_enabled(),
         "realtime_allowed": _realtime_allowed(),
@@ -534,18 +746,61 @@ def get_preferences() -> dict:
         "strategy_monitor_enabled": preferences.get_strategy_monitor_enabled(),
         "strategy_monitor_ids": preferences.get_strategy_monitor_ids(),
         "system_notify_enabled": preferences.get_system_notify_enabled(),
-        "feishu_webhook_url": preferences.get_feishu_webhook_url(),
-        "feishu_webhook_secret": preferences.get_feishu_webhook_secret(),
-        "wecom_webhook_url": preferences.get_wecom_webhook_url(),
-        "custom_webhook_url": preferences.get_custom_webhook_url(),
+        "feishu_webhook_url": feishu_webhook_url,
+        "feishu_webhook_secret": feishu_webhook_secret,
+        "wecom_webhook_url": wecom_webhook_url,
+        "dingtalk_webhook_url": dingtalk_webhook_url,
+        "dingtalk_webhook_secret": dingtalk_webhook_secret,
+        "custom_webhook_url": custom_webhook_url,
         "custom_webhook_secret_set": bool(secrets_store.get_custom_webhook_secret()),
-        "email_smtp_config": preferences.get_email_smtp_config(),
-        "email_smtp_password_set": bool(secrets_store.get_email_smtp_password()),
-        "wecom_bot_id": preferences.get_wecom_bot_id(),
-        "wecom_bot_secret": preferences.get_wecom_bot_secret(),
-        "wecom_bot_enabled": preferences.get_wecom_bot_enabled(),
+        "email_smtp_config": email_smtp_config,
+        "email_smtp_password_set": email_password_set,
+        "wecom_bot_id": wecom_bot_id,
+        "wecom_bot_secret": wecom_bot_secret,
+        "wecom_bot_enabled": wecom_bot_enabled,
+        "dingtalk_bot_id": dingtalk_bot_id,
+        "dingtalk_bot_secret": dingtalk_bot_secret,
+        "dingtalk_bot_enabled": dingtalk_bot_enabled,
+        "push_notification": {
+            "email": {
+                "email_enabled": "email" in webhook_default_channels,
+                **email_smtp_config,
+                "email_smtp_host": email_smtp_config.get("host", ""),
+                "email_smtp_port": email_smtp_config.get("port", 465),
+                "email_use_ssl": email_smtp_config.get("security", "ssl") == "ssl",
+                "email_sender": email_smtp_config.get("from_address", ""),
+                "email_recipients": email_smtp_config.get("to_addresses", []),
+                "email_smtp_password_set": email_password_set,
+            },
+            "dingtalk": {
+                "dingtalk_webhook_url": dingtalk_webhook_url,
+                "dingtalk_webhook_secret": dingtalk_webhook_secret,
+            },
+            "wecom": {"wecom_webhook_url": wecom_webhook_url},
+            "feishu": {
+                "feishu_webhook_url": feishu_webhook_url,
+                "feishu_webhook_secret": feishu_webhook_secret,
+            },
+            "custom": {
+                "custom_webhook_url": custom_webhook_url,
+                "custom_webhook_secret_set": bool(secrets_store.get_custom_webhook_secret()),
+            },
+        },
+        "smart_bots": {
+            "wecom": {
+                "wecom_bot_id": wecom_bot_id,
+                "wecom_bot_secret": wecom_bot_secret,
+                "wecom_bot_enabled": wecom_bot_enabled,
+            },
+            "dingtalk": {
+                "dingtalk_bot_id": dingtalk_bot_id,
+                "dingtalk_bot_secret": dingtalk_bot_secret,
+                "dingtalk_bot_enabled": dingtalk_bot_enabled,
+            },
+        },
         "webhook_enabled_default": preferences.get_webhook_enabled_default(),
-        "webhook_default_channels": preferences.get_webhook_default_channels(),
+        "webhook_default_channels": webhook_default_channels,
+        "alert_default_channels": webhook_default_channels,
         "minute_intraday_refresh": preferences.get_minute_intraday_refresh(),
         "minute_intraday_refresh_interval": preferences.get_minute_intraday_refresh_interval(),
         "monitor_ext_fields": preferences.get_monitor_ext_fields(),
@@ -1237,6 +1492,29 @@ def update_wecom_webhook(req: WecomWebhookPrefsIn) -> dict:
     return {"wecom_webhook_url": saved_url}
 
 
+class DingtalkWebhookPrefsIn(BaseModel):
+    url: str
+    secret: str = ""
+
+
+@router.put("/preferences/dingtalk-webhook")
+def update_dingtalk_webhook(req: DingtalkWebhookPrefsIn) -> dict:
+    """钉钉群推送 Webhook 地址 + 加签密钥。"""
+    from app.services import preferences
+    from app.services import webhook_adapter
+
+    url = (req.url or "").strip()
+    if url and not webhook_adapter.is_valid_dingtalk_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook 地址非法, 需为钉钉自定义机器人地址 "
+                   "(https://oapi.dingtalk.com/robot/send?access_token=... 或纯 access_token)",
+        )
+    saved_url = preferences.set_dingtalk_webhook_url(url)
+    saved_secret = preferences.set_dingtalk_webhook_secret((req.secret or "").strip())
+    return {"dingtalk_webhook_url": saved_url, "dingtalk_webhook_secret": saved_secret}
+
+
 class CustomWebhookPrefsIn(BaseModel):
     url: str
     # None preserves the stored secret; an explicit empty string clears it.
@@ -1288,7 +1566,7 @@ def update_email_smtp(req: EmailSmtpPrefsIn) -> dict:
         if not recipients or any(not email_adapter.is_valid_email(item) for item in recipients):
             raise HTTPException(status_code=400, detail="请至少填写一个有效的收件人邮箱")
         effective_password = (
-            secrets_store.get_email_smtp_password()
+            preferences.get_email_smtp_password()
             if req.password is None
             else req.password
         )
@@ -1309,16 +1587,18 @@ def update_email_smtp(req: EmailSmtpPrefsIn) -> dict:
     })
     if not host or not username:
         secrets_store.set_email_smtp_password("")
+        preferences.set_email_auth_code("")
     elif req.password is not None:
         secrets_store.set_email_smtp_password(req.password)
+        preferences.set_email_auth_code(req.password)
     return {
         "email_smtp_config": config,
-        "email_smtp_password_set": bool(secrets_store.get_email_smtp_password()),
+        "email_smtp_password_set": bool(preferences.get_email_smtp_password()),
     }
 
 
 class WebhookTestIn(BaseModel):
-    channel: Literal["feishu", "wecom", "custom", "email"]
+    channel: Literal["feishu", "wecom", "dingtalk", "custom", "email"]
 
 
 @router.post("/preferences/webhook-test")
@@ -1351,6 +1631,14 @@ def test_webhook(req: WebhookTestIn) -> dict:
         if not webhook_adapter.is_valid_wecom_url(url):
             return {"ok": False, "detail": "已保存的企业微信 Webhook 地址非法，请重新保存"}
         ok = webhook_adapter.send_wecom(url, title, body)
+    elif req.channel == "dingtalk":
+        url = preferences.get_dingtalk_webhook_url()
+        if not url:
+            return {"ok": False, "detail": "尚未配置钉钉 Webhook，请先保存"}
+        if not webhook_adapter.is_valid_dingtalk_url(url):
+            return {"ok": False, "detail": "已保存的钉钉 Webhook 地址非法，请重新保存"}
+        secret = preferences.get_dingtalk_webhook_secret()
+        ok = webhook_adapter.send_dingtalk(url, title, body, secret)
     elif req.channel == "custom":
         url = preferences.get_custom_webhook_url()
         if not url:
@@ -1373,7 +1661,7 @@ def test_webhook(req: WebhookTestIn) -> dict:
             return {"ok": False, "detail": "尚未完整配置邮件 SMTP, 请先保存"}
         ok = email_adapter.send_email(
             config,
-            secrets_store.get_email_smtp_password(),
+            preferences.get_email_smtp_password(),
             title,
             body,
             max_attempts=1,
@@ -1447,6 +1735,59 @@ def toggle_wecom_bot(req: WecomBotToggleIn, request: Request) -> dict:
     return {"wecom_bot_enabled": enabled, "wecom_bot_status": status}
 
 
+class DingtalkBotPrefsIn(BaseModel):
+    bot_id: str
+    secret: str
+    enabled: bool = True
+
+
+@router.put("/preferences/dingtalk-bot")
+def update_dingtalk_bot(req: DingtalkBotPrefsIn, request: Request) -> dict:
+    """钉钉智能机器人(ClientId + ClientSecret)配置。"""
+    from app.services import preferences
+
+    bot_id = (req.bot_id or "").strip()
+    secret = (req.secret or "").strip()
+    preferences.set_dingtalk_bot_id(bot_id)
+    preferences.set_dingtalk_bot_secret(secret)
+    enabled = req.enabled and bool(bot_id) and bool(secret)
+    preferences.set_dingtalk_bot_enabled(enabled)
+
+    bot_svc = getattr(request.app.state, "dingtalk_bot_service", None)
+    status: dict = {}
+    if bot_svc:
+        bot_svc.apply_credential_change()
+        status = bot_svc.status()
+    return {
+        "dingtalk_bot_id": preferences.get_dingtalk_bot_id(),
+        "dingtalk_bot_secret": preferences.get_dingtalk_bot_secret(),
+        "dingtalk_bot_enabled": preferences.get_dingtalk_bot_enabled(),
+        "dingtalk_bot_status": status,
+    }
+
+
+class DingtalkBotToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/dingtalk-bot-toggle")
+def toggle_dingtalk_bot(req: DingtalkBotToggleIn, request: Request) -> dict:
+    """独立开关: 启用/禁用钉钉智能机器人长连接(不改动凭证)。"""
+    from app.services import preferences
+
+    bot_id = preferences.get_dingtalk_bot_id()
+    secret = preferences.get_dingtalk_bot_secret()
+    enabled = req.enabled and bool(bot_id) and bool(secret)
+    preferences.set_dingtalk_bot_enabled(enabled)
+
+    bot_svc = getattr(request.app.state, "dingtalk_bot_service", None)
+    status: dict = {}
+    if bot_svc:
+        bot_svc.apply_credential_change()
+        status = bot_svc.status()
+    return {"dingtalk_bot_enabled": enabled, "dingtalk_bot_status": status}
+
+
 class WebhookEnabledDefaultIn(BaseModel):
     enabled: bool
 
@@ -1465,7 +1806,7 @@ def update_webhook_enabled_default(req: WebhookEnabledDefaultIn) -> dict:
 
 
 class WebhookDefaultChannelsIn(BaseModel):
-    channels: list[str]  # 多选: feishu / wecom / custom / email; 空数组=不推送
+    channels: list[str]  # 多选: feishu / wecom / dingtalk / custom / email; 空数组=不推送
 
 
 @router.put("/preferences/webhook-default-channels")
@@ -1479,6 +1820,15 @@ def update_webhook_default_channels(req: WebhookDefaultChannelsIn) -> dict:
 
     saved = preferences.set_webhook_default_channels(req.channels)
     return {"webhook_default_channels": saved}
+
+
+@router.put("/preferences/alert-default-channels")
+def update_alert_default_channels(req: WebhookDefaultChannelsIn) -> dict:
+    """兼容接口: 等价于 webhook-default-channels。"""
+    from app.services import preferences
+
+    saved = preferences.set_alert_default_channels(req.channels)
+    return {"alert_default_channels": saved}
 
 
 @router.put("/preferences/quote-interval")

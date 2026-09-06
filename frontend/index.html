@@ -4,10 +4,25 @@
     <meta charset="UTF-8" />
     <script>
       // 预渲染主题脚本: 首屏前设置 html.dark, 避免亮暗闪烁 (FOUC)。
-      // 默认暗色; 用户切过亮色后 (localStorage tf-theme=light) 保持亮色。
+      // 优先手动覆盖 (tf-theme-override, 24h 过期), 无覆盖则按时间自动: 7:00-19:00 亮色, 其余暗色。
       (function () {
         try {
-          if (localStorage.getItem('tf-theme') !== 'light') {
+          const raw = localStorage.getItem('tf-theme-override')
+          if (raw) {
+            const entry = JSON.parse(raw)
+            if (Date.now() <= entry.expiresAt) {
+              if (entry.theme === 'light') {
+                document.documentElement.classList.remove('dark')
+              } else {
+                document.documentElement.classList.add('dark')
+              }
+              return
+            } else {
+              localStorage.removeItem('tf-theme-override')
+            }
+          }
+          const h = new Date().getHours()
+          if (h < 7 || h >= 19) {
             document.documentElement.classList.add('dark')
           }
         } catch (e) {

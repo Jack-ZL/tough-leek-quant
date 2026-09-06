@@ -217,6 +217,16 @@ async def _application_lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning("wecom_bot_service init failed: %s", e)
 
+    # 钉钉智能机器人长连接(可选通道, 失败不阻断启动)
+    try:
+        from app.services.dingtalk_bot_service import DingtalkBotService
+        dingtalk_bot_service = DingtalkBotService()
+        dingtalk_bot_service.set_app_state(app.state)
+        app.state.dingtalk_bot_service = dingtalk_bot_service
+        dingtalk_bot_service.boot_check()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("dingtalk_bot_service init failed: %s", e)
+
     # 内置扩展表 (概念/行业): 先创建 config (含拉取配置), 默认开启定时拉取。
     # 必须在 pull_scheduler.refresh() 之前执行, 否则全新部署时 scheduler 读不到
     # 刚创建的预设, 定时任务不会启动。
@@ -377,6 +387,9 @@ async def _application_lifespan(app: FastAPI):
         wbot = getattr(app.state, "wecom_bot_service", None)
         if wbot:
             wbot.stop()
+        dbot = getattr(app.state, "dingtalk_bot_service", None)
+        if dbot:
+            dbot.stop()
         mrs = getattr(app.state, "minute_refresh", None)
         if mrs:
             mrs.stop()

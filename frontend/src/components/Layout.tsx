@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
@@ -57,7 +58,7 @@ import {
   PanelLeftOpen,
 } from 'lucide-react'
 import { Logo } from './Logo'
-import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
+import { api, type CapabilityMatrix, type IndexQuote, type AiProfile, type SettingsState } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/lib/useMediaQuery'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
@@ -71,6 +72,53 @@ import { getFrontendExtensionNavigation } from '@/extensions/registry'
 
 // 品牌色 — 只用于 logo / brand 区域,不影响功能语义色
 const BRAND = '#8B5CF6'
+
+/** 侧边栏实时时钟 — 每秒更新, 格式 YYYY-MM-DD HH:MM:SS */
+function ClockDisplay() {
+  const [time, setTime] = useState(() => {
+    const now = new Date()
+    return now.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+  })
+
+  useEffect(() => {
+    const now = new Date()
+    const delay = 1000 - now.getMilliseconds()
+    const timeout = setTimeout(() => {
+      setTime(now.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }))
+      const id = setInterval(() => {
+        setTime(new Date().toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        }))
+      }, 1000)
+      return () => clearInterval(id)
+    }, delay)
+    return () => clearTimeout(timeout)
+  }, [])
+
+  return <span>{time}</span>
+}
 
 const CORE_INDEXES = [
   { symbol: '000001.SH', name: '上证指数' },
@@ -316,18 +364,26 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
   )
 }
 
-function AIConfigBadge({ configured, model }: { configured?: boolean; model?: string }) {
+function AIConfigBadge({ configured, model, isOpen, onToggle, buttonRef }: {
+  configured?: boolean
+  model?: string
+  isOpen: boolean
+  onToggle: () => void
+  buttonRef: React.RefObject<HTMLButtonElement | null>
+}) {
   const descText = configured ? (model || '已接入模型') : '接入策略生成模型'
   return (
-    <NavLink
-      to="/settings?tab=ai"
-      className="group relative flex items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70"
+    <div className="relative">
+      <button
+      ref={buttonRef as React.Ref<HTMLButtonElement>}
+      onClick={onToggle}
+      className="group relative flex w-full items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70 text-left"
       title={`AI 配置 — ${descText}`}
     >
       <span className="pointer-events-none absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-purple-400/50 transition-colors group-hover:bg-purple-400" />
       <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-purple-400 transition-colors" />
       {configured ? (
-        <span className="truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors">
+        <span className="truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors flex-1">
           {model || '已接入模型'}
         </span>
       ) : (
@@ -337,7 +393,11 @@ function AIConfigBadge({ configured, model }: { configured?: boolean; model?: st
         </>
       )}
       <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${configured ? 'bg-bear' : 'bg-warning'}`} />
-    </NavLink>
+      {configured && (
+        <ChevronDown className={cn('h-3 w-3 shrink-0 text-muted transition-transform duration-150', isOpen && 'rotate-180')} />
+      )}
+      </button>
+    </div>
   )
 }
 
@@ -457,6 +517,10 @@ export function Layout() {
   }, [isDataSyncing])
 
   const qc = useQueryClient()
+  const [aiDropdownOpen, setAiDropdownOpen] = useState(false)
+  const [aiActivating, setAiActivating] = useState<string | null>(null)
+  const aiButtonRef = useRef<HTMLButtonElement>(null)
+  const [aiMenuStyle, setAiMenuStyle] = useState<Record<string, string | number>>({})
   const navigate = useNavigate()
   const version = versionData?.version
   const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
@@ -469,6 +533,64 @@ export function Layout() {
   const toggleNavCollapsed = () => {
     setNavStatePersist(navState === 'expanded' ? 'rail' : navState === 'rail' ? 'hidden' : 'expanded')
   }
+  useEffect(() => {
+    if (!aiDropdownOpen || !aiButtonRef.current) return
+    const updatePosition = () => {
+      if (!aiButtonRef.current) return
+      const rect = aiButtonRef.current.getBoundingClientRect()
+      setAiMenuStyle({
+        position: 'fixed',
+        left: rect.right + 8,
+        top: rect.top,
+        width: 192,
+        zIndex: 99999,
+      })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [aiDropdownOpen])
+  useEffect(() => {
+    if (!aiDropdownOpen) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      const isDropdown = target.closest('[data-ai-dropdown]')
+      const isButton = aiButtonRef.current && aiButtonRef.current.contains(target)
+      if (!isDropdown && !isButton) {
+        setAiDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [aiDropdownOpen])
+  const handleAiActivate = useCallback(async (name: string, provider: string) => {
+    const activatingId = `${provider}::${name}`
+    setAiActivating(activatingId)
+    try {
+      const result = await api.activateAiProfile(name, provider)
+      qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
+        ...prev,
+        ai_provider: result.ai_provider ?? prev.ai_provider,
+        ai_model: result.ai_model ?? prev.ai_model,
+        ai_openai_model: result.ai_openai_model ?? prev.ai_openai_model,
+        ai_reasoning_effort: result.ai_reasoning_effort ?? prev.ai_reasoning_effort,
+        ai_codex_model: result.ai_codex_model ?? prev.ai_codex_model,
+        ai_codex_command: result.ai_codex_command ?? prev.ai_codex_command,
+        ai_codex_reasoning_effort: result.ai_codex_reasoning_effort ?? prev.ai_codex_reasoning_effort,
+        ai_configured: result.ai_configured ?? prev.ai_configured,
+        ai_max_output_tokens: result.ai_max_output_tokens ?? prev.ai_max_output_tokens,
+        ai_context_window: result.ai_context_window ?? prev.ai_context_window,
+      } : prev)
+      qc.invalidateQueries({ queryKey: QK.settings })
+    } finally {
+      setAiActivating(null)
+      setAiDropdownOpen(false)
+    }
+  }, [qc])
   // 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示
   const sidebarIndexes = CORE_INDEXES
   const { data: sidebarIndexQuotes } = useQuery({
@@ -725,11 +847,28 @@ export function Layout() {
             {/* 状态卡 — 收起时隐藏 */}
             {!railMode && (
               <div className="mt-2.5 border-t border-border/60 pt-1">
+                {/* 实时时钟 — 独立占一行，类似 TickFlow 卡片 */}
+                <div className="px-2.5 py-2 rounded-btn bg-elevated/40 mb-2">
+                  <div className="font-mono text-[11px] tracking-[0.06em] text-foreground tabular-nums text-center font-bold">
+                    <ClockDisplay />
+                  </div>
+                </div>
                 <DataSourceHealthBadge matrix={matrix} />
               <div className="mx-2 border-t border-border/45" aria-hidden="true" />
               <AIConfigBadge
                 configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
                 model={settingsState?.ai_model}
+                isOpen={aiDropdownOpen}
+                onToggle={() => {
+                  const canSwitch = (settingsState?.ai_configured ?? settingsState?.has_ai_key)
+                    && (settingsState?.ai_profiles?.length ?? 0) > 0
+                  if (canSwitch) {
+                    setAiDropdownOpen(v => !v)
+                    return
+                  }
+                  navigate('/settings?tab=ai')
+                }}
+                buttonRef={aiButtonRef}
               />
             </div>
           )}
@@ -1054,6 +1193,44 @@ export function Layout() {
       <AiReportBubble />
       <StockAnalysisHost />
       <StockAnalysisBubble />
+
+      {aiDropdownOpen && settingsState?.ai_configured && settingsState?.ai_profiles && settingsState.ai_profiles.length > 0 && createPortal(
+        <div
+          style={{ ...aiMenuStyle, userSelect: 'none' }}
+          className="rounded-lg border border-border/60 shadow-xl overflow-hidden bg-white/95 dark:bg-gray-900/95 backdrop-blur-md"
+          data-ai-dropdown
+        >
+          <div className="px-3 py-1.5 border-b border-border/40">
+            <span className="text-[10px] font-medium text-muted uppercase tracking-wider">切换模型</span>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {settingsState.ai_profiles.map((p: AiProfile) => {
+              const profileId = `${p.provider}::${p.name}`
+              const isActive = p.name === settingsState.ai_model && p.provider === settingsState.ai_provider
+              return (
+                <button
+                  key={profileId}
+                  onClick={() => handleAiActivate(p.name, p.provider)}
+                  disabled={aiActivating === profileId}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors',
+                    isActive
+                      ? 'bg-purple-500/10 text-foreground'
+                      : 'text-secondary hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-foreground',
+                    aiActivating === profileId && 'opacity-50 cursor-wait',
+                  )}
+                >
+                  <Sparkles className={cn('h-3 w-3 shrink-0', isActive ? 'text-purple-500' : 'text-muted')} />
+                  <span className="truncate text-xs font-medium flex-1">{p.name}</span>
+                  {isActive && <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />}
+                  {aiActivating === profileId && <Loader2 className="h-3 w-3 animate-spin text-muted shrink-0" />}
+                </button>
+              )
+            })}
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {/* 开启实时行情 + 排队中的挖掘任务 → 冲突确认 */}
       {miningQueuedWarning != null && (

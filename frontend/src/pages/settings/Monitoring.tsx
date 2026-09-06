@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, createContext, useContext } from 'rea
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query'
 import {
   Activity,
+  Bot,
   Wifi,
   Flame,
   Zap,
@@ -21,6 +22,22 @@ import { useCardFlash, cardFlashCls } from '@/lib/useCardFlash'
 import { toast } from '@/components/Toast'
 import { DepthConfigContent } from '@/components/data/DepthConfigCard'
 
+function FeishuIcon({ className }: { className?: string }) {
+  return <span className={`iconfont icon-feishu flex items-center justify-center ${className || ''}`} />
+}
+
+function DingtalkIcon({ className }: { className?: string }) {
+  return <span className={`iconfont icon-pinpaibiaoshi-dingding flex items-center justify-center ${className || ''}`} />
+}
+
+function WecomIcon({ className }: { className?: string }) {
+  return <span className={`iconfont icon-CRMEB-189-qiyeweixin-mianxing flex items-center justify-center ${className || ''}`} />
+}
+
+function EmailIcon({ className }: { className?: string }) {
+  return <span className={`iconfont icon-youxiang flex items-center justify-center ${className || ''}`} />
+}
+
 // 卡片定位锚点: highlight=<anchor> 时该卡片滚动到视口中央并闪烁高亮。
 // 其他页面用 /settings?tab=monitoring&highlight=<anchor> 精确引导用户到某张卡片。
 const HighlightContext = createContext('')
@@ -30,15 +47,6 @@ const PAGE_LABELS: Record<string, string> = {
   'overview-market': '看板',
   watchlist: '自选页',
   'limit-ladder': '连板梯队',
-}
-
-const EMPTY_EMAIL_SMTP: EmailSmtpConfig = {
-  host: '',
-  port: 465,
-  security: 'ssl',
-  username: '',
-  from_address: '',
-  to_addresses: [],
 }
 
 // ===== 导出为 Panel 组件 (由 Settings.tsx 嵌入) =====
@@ -74,7 +82,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const hasFullMinuteCap = !!caps?.capabilities?.['intraday.universe']
   const rs = refreshStatus.data
   // 新建监控规则时默认勾选的推送渠道 (全局默认值数组, 单条规则可独立修改)
-  const webhookDefaultChannels = prefs?.webhook_default_channels ?? []
+  const webhookDefaultChannels = prefs?.webhook_default_channels ?? prefs?.alert_default_channels ?? []
   const isRunning = quoteStatus?.running ?? false
   const isTrading = quoteStatus?.is_trading_hours ?? false
   // 管道/数据修正运行期间实时行情被临时暂停 — 此时禁止开启
@@ -83,15 +91,22 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const minInterval = intervalData?.min_interval ?? 6
   const maxInterval = intervalData?.max_interval ?? 60
   const [intervalDraft, setIntervalDraft] = useState(interval)
-  const feishuWebhookUrl = prefs?.feishu_webhook_url ?? ''
-  const feishuWebhookSecret = prefs?.feishu_webhook_secret ?? ''
+  const feishuWebhookUrl = prefs?.push_notification?.feishu?.feishu_webhook_url ?? prefs?.feishu_webhook_url ?? ''
+  const feishuWebhookSecret = prefs?.push_notification?.feishu?.feishu_webhook_secret ?? prefs?.feishu_webhook_secret ?? ''
   const [feishuDraft, setFeishuDraft] = useState(feishuWebhookUrl)
   const [feishuSecretDraft, setFeishuSecretDraft] = useState(feishuWebhookSecret)
   const [feishuError, setFeishuError] = useState('')
   // 企业微信 webhook
-  const wecomWebhookUrl = prefs?.wecom_webhook_url ?? ''
+  const wecomWebhookUrl = prefs?.push_notification?.wecom?.wecom_webhook_url ?? prefs?.wecom_webhook_url ?? ''
   const [wecomDraft, setWecomDraft] = useState(wecomWebhookUrl)
   const [wecomError, setWecomError] = useState('')
+  const dingtalkWebhookUrl = prefs?.push_notification?.dingtalk?.dingtalk_webhook_url ?? prefs?.dingtalk_webhook_url ?? ''
+  const dingtalkWebhookSecret = prefs?.push_notification?.dingtalk?.dingtalk_webhook_secret ?? prefs?.dingtalk_webhook_secret ?? ''
+  const [dingtalkDraft, setDingtalkDraft] = useState({
+    url: dingtalkWebhookUrl,
+    secret: dingtalkWebhookSecret,
+  })
+  const [dingtalkError, setDingtalkError] = useState('')
   // 通用第三方 JSON webhook
   const customWebhookUrl = prefs?.custom_webhook_url ?? ''
   const customWebhookSecretSet = prefs?.custom_webhook_secret_set ?? false
@@ -99,8 +114,18 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const [customSecretDraft, setCustomSecretDraft] = useState('')
   const [customError, setCustomError] = useState('')
   // SMTP 邮件通道
-  const emailSmtpConfig = prefs?.email_smtp_config ?? EMPTY_EMAIL_SMTP
-  const emailSmtpPasswordSet = prefs?.email_smtp_password_set ?? false
+  const nestedEmail = prefs?.push_notification?.email
+  const emailSmtpConfig = prefs?.email_smtp_config ?? {
+    host: nestedEmail?.email_smtp_host ?? nestedEmail?.host ?? '',
+    port: nestedEmail?.email_smtp_port ?? nestedEmail?.port ?? 465,
+    security: nestedEmail?.security ?? ((nestedEmail?.email_use_ssl ?? true) ? 'ssl' : 'none'),
+    username: nestedEmail?.username ?? (nestedEmail?.email_auth_code ? (nestedEmail?.email_sender ?? '') : ''),
+    from_address: nestedEmail?.from_address ?? nestedEmail?.email_sender ?? '',
+    to_addresses: nestedEmail?.to_addresses ?? nestedEmail?.email_recipients ?? [],
+  }
+  const emailSmtpPasswordSet = prefs?.email_smtp_password_set
+    ?? nestedEmail?.email_smtp_password_set
+    ?? !!nestedEmail?.email_auth_code
   const emailConfigured = !!(
     emailSmtpConfig.host
     && emailSmtpConfig.from_address
@@ -111,21 +136,30 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   const [emailPasswordDraft, setEmailPasswordDraft] = useState('')
   const [emailError, setEmailError] = useState('')
   // 企业微信智能机器人 (BotID + Secret, 长连接通道)
-  const wecomBotId = prefs?.wecom_bot_id ?? ''
-  const wecomBotSecret = prefs?.wecom_bot_secret ?? ''
-  const wecomBotEnabled = prefs?.wecom_bot_enabled ?? false
+  const wecomBotId = prefs?.smart_bots?.wecom?.wecom_bot_id ?? prefs?.wecom_bot_id ?? ''
+  const wecomBotSecret = prefs?.smart_bots?.wecom?.wecom_bot_secret ?? prefs?.wecom_bot_secret ?? ''
+  const wecomBotEnabled = prefs?.smart_bots?.wecom?.wecom_bot_enabled ?? prefs?.wecom_bot_enabled ?? false
   const [botIdDraft, setBotIdDraft] = useState(wecomBotId)
   const [botSecretDraft, setBotSecretDraft] = useState(wecomBotSecret)
   const [botError, setBotError] = useState('')
   const [botStatus, setBotStatus] = useState<{connected: boolean; last_error: string} | null>(null)
+  const dingtalkBotId = prefs?.smart_bots?.dingtalk?.dingtalk_bot_id ?? prefs?.dingtalk_bot_id ?? ''
+  const dingtalkBotSecret = prefs?.smart_bots?.dingtalk?.dingtalk_bot_secret ?? prefs?.dingtalk_bot_secret ?? ''
+  const dingtalkBotEnabled = prefs?.smart_bots?.dingtalk?.dingtalk_bot_enabled ?? prefs?.dingtalk_bot_enabled ?? false
+  const [dingtalkBotIdDraft, setDingtalkBotIdDraft] = useState(dingtalkBotId)
+  const [dingtalkBotSecretDraft, setDingtalkBotSecretDraft] = useState(dingtalkBotSecret)
+  const [dingtalkBotError, setDingtalkBotError] = useState('')
+  const [dingtalkBotStatus, setDingtalkBotStatus] = useState<{connected: boolean; last_error: string} | null>(null)
   // 飞书渠道配置区展开态 (推送通知卡片内)
   const [channelOpen, setChannelOpen] = useState(false)
   // 企业微信渠道配置区展开态
   const [wecomOpen, setWecomOpen] = useState(false)
+  const [dingtalkOpen, setDingtalkOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
   // 智能机器人配置区展开态
-  const [botOpen, setBotOpen] = useState(false)
+  const [wecomBotOpen, setWecomBotOpen] = useState(false)
+  const [dingtalkBotOpen, setDingtalkBotOpen] = useState(false)
   useEffect(() => {
     setFeishuDraft(feishuWebhookUrl)
     setFeishuSecretDraft(feishuWebhookSecret)
@@ -133,6 +167,12 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   useEffect(() => {
     setWecomDraft(wecomWebhookUrl)
   }, [wecomWebhookUrl])
+  useEffect(() => {
+    setDingtalkDraft({
+      url: dingtalkWebhookUrl,
+      secret: dingtalkWebhookSecret,
+    })
+  }, [dingtalkWebhookUrl, dingtalkWebhookSecret])
   useEffect(() => {
     setCustomDraft(customWebhookUrl)
     setCustomSecretDraft('')
@@ -145,6 +185,10 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
     setBotIdDraft(wecomBotId)
     setBotSecretDraft(wecomBotSecret)
   }, [wecomBotId, wecomBotSecret])
+  useEffect(() => {
+    setDingtalkBotIdDraft(dingtalkBotId)
+    setDingtalkBotSecretDraft(dingtalkBotSecret)
+  }, [dingtalkBotId, dingtalkBotSecret])
 
   const save = useCallback(async (cfg: Record<string, unknown>) => {
     try {
@@ -168,7 +212,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
 
   // 勾选/取消勾选某个默认推送渠道。
   const toggleDefaultChannel = useCallback(async (ch: string, enabled: boolean) => {
-    const cur = prefs?.webhook_default_channels ?? []
+    const cur = prefs?.webhook_default_channels ?? prefs?.alert_default_channels ?? []
     const next = enabled ? [...cur, ch] : cur.filter(c => c !== ch)
     await api.updateWebhookDefaultChannels(next)
     qc.invalidateQueries({ queryKey: QK.preferences })
@@ -219,6 +263,28 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
   })
   const testWecom = useMutation({
     mutationFn: () => api.sendTestWebhook('wecom'),
+  })
+  const saveDingtalkWebhook = useMutation({
+    mutationFn: ({ url, secret }: { url: string; secret: string }) => api.updateDingtalkWebhook(url, secret),
+    onSuccess: () => {
+      setDingtalkError('')
+      toast('钉钉 Webhook 已保存', 'success')
+      qc.invalidateQueries({ queryKey: QK.preferences })
+    },
+    onError: (err: any) => setDingtalkError(String(err?.message ?? '保存失败')),
+  })
+  const DINGTALK_PREFIX = 'https://oapi.dingtalk.com/robot/send'
+  const submitDingtalk = useCallback(() => {
+    const url = dingtalkDraft.url.trim()
+    const secret = dingtalkDraft.secret.trim()
+    if (url && !url.startsWith(DINGTALK_PREFIX) && url.length < 20) {
+      setDingtalkError('请输入完整 Webhook 地址或纯 access_token (至少 20 位)')
+      return
+    }
+    saveDingtalkWebhook.mutate({ url, secret })
+  }, [dingtalkDraft, saveDingtalkWebhook])
+  const testDingtalk = useMutation({
+    mutationFn: () => api.sendTestWebhook('dingtalk'),
   })
 
   const saveCustomWebhook = useMutation({
@@ -303,7 +369,38 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
       qc.invalidateQueries({ queryKey: QK.preferences })
     },
   })
-
+  const saveDingtalkBot = useMutation({
+    mutationFn: ({ botId, secret }: { botId: string; secret: string }) =>
+      api.updateDingtalkBot(botId, secret, true),
+    onSuccess: (data) => {
+      setDingtalkBotError('')
+      toast('钉钉智能机器人凭证已保存, 正在连接…', 'success')
+      setDingtalkBotStatus({
+        connected: data.dingtalk_bot_status?.connected ?? false,
+        last_error: data.dingtalk_bot_status?.last_error ?? '',
+      })
+      qc.invalidateQueries({ queryKey: QK.preferences })
+    },
+    onError: (err: any) => setDingtalkBotError(String(err?.message ?? '保存失败')),
+  })
+  const submitDingtalkBot = useCallback(() => {
+    saveDingtalkBot.mutate({
+      botId: dingtalkBotIdDraft.trim(),
+      secret: dingtalkBotSecretDraft.trim(),
+    })
+  }, [dingtalkBotIdDraft, dingtalkBotSecretDraft, saveDingtalkBot])
+  const toggleDingtalkBotConnection = useMutation({
+    mutationFn: (enabled: boolean) => api.toggleDingtalkBot(enabled),
+    onSuccess: (data) => {
+      setDingtalkBotStatus({
+        connected: data.dingtalk_bot_status?.connected ?? false,
+        last_error: data.dingtalk_bot_status?.last_error ?? '',
+      })
+      qc.invalidateQueries({ queryKey: QK.preferences })
+    },
+    onError: (err: any) => setDingtalkBotError(String(err?.message ?? '切换失败')),
+  })
+ 
   const runFix = useMutation({
     mutationFn: () => api.runLimitLadderFix(),
     onSuccess: (data) => {
@@ -557,7 +654,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
         </Card>
 
         {/* 推送通知 — 监控告警的外部推送渠道 (全局配置)。
-            飞书 / 企业微信 / 第三方 Webhook / 邮件。
+            飞书 / 企业微信 / 钉钉 / 第三方 Webhook / 邮件。
             每个渠道合并成一行: 勾选=新建规则默认推送, 点行展开地址配置。 */}
         <Card icon={Webhook} title="推送通知" anchor="webhooks">
           <p className="text-xs text-secondary mb-3">
@@ -581,6 +678,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                   title="作为新建规则的默认推送渠道"
                   className="h-3 w-3 accent-accent cursor-pointer"
                 />
+                <FeishuIcon className="h-3.5 w-3.5 text-foreground" />
                 <span className="text-[11px] font-medium text-foreground">飞书</span>
                 <span className="text-[9px] text-muted">群推送 Webhook</span>
                 {webhookDefaultChannels.includes('feishu') && (
@@ -669,6 +767,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                   title="作为新建规则的默认推送渠道"
                   className="h-3 w-3 accent-accent cursor-pointer"
                 />
+                <WecomIcon className="h-3.5 w-3.5 text-foreground" />
                 <span className="text-[11px] font-medium text-foreground">企业微信</span>
                 <span className="text-[9px] text-muted">群推送 Webhook</span>
                 {webhookDefaultChannels.includes('wecom') && (
@@ -731,6 +830,69 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
               )}
             </div>
 
+            {/* 钉钉群推送 Webhook */}
+            <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
+              <div
+                onClick={() => setDingtalkOpen(o => !o)}
+                className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
+              >
+                <input
+                  type="checkbox"
+                  checked={webhookDefaultChannels.includes('dingtalk')}
+                  onChange={e => { e.stopPropagation(); toggleDefaultChannel('dingtalk', e.target.checked) }}
+                  onClick={e => e.stopPropagation()}
+                  title="作为新建规则的默认推送渠道"
+                  className="h-3 w-3 accent-accent cursor-pointer"
+                />
+                <DingtalkIcon className="h-3.5 w-3.5 text-foreground" />
+                <span className="text-[11px] font-medium text-foreground">钉钉</span>
+                <span className="text-[9px] text-muted">群推送 Webhook</span>
+                {webhookDefaultChannels.includes('dingtalk') && (
+                  <span className="rounded bg-accent/15 px-1 py-px text-[9px] text-accent">默认</span>
+                )}
+                <span className={`ml-auto text-[9px] ${dingtalkWebhookUrl ? 'text-emerald-500' : 'text-warning'}`}>
+                  {dingtalkWebhookUrl ? '已配置' : '未配置'}
+                </span>
+                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${dingtalkOpen ? 'rotate-180' : ''}`} />
+              </div>
+
+              {dingtalkOpen && (
+                <div className="border-t border-border/60 bg-base/30 p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-[11px] text-muted">Webhook 地址 或 access_token</span>
+                    <input
+                      value={dingtalkDraft.url}
+                      onChange={e => { setDingtalkDraft(d => ({ ...d, url: e.target.value })); if (!testDingtalk.isPending) testDingtalk.reset() }}
+                      placeholder={DINGTALK_PREFIX + '?access_token=xxxxxxxx' + ' 或直接填 access_token'}
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="block mt-2 space-y-1.5">
+                    <span className="text-[11px] text-muted">加签密钥 (可选)</span>
+                    <input
+                      type="password"
+                      value={dingtalkDraft.secret}
+                      onChange={e => { setDingtalkDraft(d => ({ ...d, secret: e.target.value })); if (!testDingtalk.isPending) testDingtalk.reset() }}
+                      placeholder="机器人启用加签时填写"
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  {dingtalkError && <div className="mt-2 text-[11px] text-danger">{dingtalkError}</div>}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={submitDingtalk}
+                      disabled={saveDingtalkWebhook.isPending || (dingtalkDraft.url.trim() === dingtalkWebhookUrl && dingtalkDraft.secret.trim() === dingtalkWebhookSecret)}
+                      className="px-3 py-1.5 rounded-btn bg-accent text-base text-xs font-medium disabled:opacity-50 cursor-pointer hover:bg-accent/90 transition-colors"
+                    >
+                      {saveDingtalkWebhook.isPending ? '保存中…' : '保存'}
+                    </button>
+                    <TestSendButton test={testDingtalk} configured={!!dingtalkWebhookUrl} />
+                    <TestResult test={testDingtalk} />
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* 通用第三方 JSON Webhook */}
             <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
               <div
@@ -745,6 +907,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                   title="作为新建规则的默认推送渠道"
                   className="h-3 w-3 accent-accent cursor-pointer"
                 />
+                <Webhook className="h-3.5 w-3.5 text-foreground" />
                 <span className="text-[11px] font-medium text-foreground">第三方系统</span>
                 <span className="text-[9px] text-muted">JSON Webhook</span>
                 {webhookDefaultChannels.includes('custom') && (
@@ -814,6 +977,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                   title="作为新建规则的默认推送渠道"
                   className="h-3 w-3 accent-accent cursor-pointer"
                 />
+                <EmailIcon className="h-3.5 w-3.5 text-foreground" />
                 <span className="text-[11px] font-medium text-foreground">邮件</span>
                 <span className="text-[9px] text-muted">SMTP</span>
                 {webhookDefaultChannels.includes('email') && (
@@ -875,10 +1039,17 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
               )}
             </div>
 
-            {/* 企业微信智能机器人 (BotID + Secret): 长连接通道, 与群推送 Webhook 并列 */}
+          </div>
+        </Card>
+        <Card icon={Bot} title="智能机器人">
+          <p className="text-xs text-secondary mb-3">
+            智能机器人通过长连接保活，实现群内 @机器人 的双向交互。保存凭证后可单独启用/禁用连接。
+          </p>
+
+          <div className="space-y-2">
             <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
               <div
-                onClick={() => setBotOpen(o => !o)}
+                onClick={() => setWecomBotOpen(o => !o)}
                 className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
               >
                 <input
@@ -890,20 +1061,17 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                   title="开启后建立长连接保活, 关闭则断开"
                   className="h-3 w-3 accent-accent cursor-pointer disabled:opacity-40"
                 />
-                <span className="text-[11px] font-medium text-foreground">企业微信</span>
+                <WecomIcon className="h-3.5 w-3.5 text-foreground" />
+                <span className="text-[11px] font-medium text-foreground">企业微信机器人</span>
                 <span className="text-[9px] text-muted">智能机器人</span>
                 <span className={`ml-auto text-[9px] ${wecomBotId ? (botStatus?.connected ? 'text-emerald-500' : 'text-warning') : 'text-muted'}`}>
                   {wecomBotId ? (botStatus?.connected ? '已连接' : (wecomBotEnabled ? '连接中' : '已配置')) : '未配置'}
                 </span>
-                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${botOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${wecomBotOpen ? 'rotate-180' : ''}`} />
               </div>
 
-              {botOpen && (
+              {wecomBotOpen && (
                 <div className="border-t border-border/60 bg-base/30 p-3">
-                  <p className="mb-2.5 text-[10px] text-muted leading-relaxed">
-                    勾选卡片左侧开关可启用长连接保活(开启后后端持续保持与企业微信的
-                    WebSocket 连接)。保存凭证后需勾选才会连接, 取消勾选则立即断开。
-                  </p>
                   <label className="block space-y-1.5">
                     <span className="text-[11px] text-muted">BotID</span>
                     <input
@@ -925,10 +1093,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                     />
                   </label>
 
-                  {botError && (
-                    <div className="mt-2 text-[11px] text-danger">{botError}</div>
-                  )}
-
+                  {botError && <div className="mt-2 text-[11px] text-danger">{botError}</div>}
                   {botStatus?.last_error && !botError && (
                     <div className="mt-2 text-[11px] text-warning">连接异常: {botStatus.last_error}</div>
                   )}
@@ -941,34 +1106,73 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                     >
                       {saveWecomBot.isPending ? '保存中…' : '保存并连接'}
                     </button>
-                    {wecomBotId && (
-                      <span className="text-[10px] text-emerald-500">● 已配置</span>
-                    )}
                   </div>
-
-                  <details className="mt-3 text-[10px] text-muted">
-                    <summary className="cursor-pointer hover:text-secondary">如何获取 BotID 和 Secret?</summary>
-                    <ol className="mt-1.5 space-y-1 pl-4 list-decimal leading-relaxed">
-                      <li>登录<b>企业微信管理后台</b> → 应用管理 → <b>智能机器人</b> → 创建机器人</li>
-                      <li>填写名称、头像后进入机器人配置页</li>
-                      <li>开启「<b>API 模式</b>」→ 选择「<b>长连接</b>」方式(另一项"回调URL"需公网IP)</li>
-                      <li>页面显示 <b>BotID</b> 和 <b>Secret</b>, 复制填到上方输入框</li>
-                    </ol>
-                    <p className="mt-1.5 pl-4 text-muted/70">
-                      💡 智能机器人支持 @交互和流式回复, 与群推送 Webhook(单向推送)互补。
-                      保存后后端会自动建立 WebSocket 长连接保活。
-                    </p>
-                    <p className="mt-1.5 pl-4 text-muted/70">
-                      📖 官方文档:
-                      <a href="https://developer.work.weixin.qq.com/document/path/101463" target="_blank" rel="noreferrer" className="text-accent hover:text-accent/80">
-                        智能机器人长连接 ↗
-                      </a>
-                    </p>
-                  </details>
                 </div>
               )}
             </div>
 
+            <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
+              <div
+                onClick={() => setDingtalkBotOpen(o => !o)}
+                className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
+              >
+                <input
+                  type="checkbox"
+                  checked={dingtalkBotEnabled}
+                  onChange={e => { e.stopPropagation(); toggleDingtalkBotConnection.mutate(e.target.checked) }}
+                  onClick={e => e.stopPropagation()}
+                  disabled={!dingtalkBotId || toggleDingtalkBotConnection.isPending}
+                  title="开启后建立长连接保活, 关闭则断开"
+                  className="h-3 w-3 accent-accent cursor-pointer disabled:opacity-40"
+                />
+                <DingtalkIcon className="h-3.5 w-3.5 text-foreground" />
+                <span className="text-[11px] font-medium text-foreground">钉钉机器人</span>
+                <span className="text-[9px] text-muted">智能机器人</span>
+                <span className={`ml-auto text-[9px] ${dingtalkBotId ? (dingtalkBotStatus?.connected ? 'text-emerald-500' : 'text-warning') : 'text-muted'}`}>
+                  {dingtalkBotId ? (dingtalkBotStatus?.connected ? '已连接' : (dingtalkBotEnabled ? '连接中' : '已配置')) : '未配置'}
+                </span>
+                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${dingtalkBotOpen ? 'rotate-180' : ''}`} />
+              </div>
+
+              {dingtalkBotOpen && (
+                <div className="border-t border-border/60 bg-base/30 p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-[11px] text-muted">Client ID (AppKey)</span>
+                    <input
+                      value={dingtalkBotIdDraft}
+                      onChange={e => setDingtalkBotIdDraft(e.target.value)}
+                      placeholder="钉钉应用 Client ID"
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="block mt-2 space-y-1.5">
+                    <span className="text-[11px] text-muted">Client Secret (AppSecret)</span>
+                    <input
+                      type="password"
+                      value={dingtalkBotSecretDraft}
+                      onChange={e => setDingtalkBotSecretDraft(e.target.value)}
+                      placeholder="钉钉应用 Client Secret"
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  {dingtalkBotError && (
+                    <div className="mt-2 text-[11px] text-danger">{dingtalkBotError}</div>
+                  )}
+                  {dingtalkBotStatus?.last_error && !dingtalkBotError && (
+                    <div className="mt-2 text-[11px] text-warning">连接异常: {dingtalkBotStatus.last_error}</div>
+                  )}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={submitDingtalkBot}
+                      disabled={saveDingtalkBot.isPending || (dingtalkBotIdDraft.trim() === dingtalkBotId && dingtalkBotSecretDraft.trim() === dingtalkBotSecret)}
+                      className="px-3 py-1.5 rounded-btn bg-accent text-base text-xs font-medium disabled:opacity-50 cursor-pointer hover:bg-accent/90 transition-colors"
+                    >
+                      {saveDingtalkBot.isPending ? '保存中…' : '保存并连接'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </Card>
       </div>

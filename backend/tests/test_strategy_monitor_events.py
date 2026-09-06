@@ -111,9 +111,9 @@ def test_strategy_rule_compatibility_and_validation(tmp_path):
 
     normalized = monitor_rules.normalize(_rule(
         "pool_entry",
-        webhook_channels=["feishu", "custom", "email", "unsupported"],
+        webhook_channels=["feishu", "dingtalk", "custom", "email", "unsupported"],
     ))
-    assert normalized["webhook_channels"] == ["feishu", "custom", "email"]
+    assert normalized["webhook_channels"] == ["feishu", "dingtalk", "custom", "email"]
 
 
 def test_strategy_score_range_filters_pool_and_buy_signals_but_not_sell_signals():

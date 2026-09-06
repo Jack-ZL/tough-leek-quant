@@ -1066,6 +1066,17 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     url, "每日复盘", full_body
                 )
                 logger.info("review push(wecom) %s", "sent" if ok else "failed")
+            elif ch == "dingtalk":
+                url = preferences.get_dingtalk_webhook_url()
+                if not url:
+                    logger.info("review push(dingtalk) skipped: webhook not configured")
+                    continue
+                secret = preferences.get_dingtalk_webhook_secret()
+                full_body = (f"**{subtitle}**\n\n{content}" if subtitle else content)
+                ok = webhook_adapter.send_dingtalk_markdown(
+                    url, "每日复盘", full_body, secret
+                )
+                logger.info("review push(dingtalk) %s", "sent" if ok else "failed")
             elif ch == "custom":
                 url = preferences.get_custom_webhook_url()
                 if not url:
@@ -1088,7 +1099,7 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                 email_body = (f"{subtitle}\n\n{content}" if subtitle else content)
                 ok = email_adapter.send_email(
                     config,
-                    secrets_store.get_email_smtp_password(),
+                    preferences.get_email_smtp_password(),
                     "每日复盘",
                     email_body,
                 )

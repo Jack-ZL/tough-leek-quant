@@ -115,10 +115,12 @@ def test_ladder_webhook_uses_chinese_title_without_brand(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "https://open.feishu.cn/open-apis/bot/v2/hook/test")
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "secret")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "wecom-key")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_secret", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_custom_webhook_url", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_email_smtp_config", lambda: {})
     monkeypatch.setattr("app.secrets_store.get_custom_webhook_secret", lambda: "")
-    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_password", lambda: "")
 
     engine = type("Engine", (), {
         "rules": {"r_ladder": {"webhook_channels": ["feishu", "wecom"]}},
@@ -156,10 +158,12 @@ def test_ladder_dispatches_custom_webhook_and_email(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_secret", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_custom_webhook_url", lambda: "https://example.com/hook")
     monkeypatch.setattr("app.services.preferences.get_email_smtp_config", lambda: email_config)
     monkeypatch.setattr("app.secrets_store.get_custom_webhook_secret", lambda: "hook-secret")
-    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "smtp-password")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_password", lambda: "smtp-password")
 
     engine = type("Engine", (), {
         "rules": {"r_ladder": {"webhook_channels": ["custom", "email"]}},
@@ -176,6 +180,44 @@ def test_ladder_dispatches_custom_webhook_and_email(monkeypatch):
     assert [name for name, _ in calls] == ["send_custom", "send_email"]
     assert calls[0][1][3:] == ("monitor_alert", event, "hook-secret")
     assert calls[1][1][:2] == (email_config, "smtp-password")
+
+
+def test_ladder_dispatches_dingtalk_when_channel_selected(monkeypatch):
+    calls = []
+
+    class CaptureExecutor:
+        def submit(self, fn, *args):
+            calls.append((fn.__name__, args))
+
+    monkeypatch.setattr(quote_service, "_WEBHOOK_EXECUTOR", CaptureExecutor())
+    monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_url", lambda: "ding-url")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_secret", lambda: "ding-secret")
+    monkeypatch.setattr("app.services.preferences.get_custom_webhook_url", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_config", lambda: {})
+    monkeypatch.setattr("app.secrets_store.get_custom_webhook_secret", lambda: "")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_password", lambda: "")
+
+    engine = type("Engine", (), {
+        "rules": {"r_ladder": {"webhook_channels": ["dingtalk"]}},
+    })()
+    QuoteService._maybe_send_webhook(
+        object.__new__(QuoteService),
+        [{
+            "rule_id": "r_ladder",
+            "source": "ladder",
+            "symbol": "600000.SH",
+            "name": "浦发银行",
+            "message": "炸板预警",
+        }],
+        engine,
+    )
+
+    assert [name for name, _ in calls] == ["send_dingtalk"]
+    assert calls[0][1][0] == "ding-url"
+    assert calls[0][1][3] == "ding-secret"
 
 
 def test_review_webhooks_use_title_without_brand(monkeypatch):
@@ -211,7 +253,7 @@ def test_review_pushes_custom_webhook_and_email(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_custom_webhook_url", lambda: "https://example.com/hook")
     monkeypatch.setattr("app.services.preferences.get_email_smtp_config", lambda: email_config)
     monkeypatch.setattr("app.secrets_store.get_custom_webhook_secret", lambda: "hook-secret")
-    monkeypatch.setattr("app.secrets_store.get_email_smtp_password", lambda: "smtp-password")
+    monkeypatch.setattr("app.services.preferences.get_email_smtp_password", lambda: "smtp-password")
     monkeypatch.setattr(
         "app.services.webhook_adapter.send_custom",
         lambda *args: calls.append(("custom", args)) or True,
@@ -226,3 +268,21 @@ def test_review_pushes_custom_webhook_and_email(monkeypatch):
     assert [channel for channel, _ in calls] == ["custom", "email"]
     assert calls[0][1][3] == "market_review"
     assert calls[1][1][2] == "每日复盘"
+
+
+def test_review_pushes_dingtalk(monkeypatch):
+    calls = []
+    monkeypatch.setattr("app.services.preferences.get_review_push_channels", lambda: ["dingtalk"])
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_url", lambda: "ding-url")
+    monkeypatch.setattr("app.services.preferences.get_dingtalk_webhook_secret", lambda: "ding-secret")
+    monkeypatch.setattr(
+        "app.services.webhook_adapter.send_dingtalk_markdown",
+        lambda *args: calls.append(args) or True,
+    )
+
+    daily_pipeline._maybe_push_review("复盘正文", {"as_of": "2026-07-18"})
+
+    assert len(calls) == 1
+    assert calls[0][0] == "ding-url"
+    assert calls[0][1] == "每日复盘"
+    assert calls[0][3] == "ding-secret"
