@@ -11,8 +11,8 @@
 GitHub Actions 每次推送都会自动构建多架构镜像(linux/amd64 · arm64)并发布到 GHCR,直接拉取运行,本地无需 Python / Node,也不用现场 build:
 
 ```bash
-docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/tick-stock-panel:latest
-# 打开 http://localhost:3018
+docker run -d --name tsp -p 8000:8000 -v ${PWD}/data:/app/data ghcr.io/shy3130/tick-stock-panel:latest
+# 打开 http://localhost:8000
 ```
 
 - 需要配置时:从 `.env.example` 复制出 `.env`,命令里加 `--env-file .env`。
@@ -36,7 +36,7 @@ docker rm -f tsp
 ```bash
 cp .env.example .env
 docker compose up --build
-# 打开 http://localhost:3018
+# 打开 http://localhost:8000
 ```
 
 Docker 采用两阶段构建,前端 dist 拷进后端镜像,**单容器**运行,数据完全在自己手里。
@@ -83,7 +83,7 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 
 `dev.sh` 自动检查 / 下载依赖、释放端口、同时起前后端,Ctrl-C 一并关闭。默认:
 
-- 后端 → <http://localhost:3018> · 前端 → <http://localhost:3011>
+- 后端 → <http://localhost:8000> · 前端 → <http://localhost:3000>
 - 自定义端口:`BACKEND_PORT=8000 FRONTEND_PORT=5173 ./dev.sh`
 
 ### 手动分别启动(不想用 dev.sh)
@@ -93,10 +93,10 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 cd backend && uv sync --extra backtest   # 含回测依赖
 # 老 CPU: uv sync --extra legacy-cpu
 # 老 CPU + 回测: uv sync --extra legacy-cpu --extra backtest
-uv run uvicorn app.main:app --reload --port 3018
+uv run uvicorn app.main:app --reload --port 8000
 
 # 前端
-cd frontend && pnpm install && pnpm dev   # http://localhost:3011
+cd frontend && pnpm install && pnpm dev   # http://localhost:3000
 ```
 
 ---
@@ -187,16 +187,16 @@ rm data/user_data/auth.json   # 停服后执行,清空后重启
 不用改配置,在你**自己电脑**的终端执行(不是服务器上):
 
 ```bash
-ssh -L 3018:127.0.0.1:3018 用户名@服务器IP
+ssh -L 8000:127.0.0.1:8000 用户名@服务器IP
 ```
 
-例如服务器是 `123.45.67.89`、用户名 `root`、面板端口 `3018`:
+例如服务器是 `123.45.67.89`、用户名 `root`、面板端口 `8000`:
 
 ```bash
-ssh -L 3018:127.0.0.1:3018 root@123.45.67.89
+ssh -L 8000:127.0.0.1:8000 root@123.45.67.89
 ```
 
-保持这个 SSH 连接**不要关**,然后在**自己电脑的浏览器**打开 `http://127.0.0.1:3018`。此时后端看到的客户端 IP 是 `127.0.0.1`(本机),能通过校验,正常显示设置密码界面。
+保持这个 SSH 连接**不要关**,然后在**自己电脑的浏览器**打开 `http://127.0.0.1:8000`。此时后端看到的客户端 IP 是 `127.0.0.1`(本机),能通过校验,正常显示设置密码界面。
 
 **设完密码后**,SSH 连接可以断开 —— 密码已存进服务器,之后直接用公网地址 + 刚设的密码访问即可。
 

@@ -26,8 +26,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _APP_NAME = "TickFlow 股票面板"
-_BASE_PORT = 3018
-_PORT_PROBE_RANGE = 50  # 从 3018 起最多试 50 个端口
+_BASE_PORT = 8000
+_PORT_PROBE_RANGE = 50  # 从 8000 起最多试 50 个端口
 
 
 def _ensure_data_dir_writable() -> None:

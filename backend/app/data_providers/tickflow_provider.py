@@ -13,7 +13,7 @@ from app.tickflow.client import get_client
 
 logger = logging.getLogger(__name__)
 
-_EXCHANGES = ["SH", "SZ", "BJ"]
+_EXCHANGES = ["SH", "SZ", "BJ", "HK"]
 
 
 class TickFlowProvider:

@@ -5,8 +5,8 @@ ROOT  := $(shell cd "$$(dirname "$$(realpath "$(lastword $(MAKEFILE_LIST))")")" 
 BACKEND_DIR  := $(ROOT)/backend
 FRONTEND_DIR := $(ROOT)/frontend
 
-BACKEND_PORT  ?= 3018
-FRONTEND_PORT ?= 3011
+BACKEND_PORT  ?= 8000
+FRONTEND_PORT ?= 3000
 BACKEND_HOST  ?= 0.0.0.0
 
 define read_env
@@ -46,6 +46,12 @@ C_GRAY   := \033[0;90m
 C_NC     := \033[0m
 
 dev: install
+	@# 清理占用后端端口的旧进程
+	@if lsof -ti :$(BACKEND_PORT) >/dev/null 2>&1; then \
+		echo -e "$(C_YELLOW)[make]$(C_NC) killing existing process on port $(BACKEND_PORT)..."; \
+		lsof -ti :$(BACKEND_PORT) | xargs kill -9 2>/dev/null || true; \
+		sleep 1; \
+	fi
 	@echo -e "$(C_BLUE)================================================$(C_NC)"
 	@echo -e "$(C_BLUE)  $(C_GREEN)tick-stock-panel$(C_NC)"
 	@echo -e "$(C_BLUE)  backend   $(C_YELLOW)http://$(DISPLAY_HOST):$(BACKEND_PORT)$(C_NC)"

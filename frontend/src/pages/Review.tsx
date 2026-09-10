@@ -524,26 +524,7 @@ export function Review() {
                       {dingtalkConfigured ? '已配置' : '未配置'}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    disabled={pushMut.isPending}
-                    onClick={() => togglePushChannel('custom')}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-btn border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50',
-                      reviewPushChannels.includes('custom')
-                        ? 'border-accent/40 bg-accent/10'
-                        : 'border-border/60 bg-base/40 hover:bg-base/60',
-                    )}
-                  >
-                    <span className={cn('flex h-3 w-3 shrink-0 items-center justify-center rounded border', reviewPushChannels.includes('custom') ? 'border-accent bg-accent text-white' : 'border-border')}>
-                      {reviewPushChannels.includes('custom') && <Check className="h-2.5 w-2.5" />}
-                    </span>
-                    <span className="text-[11px] text-foreground">第三方系统</span>
-                    <span className="text-[9px] text-muted">JSON Webhook</span>
-                    <span className={cn('ml-auto text-[9px]', customConfigured ? 'text-emerald-500' : 'text-warning')}>
-                      {customConfigured ? '已配置' : '未配置'}
-                    </span>
-                  </button>
+
                   <button
                     type="button"
                     disabled={pushMut.isPending}
@@ -562,6 +543,26 @@ export function Review() {
                     <span className="text-[9px] text-muted">SMTP</span>
                     <span className={cn('ml-auto text-[9px]', emailConfigured ? 'text-emerald-500' : 'text-warning')}>
                       {emailConfigured ? '已配置' : '未配置'}
+                    </span>
+                  </button>
+	                <button
+                    type="button"
+                    disabled={pushMut.isPending}
+                    onClick={() => togglePushChannel('custom')}
+                    className={cn(
+                      'flex w-full items-center gap-2 rounded-btn border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50',
+                      reviewPushChannels.includes('custom')
+                        ? 'border-accent/40 bg-accent/10'
+                        : 'border-border/60 bg-base/40 hover:bg-base/60',
+                    )}
+                  >
+                    <span className={cn('flex h-3 w-3 shrink-0 items-center justify-center rounded border', reviewPushChannels.includes('custom') ? 'border-accent bg-accent text-white' : 'border-border')}>
+                      {reviewPushChannels.includes('custom') && <Check className="h-2.5 w-2.5" />}
+                    </span>
+                    <span className="text-[11px] text-foreground">第三方系统</span>
+                    <span className="text-[9px] text-muted">JSON Webhook</span>
+                    <span className={cn('ml-auto text-[9px]', customConfigured ? 'text-emerald-500' : 'text-warning')}>
+                      {customConfigured ? '已配置' : '未配置'}
                     </span>
                   </button>
                 </div>

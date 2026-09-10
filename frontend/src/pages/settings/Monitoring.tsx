@@ -893,75 +893,6 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
               )}
             </div>
 
-            {/* 通用第三方 JSON Webhook */}
-            <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
-              <div
-                onClick={() => setCustomOpen(o => !o)}
-                className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
-              >
-                <input
-                  type="checkbox"
-                  checked={webhookDefaultChannels.includes('custom')}
-                  onChange={e => { e.stopPropagation(); toggleDefaultChannel('custom', e.target.checked) }}
-                  onClick={e => e.stopPropagation()}
-                  title="作为新建规则的默认推送渠道"
-                  className="h-3 w-3 accent-accent cursor-pointer"
-                />
-                <Webhook className="h-3.5 w-3.5 text-foreground" />
-                <span className="text-[11px] font-medium text-foreground">第三方系统</span>
-                <span className="text-[9px] text-muted">JSON Webhook</span>
-                {webhookDefaultChannels.includes('custom') && (
-                  <span className="rounded bg-accent/15 px-1 py-px text-[9px] text-accent">默认</span>
-                )}
-                <span className={`ml-auto text-[9px] ${customWebhookUrl ? 'text-emerald-500' : 'text-warning'}`}>
-                  {customWebhookUrl ? '已配置' : '未配置'}
-                </span>
-                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${customOpen ? 'rotate-180' : ''}`} />
-              </div>
-
-              {customOpen && (
-                <div className="border-t border-border/60 bg-base/30 p-3">
-                  <label className="block space-y-1.5">
-                    <span className="text-[11px] text-muted">接收端 URL</span>
-                    <input
-                      value={customDraft}
-                      onChange={e => { setCustomDraft(e.target.value); if (!testCustom.isPending) testCustom.reset() }}
-                      placeholder="https://example.com/webhooks/tickflow"
-                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
-                    />
-                  </label>
-                  <label className="block mt-2 space-y-1.5">
-                    <span className="text-[11px] text-muted">签名密钥 (可选 · HMAC-SHA256)</span>
-                    <input
-                      type="password"
-                      value={customSecretDraft}
-                      onChange={e => setCustomSecretDraft(e.target.value)}
-                      placeholder={customWebhookSecretSet ? '已保存；留空保持不变' : '留空则不签名'}
-                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
-                    />
-                  </label>
-                  {customError && <div className="mt-2 text-[11px] text-danger">{customError}</div>}
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      onClick={submitCustom}
-                      disabled={saveCustomWebhook.isPending || (customDraft.trim() === customWebhookUrl && !customSecretDraft)}
-                      className="px-3 py-1.5 rounded-btn bg-accent text-base text-xs font-medium disabled:opacity-50 cursor-pointer hover:bg-accent/90 transition-colors"
-                    >
-                      {saveCustomWebhook.isPending ? '保存中…' : '保存'}
-                    </button>
-                    <TestSendButton test={testCustom} configured={!!customWebhookUrl} />
-                    <TestResult test={testCustom} />
-                  </div>
-                  <details className="mt-3 text-[10px] text-muted">
-                    <summary className="cursor-pointer hover:text-secondary">请求格式</summary>
-                    <p className="mt-1.5 leading-relaxed">
-                      POST JSON 包含 event、timestamp、title、body、data。配置密钥后会附带
-                      X-TickFlow-Timestamp 和 X-TickFlow-Signature 请求头。
-                    </p>
-                  </details>
-                </div>
-              )}
-            </div>
 
             {/* SMTP 邮件推送 */}
             <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
@@ -1035,6 +966,77 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
                     <TestSendButton test={testEmail} configured={emailConfigured} />
                     <TestResult test={testEmail} />
                   </div>
+                </div>
+              )}
+            </div>
+
+
+            {/* 通用第三方 JSON Webhook */}
+            <div className="rounded-btn border border-border/60 bg-base/40 overflow-hidden">
+              <div
+                onClick={() => setCustomOpen(o => !o)}
+                className="flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors hover:bg-base/60"
+              >
+                <input
+                  type="checkbox"
+                  checked={webhookDefaultChannels.includes('custom')}
+                  onChange={e => { e.stopPropagation(); toggleDefaultChannel('custom', e.target.checked) }}
+                  onClick={e => e.stopPropagation()}
+                  title="作为新建规则的默认推送渠道"
+                  className="h-3 w-3 accent-accent cursor-pointer"
+                />
+                <Webhook className="h-3.5 w-3.5 text-foreground" />
+                <span className="text-[11px] font-medium text-foreground">第三方系统</span>
+                <span className="text-[9px] text-muted">JSON Webhook</span>
+                {webhookDefaultChannels.includes('custom') && (
+                  <span className="rounded bg-accent/15 px-1 py-px text-[9px] text-accent">默认</span>
+                )}
+                <span className={`ml-auto text-[9px] ${customWebhookUrl ? 'text-emerald-500' : 'text-warning'}`}>
+                  {customWebhookUrl ? '已配置' : '未配置'}
+                </span>
+                <ChevronDown className={`h-3 w-3 text-muted transition-transform ${customOpen ? 'rotate-180' : ''}`} />
+              </div>
+
+              {customOpen && (
+                <div className="border-t border-border/60 bg-base/30 p-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-[11px] text-muted">接收端 URL</span>
+                    <input
+                      value={customDraft}
+                      onChange={e => { setCustomDraft(e.target.value); if (!testCustom.isPending) testCustom.reset() }}
+                      placeholder="https://example.com/webhooks/tickflow"
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="block mt-2 space-y-1.5">
+                    <span className="text-[11px] text-muted">签名密钥 (可选 · HMAC-SHA256)</span>
+                    <input
+                      type="password"
+                      value={customSecretDraft}
+                      onChange={e => setCustomSecretDraft(e.target.value)}
+                      placeholder={customWebhookSecretSet ? '已保存；留空保持不变' : '留空则不签名'}
+                      className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs font-mono text-foreground focus:outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  {customError && <div className="mt-2 text-[11px] text-danger">{customError}</div>}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={submitCustom}
+                      disabled={saveCustomWebhook.isPending || (customDraft.trim() === customWebhookUrl && !customSecretDraft)}
+                      className="px-3 py-1.5 rounded-btn bg-accent text-base text-xs font-medium disabled:opacity-50 cursor-pointer hover:bg-accent/90 transition-colors"
+                    >
+                      {saveCustomWebhook.isPending ? '保存中…' : '保存'}
+                    </button>
+                    <TestSendButton test={testCustom} configured={!!customWebhookUrl} />
+                    <TestResult test={testCustom} />
+                  </div>
+                  <details className="mt-3 text-[10px] text-muted">
+                    <summary className="cursor-pointer hover:text-secondary">请求格式</summary>
+                    <p className="mt-1.5 leading-relaxed">
+                      POST JSON 包含 event、timestamp、title、body、data。配置密钥后会附带
+                      X-TickFlow-Timestamp 和 X-TickFlow-Signature 请求头。
+                    </p>
+                  </details>
                 </div>
               )}
             </div>

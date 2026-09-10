@@ -238,6 +238,7 @@ function capSquareCls(c: { id: string; usable: boolean }) {
 }
 
 function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefined }) {
+  const navigate = useNavigate()
   const caps = matrix?.capabilities ?? []
   const loading = caps.length === 0
   const usableCount = caps.filter(c => c.usable).length
@@ -354,7 +355,10 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
             <div className="mt-1.5 text-[10px] leading-relaxed text-muted/70">
               分时信号监控可由分钟 K 数据驱动，不单独设能力格
             </div>
-            <div className="mt-2 flex items-center gap-1 border-t border-border/60 pt-1.5 text-[10px] text-muted">
+            <div
+              onClick={() => { navigate('/settings?tab=data-sources'); setPopPos(null) }}
+              className="mt-2 flex cursor-pointer items-center gap-1 border-t border-border/60 pt-1.5 text-[10px] text-muted hover:text-accent transition-colors"
+            >
               点击前往数据源配置
               <ChevronRight className="h-3 w-3" />
             </div>

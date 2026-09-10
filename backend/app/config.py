@@ -104,7 +104,7 @@ class Settings(BaseSettings):
 
     # Server
     host: str = "0.0.0.0"
-    port: int = 3018
+    port: int = 8000
     log_level: str = "INFO"
     backtest_range_guard: bool = False
     backtest_matrix_disk_cache_enabled: bool = True

@@ -21,7 +21,7 @@ export function ExtDataApiPanel({ config, copied, setCopied }: {
     rows: [exampleRow],
   }
   const exampleJson = JSON.stringify(exampleBody, null, 2)
-  const curlCmd = `curl -X POST http://localhost:${window.location.port || '3018'}/api/ext-data/${config.id}/ingest \\
+  const curlCmd = `curl -X POST http://localhost:${window.location.port || '8000'}/api/ext-data/${config.id}/ingest \\
   -H 'Content-Type: application/json' \\
   -d '${JSON.stringify(exampleBody)}'`
 

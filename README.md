@@ -322,8 +322,8 @@ flowchart TB
 本项目每次推送都由 GitHub Actions 自动构建多架构镜像(linux/amd64 · arm64)并发布到 GHCR,拿来即用,本地无需装 Python / Node,也不用现场 build:
 
 ```bash
-docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/tick-stock-panel:latest
-# 打开 http://localhost:3018
+docker run -d --name tsp -p 8000:8000 -v ${PWD}/data:/app/data ghcr.io/shy3130/tick-stock-panel:latest
+# 打开 http://localhost:8000
 ```
 
 - 需要配置时:从 [.env.example](./.env.example) 复制出 `.env`,命令里加 `--env-file .env`。
@@ -336,7 +336,7 @@ docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/t
 ```bash
 cp .env.example .env
 docker compose up --build
-# 打开 http://localhost:3018
+# 打开 http://localhost:8000
 ```
 
 Docker 镜像内置固定版本的 **Codex CLI**，Compose 会将主机 `${HOME}/.codex` 只读挂载到容器，因此主机需先完成 Codex 登录。若主机 Codex 使用 loopback local-access provider，容器会保留实际端口并自动将主机名映射为 `host.docker.internal`。需要覆盖镜像内版本时可设置构建参数：
@@ -368,7 +368,7 @@ CODEX_CLI_VERSION=0.144.3 docker compose up --build
 最后告诉我浏览器打开哪个地址、需要填哪些 Key。
 ```
 
-AI 会自动完成克隆、装依赖、启动服务,完成后浏览器打开 <http://localhost:3018> 即可;`TICKFLOW_API_KEY` 等配置按 AI 提示填,详见 [配置](#️-配置)。
+AI 会自动完成克隆、装依赖、启动服务,完成后浏览器打开 <http://localhost:8000> 即可;`TICKFLOW_API_KEY` 等配置按 AI 提示填,详见 [配置](#️-配置)。
 
 ### 方式 D:Dev 模式(二次开发推荐)
 
@@ -377,7 +377,7 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 ./dev.sh                   # Windows: .\dev.ps1
 ```
 
-自动检查 / 下载依赖、释放端口、同时起前后端。后端 → <http://localhost:3018> · 前端 → <http://localhost:3011>。
+自动检查 / 下载依赖、释放端口、同时起前后端。后端 → <http://localhost:8000> · 前端 → <http://localhost:3000>。
 
 ### 跑起来后的第一次使用
 
@@ -396,7 +396,7 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 ```ini
 TICKFLOW_API_KEY=              # 留空 = None 模式(历史日K免费);填 Key 解锁更多
 AI_API_KEY=                    # 留空 = 关闭 AI;填 Key 启用策略生成
-PORT=3018                      # 服务端口
+PORT=8000                      # 服务端口
 ```
 
 > 📖 完整配置项(数据源档位、AI、服务、密码、老 CPU 兼容)见 [docs/configuration.md](./docs/configuration.md)。

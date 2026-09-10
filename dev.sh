@@ -2,7 +2,7 @@
 # tickflow-stock-panel — 一键启动前后端
 #
 # 用法:
-#   ./dev.sh                          # 默认 backend:3018  frontend:3011
+#   ./dev.sh                          # 默认 backend:8000  frontend:3000
 #   BACKEND_PORT=8000 ./dev.sh        # 改后端端口
 #   FRONTEND_PORT=5173 ./dev.sh       # 改前端端口
 #
@@ -40,8 +40,8 @@ ENV_HOST="$(read_dotenv_value HOST)"
 ENV_PORT="$(read_dotenv_value PORT)"
 BACKEND_HOST="${HOST:-${ENV_HOST:-0.0.0.0}}"
 # Keep BACKEND_PORT as a backwards-compatible explicit override.
-BACKEND_PORT="${BACKEND_PORT:-${PORT:-${ENV_PORT:-3018}}}"
-FRONTEND_PORT="${FRONTEND_PORT:-3011}"
+BACKEND_PORT="${BACKEND_PORT:-${PORT:-${ENV_PORT:-8000}}}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 UVICORN_ENV_ARGS=()
 if [[ -f "$ROOT/.env" ]]; then
   UVICORN_ENV_ARGS=(--env-file "$ROOT/.env")

@@ -77,12 +77,12 @@ AI_DAILY_TOKEN_BUDGET=500000           # 每日 token 预算上限
 
 ```ini
 HOST=0.0.0.0          # 开发服务监听地址 / Docker 主机绑定地址
-PORT=3018             # 开发后端端口 / Docker 主机映射端口
+PORT=8000             # 开发后端端口 / Docker 主机映射端口
 LOG_LEVEL=INFO        # DEBUG | INFO | WARNING | ERROR
 ```
 
 - `HOST`:`0.0.0.0` 监听所有网卡(容器/公网部署需要);仅本机用可设 `127.0.0.1`
-- `PORT`:默认 `3018`;开发模式兼容显式的 `BACKEND_PORT` 覆盖,改端口后 SSH 转发命令也要同步改
+- `PORT`:默认 `8000`;开发模式兼容显式的 `BACKEND_PORT` 覆盖,改端口后 SSH 转发命令也要同步改
 - `LOG_LEVEL`:排查问题时改 `DEBUG`
 
 ---

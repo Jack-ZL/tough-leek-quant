@@ -34,7 +34,7 @@ Dev 模式下，默认位置是项目根目录的 `data/`；Docker 部署中，�
 修改 YAML 后可在「设置 -> 数据源」点击「重新加载」,或调用:
 
 ```bash
-curl -X POST http://127.0.0.1:3018/api/settings/data-sources/reload
+curl -X POST http://127.0.0.1:8000/api/settings/data-sources/reload
 ```
 
 ## 最小 YAML

@@ -1,6 +1,6 @@
 """标的维表同步服务。
 
-盘前 9:10 调用 tf.exchanges.get_instruments("SH"/"SZ"/"BJ", type="stock")
+盘前 9:10 调用 tf.exchanges.get_instruments("SH"/"SZ"/"BJ"/"HK", type="stock")
 获取全量标的元数据，flatten ext 字段，写入 instruments.parquet。
 
 Starter+ 盘后可用 quotes.get(universes) 顺便补充 name。
@@ -17,7 +17,7 @@ from app.tickflow.client import get_client
 
 logger = logging.getLogger(__name__)
 
-_EXCHANGES = ["SH", "SZ", "BJ"]
+_EXCHANGES = ["SH", "SZ", "BJ", "HK"]
 
 
 def _flatten_instruments(items: list[dict]) -> list[dict]:

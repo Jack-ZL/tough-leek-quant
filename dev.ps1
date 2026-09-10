@@ -52,9 +52,9 @@ if ($BackendPort -le 0) {
     if ($env:BACKEND_PORT) { $BackendPort = [int]$env:BACKEND_PORT }
     elseif ($env:PORT)     { $BackendPort = [int]$env:PORT }
     elseif ($DotEnvPort)   { $BackendPort = [int]$DotEnvPort }
-    else                   { $BackendPort = 3018 }
+    else                   { $BackendPort = 8000 }
 }
-if ($FrontendPort -le 0) { $FrontendPort = if ($env:FRONTEND_PORT) { [int]$env:FRONTEND_PORT } else { 3011 } }
+if ($FrontendPort -le 0) { $FrontendPort = if ($env:FRONTEND_PORT) { [int]$env:FRONTEND_PORT } else { 3000 } }
 
 # Force UTF-8 console output so child process logs aren't garbled
 try {

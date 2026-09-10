@@ -10,7 +10,7 @@
 import { storage } from '@/lib/storage'
 
 /** 形状守卫: 只放行 6位数字 + 沪深北后缀 的 symbol (信息条场景下即股票) */
-const STOCK_SYMBOL_RE = /^(\d{6})\.(SH|SZ|BJ)$/
+const STOCK_SYMBOL_RE = /^(\d{6})\.(SH|SZ|BJ|HK)$/
 
 /** 未设置或留空 → 返回 '' 即关闭外链 */
 export function loadStockExternalTemplate(): string {

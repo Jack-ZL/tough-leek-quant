@@ -4,7 +4,7 @@ import path from 'node:path'
 
 const backendHost = process.env.BACKEND_HOST || '127.0.0.1'
 const proxyHost = ['0.0.0.0', '::'].includes(backendHost) ? '127.0.0.1' : backendHost
-const backendPort = process.env.BACKEND_PORT || '3018'
+const backendPort = process.env.BACKEND_PORT || '8000'
 const backendTarget = `http://${proxyHost}:${backendPort}`
 
 export default defineConfig({
@@ -16,7 +16,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',   // dev.sh / dev.ps1 会用 CLI --host 覆盖
-    port: 3011,
+    port: 3000,
     proxy: {
       // dev 时 /api 转发到与启动脚本相同的 FastAPI 地址
       '/api': {

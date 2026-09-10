@@ -10,7 +10,7 @@ services:
         CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:-0.144.3}
     container_name: TickFlow_Stock_Panel
     ports:
-      - "${HOST:-0.0.0.0}:${PORT:-3018}:3018"
+      - "${HOST:-0.0.0.0}:${PORT:-8000}:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:

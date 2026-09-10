@@ -151,5 +151,5 @@ ENV UV_DEFAULT_INDEX=${PYPI_INDEX} \
 # 兜底时区: 交易时段判断已在代码里显式用北京时间 (app/market_time.py),
 # 此处让日志时间戳等其余 naive 时间也对齐北京时间。
 ENV TZ=Asia/Shanghai
-EXPOSE 3018
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3018"]
+EXPOSE 8000
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

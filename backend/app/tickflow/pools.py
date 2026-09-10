@@ -19,7 +19,7 @@ from app.tickflow.client import get_client
 
 logger = logging.getLogger(__name__)
 
-PoolId = Literal["CSI300", "CSI500", "SSE50", "CN_Equity_A", "CN_Index", "watchlist"]
+PoolId = Literal["CSI300", "CSI500", "SSE50", "CN_Equity_A", "HK_Equity", "CN_Index", "watchlist"]
 
 # TickFlow universe id 是它内部命名(见 tf.universes.list())。
 # 没有官方对照表,启动时按名称模糊匹配从 universes.list() 里找。
@@ -128,6 +128,17 @@ def _fetch_pool(pool_id: PoolId) -> list[str]:
                 return sorted(set(df["symbol"].astype(str).tolist()))
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch CN_Index via universe %s failed: %s", ids, e)
+
+    if pool_id == "HK_Equity":
+        # 港股 — 尝试用 HK_Equity 或港股相关 universe
+        uid = _find_universe_id(["HK_Equity", "港股", "香港", "HK"])
+        if uid:
+            try:
+                df = tf.quotes.get_by_universes([uid], as_dataframe=True)
+                if df is not None and len(df) > 0 and "symbol" in df.columns:
+                    return sorted(set(df["symbol"].astype(str).tolist()))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("fetch HK_Equity via universe %s failed: %s", uid, e)
 
     return []
 

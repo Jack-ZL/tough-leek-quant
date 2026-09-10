@@ -22,8 +22,8 @@ from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
 
-# exchanges.get_instruments 查询的交易所(沪深京)
-_EXCHANGES = ["SH", "SZ", "BJ"]
+# exchanges.get_instruments 查询的交易所(沪深京港)
+_EXCHANGES = ["SH", "SZ", "BJ", "HK"]
 
 
 def _quotes_to_index_instruments(resp) -> pl.DataFrame:

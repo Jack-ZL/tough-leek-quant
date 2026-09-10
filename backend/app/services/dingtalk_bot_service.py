@@ -132,7 +132,7 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
         """SDK 回调: 处理机器人消息。
 
         message: CallbackMessage, 其 data 字段包含 ChatbotMessage 的原始 dict。
-        返回 (status, message) — AckMessage.STATUS_OK 表示成功。
+        返回 (status, message) — dingtalk_stream.AckMessage.STATUS_OK 表示成功。
         """
         try:
             incoming_message = dingtalk_stream.ChatbotMessage.from_dict(message.data)
@@ -153,19 +153,19 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                     "支持的模型: DeepSeek、千问(qwen)、智谱(glm)"
                 )
                 await self._reply_markdown("使用帮助", help_text, incoming_message)
-                return "OK", "OK"
+                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
             stock_name, trigger_display = parsed
 
             repo = self._service._app_state.repo if self._service._app_state else None
             if not repo:
                 await self._reply_markdown("系统提示", "⚠️ 系统未就绪, 请稍后重试", incoming_message)
-                return "OK", "OK"
+                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
             symbol = _resolve_symbol(repo, stock_name)
             if not symbol:
                 await self._reply_markdown("提示", "股票名称错误或模型暂不可用", incoming_message)
-                return "OK", "OK"
+                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
             start_time = time.time()
             try:
@@ -177,11 +177,11 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                 logger.exception("钉钉智能机器人个股分析失败: %s", e)
                 await self._reply_markdown("分析失败", f"⚠️ 分析失败: {e}", incoming_message)
 
-            return "OK", "OK"
+            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
         except Exception as e:
             logger.exception("钉钉机器人消息处理异常: %s", e)
-            return "OK", "OK"
+            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
     async def _run_analysis(self, repo, symbol: str) -> str:
         """执行个股分析, 返回完整分析文本 (使用系统当前配置的 AI 模型)。"""

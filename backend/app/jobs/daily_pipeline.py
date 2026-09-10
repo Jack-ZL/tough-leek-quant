@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import date as _date
 from pathlib import Path
 
 import polars as pl
@@ -138,33 +139,46 @@ def _invalidate(table: str | None = None) -> None:
 
 
 def _resolve_universe(capset: CapabilitySet, repo=None) -> list[str]:
-    """解析标的池 — 以 CN_Equity_A (沪深京A股 ~5522只) 为主。
+    """解析标的池 — 以 CN_Equity_A (沪深京A股 ~5522只) + HK_Equity (港股) 为主。
 
-    有 batch 能力 → 直接拉 CN_Equity_A universe
+    有 batch 能力 → 直接拉 CN_Equity_A + HK_Equity universe
     其他用户 → 用 instruments parquet + watchlist 兜底
 
     repo 传入时过滤自选兜底里的指数 symbol (指数日K走独立 kline_index_* 存储,
     进股票池会污染 kline_daily/kline_minute)。ETF 刻意保留 (既有行为)。
     """
+    base: set[str] = set()
+
     if capset.has(Cap.KLINE_DAILY_BATCH):
         try:
             all_a = get_pool("CN_Equity_A", refresh=True)
             if all_a:
-                return sorted(all_a)
+                base.update(all_a)
         except Exception as e:  # noqa: BLE001
             logger.warning("CN_Equity_A pool unavailable, fallback: %s", e)
 
-    # Free 用户兜底: instruments parquet + watchlist + demo
-    base: set[str] = set(DEMO_SYMBOLS)
-    base.update(get_pool("watchlist"))
-    d = Path(settings.data_dir)
-    inst_path = d / "instruments" / "instruments.parquet"
-    if inst_path.exists():
+        # 同时拉取港股标的池
         try:
-            inst = pl.read_parquet(inst_path, columns=["symbol"])
-            base.update(inst["symbol"].to_list())
+            hk = get_pool("HK_Equity", refresh=True)
+            if hk:
+                base.update(hk)
+                logger.info("HK_Equity pool loaded: %d symbols", len(hk))
         except Exception as e:  # noqa: BLE001
-            logger.warning("instruments supplement failed: %s", e)
+            logger.warning("HK_Equity pool unavailable: %s", e)
+
+    if not base:
+        # Free 用户兜底: instruments parquet + watchlist + demo
+        base.update(DEMO_SYMBOLS)
+        base.update(get_pool("watchlist"))
+        d = Path(settings.data_dir)
+        inst_path = d / "instruments" / "instruments.parquet"
+        if inst_path.exists():
+            try:
+                inst = pl.read_parquet(inst_path, columns=["symbol"])
+                base.update(inst["symbol"].to_list())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("instruments supplement failed: %s", e)
+
     # 过滤自选兜底里的指数 symbol (指数日K走独立 kline_index_* 存储,
     # 进股票池会污染 kline_daily/kline_minute)。ETF 刻意保留 (既有行为)。
     if repo is not None:
