@@ -98,6 +98,7 @@ type AiPreset = {
 	websiteLabel: string
 	description: string
 	custom?: boolean
+	isCanWebSearch?: boolean
 }
 
 const PRESETS: AiPreset[] = [
@@ -176,6 +177,7 @@ const PRESETS: AiPreset[] = [
 		website: 'https://www.deepseek.com/',
 		websiteLabel: 'deepseek.com',
 		description: 'DeepSeek 官方 OpenAI 兼容接口。',
+		isCanWebSearch: false,
 	},
 	{
 		value: "qwen",
@@ -185,6 +187,7 @@ const PRESETS: AiPreset[] = [
 		website: 'https://tongyi.aliyun.com/',
 		websiteLabel: 'tongyi.aliyun.com',
 		description: '阿里云 DashScope 兼容模式接口。',
+		isCanWebSearch: true,
 	},
 	{
 		value: "glm",
@@ -194,6 +197,7 @@ const PRESETS: AiPreset[] = [
 		website: 'https://open.bigmodel.cn/',
 		websiteLabel: 'open.bigmodel.cn',
 		description: '智谱 AI 官方 OpenAI 兼容接口。',
+		isCanWebSearch: true,
 	},
 	{
 		value: "kimi",
@@ -357,6 +361,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 	const [maxOutputTokens, setMaxOutputTokens] = useState('')
 	const [contextWindow, setContextWindow] = useState('')
 	const [profileId, setProfileId] = useState('')
+	const [webSearch, setWebSearch] = useState(false)
 	const [showKey, setShowKey] = useState(false)
 	const [saved, setSaved] = useState(false)
 	const [confirmClear, setConfirmClear] = useState(false)
@@ -448,6 +453,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 				&& (p.name === activeModelName || p.model === activeModelName),
 		)
 		setProfileId(activeProf?.id ?? '')
+		setWebSearch(!!activeProf?.web_search)
 	}, [s])
 
 	const handleSelectProfile = useCallback((profile: AiProfile) => {
@@ -464,6 +470,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 		setMaxOutputTokens(String(profile.max_output_tokens ?? 8192))
 		setContextWindow(String(profile.context_window ?? 64000))
 		setProfileId(profile.id ?? '')
+		setWebSearch(!!profile.web_search)
 		setApiKey(profile.api_key ?? '')
 		setTestResult(null)
 
@@ -519,6 +526,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 		max_output_tokens: toPositiveInt(maxOutputTokens),
 		context_window: toPositiveInt(contextWindow),
 		profile_id: profileId.trim() || undefined,
+		web_search: webSearch,
 	})
 
 	const save = useMutation({
@@ -585,6 +593,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 			setMaxOutputTokens('8192')
 			setContextWindow('64000')
 			setProfileId('')
+			setWebSearch(false)
 			setTestResult(null)
 			qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
 				...prev,
@@ -624,6 +633,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 			setProvider(OPENAI_COMPAT_PROVIDER)
 			setBaseUrl(directDrafts.current.custom.baseUrl)
 			setModel(directDrafts.current.custom.model)
+			setWebSearch(false)
 			return
 		}
 		if (p.provider === CODEX_PROVIDER) {
@@ -631,6 +641,7 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 			setCodexModel(p.model)
 			setCodexReasoningEffort(DEFAULT_CODEX_REASONING_EFFORT)
 			setCodexCommand(CODEX_COMMAND)
+			setWebSearch(false)
 			return
 		}
 		const nextProvider = p.provider ?? OPENAI_COMPAT_PROVIDER
@@ -652,6 +663,8 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
 		)
 		setProfileId(matched?.id || p.value || '')
 		if (matched?.api_key) setApiKey(matched.api_key)
+		// 联网搜索: 仅支持的厂商可开; 已配置过则回显存储值
+		setWebSearch(p.isCanWebSearch === true ? !!matched?.web_search : false)
 	}
 
 	const handleBaseUrlChange = (value: string) => {
@@ -899,6 +912,16 @@ export function SettingsAIPanel({highlight}: { highlight?: string } = {}) {
                       </div>
                     </Field>
 
+                    <Field
+	                    label="联网搜索"
+	                    inline
+	                    hint={selectedPreset.isCanWebSearch
+		                    ? '开启后 AI 分析时可检索实时联网信息 (通义千问 enable_search / 智谱 web_search 工具)'
+		                    : '该模型接口不支持联网搜索, 目前支持: 通义千问、智谱 GLM'}
+                    >
+                      <Toggle checked={webSearch} onChange={() => setWebSearch(v => !v)} disabled={!selectedPreset.isCanWebSearch}/>
+                    </Field>
+
                     <div className="border-t border-border/20"/>
 
                     <div className="space-y-2">
@@ -1060,9 +1083,9 @@ function Field({label, hint, inline, required, children}: {
 		return (
 			<div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-[10px] text-muted/50 uppercase tracking-wider">{label}{required &&
+          <div className="text-xs font-medium text-secondary tracking-wide">{label}{required &&
 	          <span className="ml-0.5 text-red-400">*</span>}</div>
-	        {hint && <div className="text-[10px] text-muted mt-0.5">{hint}</div>}
+	        {hint && <div className="text-[11px] text-muted/90 mt-0.5">{hint}</div>}
         </div>
 				{children}
       </div>
@@ -1070,20 +1093,21 @@ function Field({label, hint, inline, required, children}: {
 	}
 	return (
 		<div className="space-y-1.5">
-      <div className="text-[10px] text-muted/50 uppercase tracking-wider">{label}{required &&
+      <div className="text-xs font-medium text-secondary tracking-wide">{label}{required &&
 	      <span className="ml-0.5 text-red-400">*</span>}</div>
 			{children}
-			{hint && <div className="text-[10px] text-muted">{hint}</div>}
+			{hint && <div className="text-[11px] text-muted/90">{hint}</div>}
     </div>
 	)
 }
 
-function Toggle({checked, onChange}: { checked: boolean; onChange: () => void }) {
+function Toggle({checked, onChange, disabled}: { checked: boolean; onChange: () => void; disabled?: boolean }) {
 	return (
 		<button
 			type="button"
-			onClick={onChange}
-			className={`relative inline-flex h-5 w-9 items-center rounded-full shrink-0 transition-colors duration-200 ${checked ? 'bg-accent' : 'bg-elevated'}`}
+			onClick={disabled ? undefined : onChange}
+			disabled={disabled}
+			className={`relative inline-flex h-5 w-9 items-center rounded-full shrink-0 transition-colors duration-200 ${checked ? 'bg-accent' : 'bg-elevated'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
 			aria-pressed={checked}
 		>
       <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}/>

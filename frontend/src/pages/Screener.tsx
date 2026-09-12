@@ -688,14 +688,14 @@ export function Screener() {
         title="策略"
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['stock', 'etf'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => { setAssetType(t); setActiveStrategy(null); setResult(null); setShowAll(false) }}
-                  className={`h-full px-2.5 text-xs font-medium transition-colors
+                  className={`h-full px-2.5 text-xs font-medium whitespace-nowrap transition-colors
                     cursor-pointer ${assetType === t
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -706,7 +706,7 @@ export function Screener() {
               ))}
             </div>
             {/* 周期筛选: 全部 / 日线 / 分钟 — 只过滤卡片显示, 不影响池与执行路由 */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['all', '1d', '1m'] as const).map(tf => (
                 <button
                   key={tf}
@@ -715,7 +715,7 @@ export function Screener() {
                     setTfFilter(tf)
                     setActiveStrategy(null); setResult(null); setShowAll(false)
                   }}
-                  className={`h-full px-2.5 text-xs font-medium transition-colors cursor-pointer
+                  className={`h-full px-2.5 text-xs font-medium whitespace-nowrap transition-colors cursor-pointer
                     ${tfFilter === tf
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -730,7 +730,7 @@ export function Screener() {
               onClick={() => reloadStrategies.mutate()}
               disabled={reloadStrategies.isPending}
               title="重新加载策略并运行全部策略，刷新当前符合条件的个股"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0
                 border border-border bg-surface text-xs font-medium text-muted
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer
                 disabled:opacity-50 disabled:cursor-wait"
@@ -750,7 +750,7 @@ export function Screener() {
             <button
               onClick={() => setShowAll(v => { if (!v) setActiveStrategy(null); return !v })}
               title="显示全部策略个股"
-              className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border transition-colors cursor-pointer
+              className={`inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-btn border transition-colors cursor-pointer
                 ${showAll
                   ? 'border-accent/50 bg-accent/10 text-accent'
                   : 'border-border bg-surface text-muted hover:text-secondary hover:border-accent/40'
@@ -759,12 +759,12 @@ export function Screener() {
               <Network className="h-3.5 w-3.5" />
             </button>
             {/* 卡片尺寸切换 */}
-            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
+            <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
               {(['hidden', 'mini', 'normal', 'large'] as const).map(sz => (
                 <button
                   key={sz}
                   onClick={() => { setCardSize(sz); storage.screenerCardSize.set(sz) }}
-                  className={`h-full px-2 text-[10px] font-medium transition-colors cursor-pointer
+                  className={`h-full px-2 text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer
                     ${cardSize === sz
                       ? 'bg-accent/10 text-accent'
                       : 'text-muted hover:text-secondary hover:bg-elevated'
@@ -777,7 +777,7 @@ export function Screener() {
             {/* 策略池按钮 */}
             <button
               onClick={() => setShowPoolDialog(true)}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn whitespace-nowrap shrink-0
                 border border-border bg-surface text-xs font-medium text-secondary
                 hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
             >
@@ -790,7 +790,7 @@ export function Screener() {
             {/* 创建叠加策略 */}
             <button
               onClick={() => setShowComposite(true)}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn whitespace-nowrap shrink-0
                 text-xs font-medium text-teal-400 border border-teal-500/20 bg-teal-500/5
                 hover:bg-teal-500/15 transition-colors cursor-pointer"
             >
@@ -800,7 +800,7 @@ export function Screener() {
             {/* 创建策略 */}
             <button
               onClick={() => { setBuilderMode('create'); setShowBuilder(true) }}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn whitespace-nowrap shrink-0
                 text-xs font-medium text-amber-400 border border-amber-400/20 bg-amber-400/5
                 hover:bg-amber-400/15 transition-colors cursor-pointer"
             >

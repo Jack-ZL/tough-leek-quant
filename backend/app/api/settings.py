@@ -259,6 +259,7 @@ class AiSettingsIn(BaseModel):
     max_output_tokens: int | None = None   # 输出上限, 钳制所有任务的 max_tokens
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
     profile_id: str = Field(default="", max_length=64)  # 模型 ID, 写入 ai_profiles[].id
+    web_search: bool = False  # 联网搜索开关(仅千问/智谱等支持的厂商生效)
 
 
 def _upsert_ai_profile(req: AiSettingsIn) -> list[dict]:
@@ -308,6 +309,7 @@ def _upsert_ai_profile(req: AiSettingsIn) -> list[dict]:
         "user_agent": req.user_agent,
         "max_output_tokens": req.max_output_tokens,
         "context_window": req.context_window,
+        "web_search": bool(req.web_search),
     }
     # 模型 ID: 表单填写优先, 留空保留已有 id (智能机器人按触发词匹配 ai_profiles 用)
     profile_id = req.profile_id.strip() or str(existing_profile.get("id") or "").strip()
@@ -377,6 +379,8 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     # user_agent 允许清空(回到默认浏览器 UA),故无条件持久化
     updates["ai_user_agent"] = req.user_agent
     settings.ai_user_agent = req.user_agent
+    # 联网搜索开关同步到全局(前端个股分析等不传 profile 的链路用)
+    updates["ai_web_search"] = bool(req.web_search)
 
     # 输出上限 / 输入上下文窗口 (数值配置, 缺省保持原值)
     if req.max_output_tokens is not None:
@@ -489,6 +493,7 @@ def activate_ai_profile(req: ActivateProfileIn) -> dict:
         "ai_codex_command": codex_command,
         "ai_codex_reasoning_effort": codex_reasoning_effort,
         "ai_user_agent": profile.get("user_agent", ""),
+        "ai_web_search": bool(profile.get("web_search")),
     }
     profile_api_key = profile.get("api_key", "")
     updates["ai_api_key"] = profile_api_key

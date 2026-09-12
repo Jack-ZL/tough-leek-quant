@@ -436,6 +436,11 @@ async def _stream_openai(
         base_url=base_url,
         prefer_final_answer=prefer_final_answer,
     )
+    # 联网搜索: profile 显式传入时用 profile 开关, 否则用全局(ai_web_search, 激活/保存时同步)
+    web_search = bool(profile.get("web_search")) if profile else bool(
+        secrets_store.get_ai_config("ai_web_search", False)
+    )
+    _apply_web_search(kwargs, enabled=web_search, base_url=base_url)
     while True:
         try:
             stream = await client.chat.completions.create(
@@ -596,6 +601,41 @@ def _openai_retry_kwargs(exc: Exception, kwargs: dict) -> dict | None:
 
 
 _DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
+def _web_search_vendor(base_url: str) -> str:
+    """按 base_url 主机名识别支持联网搜索注入的厂商, 其余返回空串。
+
+    千问(阿里云百炼/DashScope) → "qwen"; 智谱 GLM → "glm"。
+    DeepSeek 官方 API 不支持联网搜索。
+    """
+    host = (urlsplit((base_url or "").strip()).hostname or "").lower()
+    if host.endswith("aliyuncs.com") or "dashscope" in host:
+        return "qwen"
+    if host.endswith("bigmodel.cn") or "zhipuai" in host:
+        return "glm"
+    return ""
+
+
+def _apply_web_search(kwargs: dict, *, enabled: bool, base_url: str) -> None:
+    """enabled 时按厂商向 create() kwargs 注入联网搜索参数(原地修改)。"""
+    if not enabled:
+        return
+    vendor = _web_search_vendor(base_url)
+    if vendor == "qwen":
+        # enable_search 非 OpenAI 标准参数, 走 extra_body 透传
+        extra = dict(kwargs.get("extra_body") or {})
+        extra["enable_search"] = True
+        kwargs["extra_body"] = extra
+    elif vendor == "glm":
+        kwargs["tools"] = [
+            {"type": "web_search", "web_search": {"enable": True, "search_result": True}},
+        ]
+    else:
+        logger.info(
+            "当前模型接口不支持联网搜索(host=%s), 已忽略开关",
+            urlsplit((base_url or "").strip()).hostname,
+        )
 
 
 def _openai_kwargs(
