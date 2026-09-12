@@ -116,6 +116,12 @@ def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
 # 本报告定位为客观行情分析,不提供任何买卖建议、仓位建议或交易指令。
 # ================================================================
 
+# 免责声明: 由代码统一追加到报告末尾, 不让模型输出(省 token 且保证一致)
+_DISCLAIMER = (
+    "> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,仅客观陈述技术状态,不构成任何投资建议或买卖指令。"
+    "交易有风险,入市需谨慎。"
+)
+
 _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
 
 ## 核心红线(务必遵守)
@@ -181,8 +187,7 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 5. **不输出操作指令**:不写"买入/卖出/止损/加仓/减仓/仓位建议/操作建议"等任何交易指令;提示潜在风险但不下操作结论
 6. **简明客观**:用读者能扫读的密度输出,总字数 1000-1800 字,重在客观信息密度
 
-## 重要免责
-报告末尾附一行:"> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,仅客观陈述技术状态,不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。"
+报告末尾的免责声明由系统自动追加, 你**不要输出**任何免责声明或风险提示行。
 
 现在请基于下方数据进行分析。"""
 
@@ -340,4 +345,5 @@ async def analyze_stock_stream(
         logger.warning("AI stock analysis ended with empty content for %s", symbol)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+    yield json.dumps({"type": "delta", "content": "\n\n" + _DISCLAIMER}, ensure_ascii=False)
     yield json.dumps({"type": "done"}, ensure_ascii=False)

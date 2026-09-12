@@ -13,6 +13,46 @@ pytest.importorskip("dingtalk_stream")
 from app.services import dingtalk_bot_service as dingtalk
 from app.services import wecom_bot_service as wecom
 
+_BOTH_PARSERS = [dingtalk._parse_stock_analysis_msg, wecom._parse_stock_analysis_msg]
+
+# 模拟 secrets.json 中用户手工加了 id 的 ai_profiles (智能机器人按触发词匹配)
+_FAKE_PROFILES = {
+    "ai_profiles": [
+        {
+            "id": "qwen",
+            "name": "qwen3.8-max",
+            "provider": "openai_compat",
+            "base_url": "https://example.invalid/qwen/v1",
+            "api_key": "sk-q",
+            "model": "qwen3.8-max",
+        },
+        {
+            "id": "deepseek",
+            "name": "deepseek-v4-pro",
+            "provider": "openai_compat",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "sk-d",
+            "model": "deepseek-v4-pro",
+        },
+        {
+            "id": "gpt5",
+            "name": "gpt-5.5",
+            "provider": "openai_compat",
+            "base_url": "https://example.invalid/gpt/v1",
+            "api_key": "sk-g",
+            "model": "gpt-5.5",
+        },
+    ]
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_secrets(monkeypatch):
+    """默认空 secrets.json, 避免读到开发机上真实的 ai_profiles/密钥。"""
+    from app import secrets_store
+
+    monkeypatch.setattr(secrets_store, "load", lambda: {})
+
 
 class _DummyRepo:
     def __init__(self) -> None:
@@ -48,14 +88,58 @@ class _DummyRepo:
 @pytest.mark.parametrize(
     ("parser", "text", "expected"),
     [
-        (dingtalk._parse_stock_analysis_msg, "@机器人 贵州茅台 DeepSeek", ("贵州茅台", "DeepSeek")),
-        (wecom._parse_stock_analysis_msg, "贵州茅台 qwen", ("贵州茅台", "通义千问")),
+        (dingtalk._parse_stock_analysis_msg, "@机器人 贵州茅台 DeepSeek", ("贵州茅台", "DeepSeek", None)),
+        (wecom._parse_stock_analysis_msg, "贵州茅台 qwen", ("贵州茅台", "通义千问", None)),
         (dingtalk._parse_stock_analysis_msg, "贵州茅台 unknown-model", None),
         (wecom._parse_stock_analysis_msg, "仅有股票名", None),
+        # 触发词大小写不一致也要能匹配
+        (dingtalk._parse_stock_analysis_msg, "@机器人 国晟科技 deepSEEK", ("国晟科技", "DeepSeek", None)),
+        (wecom._parse_stock_analysis_msg, "国晟科技 DEEPSEEK", ("国晟科技", "DeepSeek", None)),
+        (dingtalk._parse_stock_analysis_msg, "贵州茅台 QWen", ("贵州茅台", "通义千问", None)),
     ],
 )
 def test_parse_stock_analysis_message(parser, text: str, expected):
     assert parser(text) == expected
+
+
+@pytest.mark.parametrize("parser", _BOTH_PARSERS)
+@pytest.mark.parametrize("trigger", ["千问", "qwen", "QWEN", "qWeN", "通义"])
+def test_parse_trigger_matches_profile_case_insensitive(parser, trigger, monkeypatch):
+    """触发词无论大小写, 都要经别名映射匹配到 ai_profiles 中 id=qwen 的配置。"""
+    from app import secrets_store
+
+    monkeypatch.setattr(secrets_store, "load", lambda: dict(_FAKE_PROFILES))
+    parsed = parser(f"国晟科技 {trigger}")
+    assert parsed is not None
+    stock_name, display, profile = parsed
+    assert stock_name == "国晟科技"
+    assert display == "通义千问"
+    assert profile["id"] == "qwen"
+    assert profile["model"] == "qwen3.8-max"
+
+
+@pytest.mark.parametrize("parser", _BOTH_PARSERS)
+def test_parse_trigger_direct_profile_id(parser, monkeypatch):
+    """别名表以外的触发词, 只要与某个 profile id 匹配(忽略大小写)也可用。"""
+    from app import secrets_store
+
+    monkeypatch.setattr(secrets_store, "load", lambda: dict(_FAKE_PROFILES))
+    stock_name, display, profile = parser("贵州茅台 GPT5")
+    assert stock_name == "贵州茅台"
+    assert profile["id"] == "gpt5"
+    assert display == "gpt-5.5"  # 无内置显示名时用 profile 名称
+
+
+@pytest.mark.parametrize("mod", [dingtalk, wecom])
+def test_resolve_trigger_profile_alias_then_direct(mod, monkeypatch):
+    from app import secrets_store
+
+    monkeypatch.setattr(secrets_store, "load", lambda: dict(_FAKE_PROFILES))
+    assert mod._resolve_trigger_profile("千问")["id"] == "qwen"
+    assert mod._resolve_trigger_profile("DEEPSEEK")["id"] == "deepseek"
+    assert mod._resolve_trigger_profile("gpt5")["id"] == "gpt5"
+    assert mod._resolve_trigger_profile("unknown") is None
+    assert mod._resolve_trigger_profile("") is None
 
 
 def test_dingtalk_resolve_symbol_across_stock_etf_and_index():
@@ -119,7 +203,11 @@ def _dingtalk_callback_msg(text: str, msg_id: str):
 
 
 @pytest.fixture
-def dingtalk_handler():
+def dingtalk_handler(monkeypatch):
+    from app import secrets_store
+
+    # 提供假 ai_profiles, 使 "DeepSeek" 触发词能解析到 profile
+    monkeypatch.setattr(secrets_store, "load", lambda: dict(_FAKE_PROFILES))
     service = dingtalk.DingtalkBotService()
     service.set_app_state(_AppState(_DummyRepo()))
     handler = dingtalk._ChatbotHandler(service)
@@ -127,7 +215,7 @@ def dingtalk_handler():
     analysis_calls: list[str] = []
     replies: list[str] = []
 
-    async def fake_run_analysis(repo, symbol):
+    async def fake_run_analysis(repo, symbol, profile=None):
         analysis_calls.append(symbol)
         await asyncio.sleep(0.5)  # 模拟 LLM 慢分析 (远超钉钉 ~10s ACK 上限的量级)
         return "分析内容"
@@ -173,14 +261,18 @@ async def test_dingtalk_dedup_redelivered_message(dingtalk_handler):
 
 
 @pytest.fixture
-def wecom_service():
+def wecom_service(monkeypatch):
+    from app import secrets_store
+
+    # 提供假 ai_profiles, 使 "DeepSeek" 触发词能解析到 profile
+    monkeypatch.setattr(secrets_store, "load", lambda: dict(_FAKE_PROFILES))
     service = wecom.WecomBotService()
     service.set_app_state(_AppState(_DummyRepo()))
 
     analysis_calls: list[str] = []
     sent: list[dict] = []
 
-    async def fake_run_analysis(repo, symbol):
+    async def fake_run_analysis(repo, symbol, profile=None):
         analysis_calls.append(symbol)
         await asyncio.sleep(0.5)
         return "分析内容"
@@ -194,7 +286,7 @@ def wecom_service():
     return service, _FakeWs(), analysis_calls, sent
 
 
-def _wecom_frame(msgid: str) -> str:
+def _wecom_frame(msgid: str, content: str = "贵州茅台 DeepSeek") -> str:
     return json.dumps(
         {
             "cmd": "aibot_msg_callback",
@@ -204,11 +296,43 @@ def _wecom_frame(msgid: str) -> str:
                 "from": {"userid": "u1"},
                 "chattype": "group",
                 "msgtype": "text",
-                "text": {"content": "贵州茅台 DeepSeek"},
+                "text": {"content": content},
             },
         },
         ensure_ascii=False,
     )
+
+
+async def test_dingtalk_rejects_unconfigured_model(dingtalk_handler):
+    """触发词可识别但 ai_profiles 未配置对应模型时, 提示不支持, 不回退默认模型分析。"""
+    handler, _service, analysis_calls, replies = dingtalk_handler
+    contents: list[str] = []
+
+    async def fake_reply(title, content, incoming_message):
+        replies.append(title)
+        contents.append(content)
+
+    handler._reply_markdown = fake_reply
+    await handler.process(_dingtalk_callback_msg("贵州茅台 Kimi", "m-nomodel"))
+
+    assert await _wait_until(lambda: len(contents) == 1)
+    await asyncio.sleep(0.1)  # 留出(错误的)分析入队时间
+    assert "未配置" in contents[0]
+    assert len(contents) == 1, "不应继续发送分析报告"
+    assert analysis_calls == [], "未配置的模型不应触发分析"
+
+
+async def test_wecom_rejects_unconfigured_model(wecom_service):
+    """企微侧同样: 触发词未配置对应 profile 时只回一条不支持提示。"""
+    service, ws, analysis_calls, sent = wecom_service
+
+    await service._handle_incoming(ws, _wecom_frame("w-nomodel", content="贵州茅台 Kimi"))
+
+    assert await _wait_until(lambda: len(sent) == 1)
+    await asyncio.sleep(0.1)
+    assert "未配置" in sent[0]["body"]["markdown"]["content"]
+    assert len(sent) == 1, "不应继续发送分析报告"
+    assert analysis_calls == [], "未配置的模型不应触发分析"
 
 
 async def test_wecom_handle_incoming_not_blocked_by_analysis(wecom_service):
@@ -285,11 +409,12 @@ class _FakeDf:
         return {"close": [10.0]}
 
 
-async def _capture_analysis_messages(monkeypatch, run_analysis):
-    """打桩 stock_analyzer/ai_provider, 捕获 _run_analysis 实际发送的 messages。"""
+async def _capture_analysis_messages(monkeypatch, run_analysis, **run_kwargs):
+    """打桩 stock_analyzer/ai_provider, 捕获 _run_analysis 实际发送的 messages 与 kwargs。"""
     from app.services import ai_provider, stock_analyzer
 
     captured: list = []
+    captured_kwargs: list = []
     monkeypatch.setattr(stock_analyzer, "_load_kline", lambda repo, symbol: _FakeDf())
     monkeypatch.setattr(stock_analyzer, "_load_financials", lambda *a, **k: {})
     monkeypatch.setattr(stock_analyzer, "compute_levels", lambda df: {})
@@ -298,6 +423,7 @@ async def _capture_analysis_messages(monkeypatch, run_analysis):
 
     async def fake_stream(messages, **kwargs):
         captured.append(messages)
+        captured_kwargs.append(kwargs)
         yield "分析结论"
 
     monkeypatch.setattr(ai_provider, "stream_ai_text", fake_stream)
@@ -306,16 +432,16 @@ async def _capture_analysis_messages(monkeypatch, run_analysis):
         store=SimpleNamespace(data_dir="/tmp"),
         resolve_asset_type=lambda symbol: "stock",
     )
-    content = await run_analysis(repo, "600519.SH")
+    content = await run_analysis(repo, "600519.SH", **run_kwargs)
     assert content == "分析结论"
-    return captured[0]
+    return captured[0], captured_kwargs[0]
 
 
 async def test_dingtalk_analysis_prompt_states_platform_char_limit(monkeypatch):
     """钉钉来源的分析请求需告知 AI 平台字符上限, 让模型主动控制篇幅。"""
     service = dingtalk.DingtalkBotService()
     handler = dingtalk._ChatbotHandler(service)
-    messages = await _capture_analysis_messages(monkeypatch, handler._run_analysis)
+    messages, _kwargs = await _capture_analysis_messages(monkeypatch, handler._run_analysis)
     user_content = messages[1]["content"]
     assert "钉钉" in user_content
     assert "4000" in user_content
@@ -324,7 +450,122 @@ async def test_dingtalk_analysis_prompt_states_platform_char_limit(monkeypatch):
 async def test_wecom_analysis_prompt_states_platform_byte_limit(monkeypatch):
     """企微来源的分析请求需告知 AI 平台字节上限。"""
     service = wecom.WecomBotService()
-    messages = await _capture_analysis_messages(monkeypatch, service._run_analysis)
+    messages, _kwargs = await _capture_analysis_messages(monkeypatch, service._run_analysis)
     user_content = messages[1]["content"]
     assert "企业微信" in user_content
     assert "20480" in user_content
+
+
+async def test_dingtalk_analysis_passes_profile(monkeypatch):
+    """触发词匹配到的 ai_profiles 配置需原样传给 stream_ai_text。"""
+    profile = _FAKE_PROFILES["ai_profiles"][0]
+    service = dingtalk.DingtalkBotService()
+    handler = dingtalk._ChatbotHandler(service)
+    _messages, kwargs = await _capture_analysis_messages(
+        monkeypatch, handler._run_analysis, profile=profile
+    )
+    assert kwargs["profile"] is profile
+
+
+async def test_wecom_analysis_passes_profile(monkeypatch):
+    profile = _FAKE_PROFILES["ai_profiles"][1]
+    service = wecom.WecomBotService()
+    _messages, kwargs = await _capture_analysis_messages(
+        monkeypatch, service._run_analysis, profile=profile
+    )
+    assert kwargs["profile"] is profile
+
+
+async def test_analysis_without_profile_keeps_configured_model(monkeypatch):
+    """未匹配到 profile 时 profile=None, 由 ai_provider 回退系统当前配置的模型。"""
+    service = dingtalk.DingtalkBotService()
+    handler = dingtalk._ChatbotHandler(service)
+    _messages, kwargs = await _capture_analysis_messages(monkeypatch, handler._run_analysis)
+    assert kwargs["profile"] is None
+
+
+async def test_stream_ai_text_forwards_profile(monkeypatch):
+    """ai_provider.stream_ai_text 需把 profile 透传给 _stream_openai。"""
+    from app.services import ai_provider
+
+    captured: dict = {}
+    monkeypatch.setattr(ai_provider, "is_codex_cli_provider", lambda: False)
+    monkeypatch.setattr(ai_provider, "_check_input_budget", lambda *a, **k: None)
+
+    async def fake_stream_openai(messages, **kwargs):
+        captured.update(kwargs)
+        yield "ok"
+
+    monkeypatch.setattr(ai_provider, "_stream_openai", fake_stream_openai)
+    profile = _FAKE_PROFILES["ai_profiles"][0]
+    out = [
+        chunk
+        async for chunk in ai_provider.stream_ai_text(
+            [{"role": "user", "content": "hi"}], profile=profile
+        )
+    ]
+    assert out == ["ok"]
+    assert captured["profile"] is profile
+
+
+async def test_stream_ai_text_codex_ignores_profile(monkeypatch):
+    """Codex CLI 路径不支持 profile 覆盖: 忽略并走默认流程, 不抛异常。"""
+    from app.services import ai_provider
+
+    monkeypatch.setattr(ai_provider, "is_codex_cli_provider", lambda: True)
+    monkeypatch.setattr(ai_provider, "_check_input_budget", lambda *a, **k: None)
+
+    async def fake_codex(messages, **kwargs):
+        return "done"
+
+    monkeypatch.setattr(ai_provider, "_run_codex_cli", fake_codex)
+    out = [
+        chunk
+        async for chunk in ai_provider.stream_ai_text(
+            [{"role": "user", "content": "hi"}],
+            profile=_FAKE_PROFILES["ai_profiles"][0],
+        )
+    ]
+    assert out == ["done"]
+
+
+async def test_stream_openai_uses_profile_config(monkeypatch):
+    """_stream_openai 需用 profile 的 api_key/base_url/model 覆盖全局配置。"""
+    from app.services import ai_provider
+
+    captured_client: dict = {}
+    captured_create: dict = {}
+
+    def fake_openai_client(api_key, timeout, **kwargs):
+        captured_client.update(api_key=api_key, **kwargs)
+
+        async def create(**create_kwargs):
+            captured_create.update(create_kwargs)
+            return object()
+
+        return SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+
+    async def fake_iter_text(stream):
+        yield "ok"
+
+    monkeypatch.setattr(ai_provider, "_openai_client", fake_openai_client)
+    monkeypatch.setattr(ai_provider, "_iter_openai_text", fake_iter_text)
+
+    profile = _FAKE_PROFILES["ai_profiles"][0]  # qwen: sk-q @ example.invalid/qwen/v1
+    out = [
+        chunk
+        async for chunk in ai_provider._stream_openai(
+            [{"role": "user", "content": "hi"}],
+            temperature=0.5,
+            max_tokens=None,
+            timeout=5.0,
+            prefer_final_answer=False,
+            profile=profile,
+        )
+    ]
+    assert out == ["ok"]
+    assert captured_client["api_key"] == "sk-q"
+    assert captured_client["base_url"] == "https://example.invalid/qwen/v1"
+    assert captured_create["model"] == "qwen3.8-max"

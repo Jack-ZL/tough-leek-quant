@@ -258,6 +258,7 @@ class AiSettingsIn(BaseModel):
     user_agent: str = ""
     max_output_tokens: int | None = None   # 输出上限, 钳制所有任务的 max_tokens
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
+    profile_id: str = Field(default="", max_length=64)  # 模型 ID, 写入 ai_profiles[].id
 
 
 def _upsert_ai_profile(req: AiSettingsIn) -> list[dict]:
@@ -308,6 +309,10 @@ def _upsert_ai_profile(req: AiSettingsIn) -> list[dict]:
         "max_output_tokens": req.max_output_tokens,
         "context_window": req.context_window,
     }
+    # 模型 ID: 表单填写优先, 留空保留已有 id (智能机器人按触发词匹配 ai_profiles 用)
+    profile_id = req.profile_id.strip() or str(existing_profile.get("id") or "").strip()
+    if profile_id:
+        profile["id"] = profile_id
     if existing_idx >= 0:
         profiles[existing_idx] = profile
     else:

@@ -36,7 +36,7 @@ _REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
 _AI_BODY_CHAR_BUDGET = 3500
 _LENGTH_HINT = (
     f"\n\n【输出长度要求】本报告将通过钉钉智能机器人发送, 平台消息上限 {_REPLY_MAX_CHARS} 字符, "
-    f"请将分析正文全文(含免责声明)控制在 {_AI_BODY_CHAR_BUDGET} 字符以内。"
+    f"请将分析正文全文控制在 {_AI_BODY_CHAR_BUDGET} 字符以内; 报告末尾免责声明由系统自动追加, 不计入正文。"
     "该要求优先于系统提示中的字数范围; 宁可压缩内容, 也不要被平台截断。"
 )
 
@@ -48,7 +48,7 @@ def _truncate_reply_by_chars(content: str, max_chars: int = _REPLY_MAX_CHARS) ->
     cut = max_chars - len(_REPLY_TRUNCATE_SUFFIX)
     return content[:cut] + _REPLY_TRUNCATE_SUFFIX
 
-# 触发关键词 → 显示名称映射 (实际使用系统当前配置的 AI 模型)
+# 触发关键词 → 显示名称映射 (匹配忽略大小写; 实际模型见 _resolve_trigger_profile)
 _TRIGGER_KEYWORDS = {
     "deepseek": "DeepSeek",
     "千问": "通义千问",
@@ -59,12 +59,58 @@ _TRIGGER_KEYWORDS = {
     "kimi": "Kimi",
 }
 
+# 触发关键词 → secrets.json ai_profiles 中的 id (触发词本身是 id 时可直接匹配)
+_TRIGGER_PROFILE_IDS = {
+    "deepseek": "deepseek",
+    "千问": "qwen",
+    "qwen": "qwen",
+    "通义": "qwen",
+    "智谱": "glm",
+    "glm": "glm",
+    "kimi": "kimi",
+}
 
-def _parse_stock_analysis_msg(content: str) -> tuple[str, str] | None:
+
+def _find_ai_profile(profile_id: str) -> dict | None:
+    """按 id (忽略大小写) 在 secrets.json 的 ai_profiles 中查找模型配置。"""
+    from app import secrets_store
+
+    key = (profile_id or "").strip().lower()
+    if not key:
+        return None
+    profiles = secrets_store.load().get("ai_profiles")
+    if not isinstance(profiles, list):
+        return None
+    for item in profiles:
+        if isinstance(item, dict) and str(item.get("id") or "").strip().lower() == key:
+            return item
+    return None
+
+
+def _resolve_trigger_profile(trigger_input: str) -> dict | None:
+    """触发词 → ai_profiles 模型配置: 先按别名映射找 id, 再按触发词直接匹配 id。"""
+    alias_id = _TRIGGER_PROFILE_IDS.get(trigger_input)
+    if alias_id:
+        profile = _find_ai_profile(alias_id)
+        if profile:
+            return profile
+    return _find_ai_profile(trigger_input)
+
+
+def _model_unavailable_text(display_name: str) -> str:
+    """触发词可识别但 ai_profiles 中未配置对应模型时的提示。"""
+    return (
+        f"⚠️ 模型 **{display_name}** 未配置\n\n"
+        "请先配置该模型！"
+    )
+
+
+def _parse_stock_analysis_msg(content: str) -> tuple[str, str, dict | None] | None:
     """解析个股分析消息: "@机器人 股票名称 触发词" 或 "股票名称  触发词"。
 
-    返回 (stock_name, trigger_display) 或 None(格式不匹配)。
-    触发词仅用于显示, 实际使用系统当前配置的 AI 模型。
+    返回 (stock_name, trigger_display, profile) 或 None(格式不匹配)。
+    触发词匹配忽略大小写: 先查内置别名, 再按 ai_profiles 的 id 直接匹配;
+    profile 为该触发词对应的模型配置 (None = 未配置, 调用方应提示不支持)。
     """
     text = content.strip()
     if not text:
@@ -84,15 +130,18 @@ def _parse_stock_analysis_msg(content: str) -> tuple[str, str] | None:
     trigger_input = parts[-1].strip().lower()
     stock_name = " ".join(parts[:-1]).strip()
 
-    # 3. 映射触发词 → 显示名称
+    # 3. 触发词 → 显示名称 + ai_profiles 模型配置
+    profile = _resolve_trigger_profile(trigger_input)
     display_name = _TRIGGER_KEYWORDS.get(trigger_input)
+    if not display_name and profile is not None:
+        display_name = str(profile.get("name") or profile.get("id") or trigger_input)
     if not display_name:
         return None
 
     if not stock_name:
         return None
 
-    return stock_name, display_name
+    return stock_name, display_name, profile
 
 
 def _resolve_symbol(repo, stock_name: str) -> str | None:
@@ -126,6 +175,8 @@ def _build_analysis_report(
     elapsed: float,
 ) -> str:
     """组装个股分析报告 Markdown 文本。"""
+    from app.services.stock_analyzer import _DISCLAIMER
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     elapsed_str = f"{elapsed:.1f}" if elapsed < 60 else f"{int(elapsed // 60)}分{int(elapsed % 60)}秒"
 
@@ -141,6 +192,8 @@ def _build_analysis_report(
         "---",
         "",
         content,
+        "",
+        _DISCLAIMER,
     ]
     return "\n".join(lines)
 
@@ -194,7 +247,12 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                 await self._reply_markdown("使用帮助", help_text, incoming_message)
                 return
 
-            stock_name, trigger_display = parsed
+            stock_name, trigger_display, profile = parsed
+            if profile is None:
+                await self._reply_markdown(
+                    "提示", _model_unavailable_text(trigger_display), incoming_message
+                )
+                return
 
             repo = self._service._app_state.repo if self._service._app_state else None
             if not repo:
@@ -213,7 +271,7 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                     f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候...",
                     incoming_message,
                 )
-                analysis_content = await self._run_analysis(repo, symbol)
+                analysis_content = await self._run_analysis(repo, symbol, profile=profile)
                 elapsed = time.time() - start_time
                 report = _build_analysis_report(analysis_content, stock_name, symbol, trigger_display, elapsed)
                 await self._reply_markdown("AI 个股分析报告", report, incoming_message)
@@ -224,8 +282,12 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
         except Exception as e:
             logger.exception("钉钉机器人消息处理异常: %s", e)
 
-    async def _run_analysis(self, repo, symbol: str) -> str:
-        """执行个股分析, 返回完整分析文本 (使用系统当前配置的 AI 模型)。"""
+    async def _run_analysis(self, repo, symbol: str, profile: dict | None = None) -> str:
+        """执行个股分析, 返回完整分析文本。
+
+        profile 为触发词匹配到的 ai_profiles 模型配置, 仅本次调用生效;
+        None 时回退系统当前配置的 AI 模型 (与前端页面流程一致)。
+        """
         from app.services import ai_provider
         from app.services.stock_analyzer import (
             _KLINE_KEEP_COLS,
@@ -267,6 +329,7 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
             temperature=0.5,
             max_tokens=None,
             timeout=180.0,
+            profile=profile,
         ):
             full_content += delta
         return full_content if full_content else "AI 未返回有效内容, 请重试"

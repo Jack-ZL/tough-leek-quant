@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app import secrets_store
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 OPENAI_COMPAT_PROVIDER = "openai_compat"
 OPENAI_PROVIDER = "openai"
@@ -327,6 +330,7 @@ async def stream_ai_text(
     max_tokens: int | None = 4000,
     timeout: float = 180.0,
     prefer_final_answer: bool = False,
+    profile: dict | None = None,
 ) -> AsyncIterator[str]:
     """Yield text deltas from the configured provider.
 
@@ -335,10 +339,24 @@ async def stream_ai_text(
     lets compatible providers prioritize visible content over hidden reasoning.
 
     max_tokens=None 表示不限制输出(同 generate_ai_text 的说明)。
+    profile 非空时用该 ai_profiles 条目 (model/base_url/api_key/user_agent)
+    临时覆盖本次调用, 不改动全局配置 (智能机器人按触发词切换模型专用);
+    Codex CLI 提供方与 codex_cli 类型的 profile 不支持覆盖, 记 warning 后忽略。
     """
     max_tokens = _resolve_max_tokens(max_tokens)
     _check_input_budget(messages, max_tokens=max_tokens)
+    if profile and str(profile.get("provider") or "") == CODEX_CLI_PROVIDER:
+        logger.warning(
+            "暂不支持按触发词使用 Codex CLI 模型配置 (id=%s), 回退系统默认模型",
+            profile.get("id"),
+        )
+        profile = None
     if is_codex_cli_provider():
+        if profile:
+            logger.warning(
+                "Codex CLI 提供方不支持按触发词切换模型配置, 忽略 profile=%s",
+                profile.get("id"),
+            )
         yield await _run_codex_cli(messages, max_tokens=max_tokens, timeout=max(timeout, 600.0))
         return
 
@@ -348,6 +366,7 @@ async def stream_ai_text(
         max_tokens=max_tokens,
         timeout=timeout,
         prefer_final_answer=prefer_final_answer,
+        profile=profile,
     ):
         yield chunk
 
@@ -395,14 +414,19 @@ async def _stream_openai(
     max_tokens: int | None,
     timeout: float,
     prefer_final_answer: bool,
+    profile: dict | None = None,
 ) -> AsyncIterator[str]:
-    ai_key = secrets_store.get_ai_key()
+    profile = profile if isinstance(profile, dict) else {}
+    ai_key = str(profile.get("api_key") or "").strip() or secrets_store.get_ai_key()
     if not ai_key:
         raise RuntimeError("AI API Key 未配置, 请在设置页配置")
 
-    client = _openai_client(ai_key, timeout)
-    model = current_ai_model()
-    base_url = secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)
+    base_url = str(profile.get("base_url") or "").strip() or secrets_store.get_ai_config(
+        "ai_base_url", settings.ai_base_url
+    )
+    model = str(profile.get("model") or "").strip() or current_ai_model()
+    user_agent = str(profile.get("user_agent") or "").strip() or None
+    client = _openai_client(ai_key, timeout, base_url=base_url, user_agent=user_agent)
     req_messages = list(messages)
 
     kwargs = _openai_kwargs(
@@ -487,16 +511,23 @@ async def _iter_openai_text(stream) -> AsyncIterator[str]:
         raise RuntimeError("AI 服务未返回正文内容; 请检查模型配置或稍后重试")
 
 
-def _openai_client(api_key: str, timeout: float):
+def _openai_client(
+    api_key: str,
+    timeout: float,
+    *,
+    base_url: str | None = None,
+    user_agent: str | None = None,
+):
     from openai import AsyncOpenAI
 
-    user_agent = secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
+    ua = user_agent or secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
+    url = base_url or secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)
     return AsyncOpenAI(
         api_key=api_key,
-        base_url=normalize_openai_base_url(secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)),
+        base_url=normalize_openai_base_url(url),
         timeout=timeout,
         max_retries=0,
-        default_headers={"User-Agent": user_agent},
+        default_headers={"User-Agent": ua},
     )
 
 

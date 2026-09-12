@@ -1602,6 +1602,7 @@ export interface EndpointManifest {
 }
 
 export interface AiProfile {
+  id?: string
   name: string
   provider: string
   base_url: string
@@ -1982,14 +1983,14 @@ export const api = {
     ),
 
   /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number }) =>
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; profile_id?: string }) =>
     request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; profiles?: AiProfile[] }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
     }),
 
   /** 保存 AI 配置到 profiles 列表（不激活） */
-  saveAiProfile: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number }) =>
+  saveAiProfile: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; profile_id?: string }) =>
     request<{ ok: boolean; profiles: AiProfile[] }>('/api/settings/ai/profiles', {
       method: 'POST',
       body: JSON.stringify(ai),
