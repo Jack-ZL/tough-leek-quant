@@ -36,6 +36,29 @@ _HEARTBEAT_INTERVAL = 30.0
 _RECONNECT_BASE_DELAY = 5.0
 _RECONNECT_CAP = 60.0
 _RECONNECT_MAX_ATTEMPTS = 10
+# 服务端超时未收到响应可能按同一 msgid 重推消息, 按 msgid 去重的 TTL
+_MSG_DEDUP_TTL = 600.0
+
+# 企业微信智能机器人回复上限: 最长 20480 字节 (UTF-8, 中文约 3 字节/字), 不能按字符数截取
+_REPLY_MAX_BYTES = 20480
+_REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
+# AI 正文字数预算: 6000 字全中文约 18000 字节, 为报告头部与混合编码留余量
+_AI_BODY_CHAR_BUDGET = 6000
+_LENGTH_HINT = (
+    f"\n\n【输出长度要求】本报告将通过企业微信智能机器人发送, 平台消息上限 {_REPLY_MAX_BYTES} 字节(UTF-8 编码), "
+    f"请将分析正文全文(含免责声明)控制在 {_AI_BODY_CHAR_BUDGET} 字以内。"
+    "该要求优先于系统提示中的字数范围; 宁可压缩内容, 也不要被平台截断。"
+)
+
+
+def _truncate_reply_by_bytes(content: str, max_bytes: int = _REPLY_MAX_BYTES) -> str:
+    """按 UTF-8 字节数安全截断回复正文, 不切断多字节字符, 为后缀预留字节。"""
+    encoded = content.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return content
+    suffix_bytes = len(_REPLY_TRUNCATE_SUFFIX.encode("utf-8"))
+    cut = encoded[: max_bytes - suffix_bytes]
+    return cut.decode("utf-8", errors="ignore") + _REPLY_TRUNCATE_SUFFIX
 
 _TRIGGER_KEYWORDS = {
     "deepseek": "DeepSeek",
@@ -136,10 +159,37 @@ class WecomBotService:
         self._last_error: str = ""
         self._app_state = None
         self._ws: object | None = None
+        self._seen_msgids: dict[str, float] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
 
     def set_app_state(self, app_state) -> None:
         """注入 FastAPI app.state (供消息处理时访问 repo)。"""
         self._app_state = app_state
+
+    def _is_duplicate_msg(self, msgid: str) -> bool:
+        """msgid 去重 (带 TTL): 首次出现返回 False 并登记, 重复重推返回 True。"""
+        if not msgid:
+            return False
+        now = time.time()
+        with self._lock:
+            expired = [k for k, ts in self._seen_msgids.items() if now - ts > _MSG_DEDUP_TTL]
+            for key in expired:
+                del self._seen_msgids[key]
+            if msgid in self._seen_msgids:
+                return True
+            self._seen_msgids[msgid] = now
+            return False
+
+    def _spawn_bg(self, coro) -> None:
+        """在长连接事件循环上提交后台任务, 持强引用防止被 GC 提前回收。"""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("智能机器人后台任务失败: %s", task.exception())
 
     def start(self) -> bool:
         """启动长连接线程。凭证不齐或已运行则跳过。返回是否真正启动。"""
@@ -325,7 +375,8 @@ class WecomBotService:
         body = frame.get("body", {})
 
         if cmd == "aibot_msg_callback":
-            await self._handle_user_message(ws, frame, body)
+            # 不能阻塞收帧循环: 心跳 ping 依赖本循环, 慢分析会导致掉线重连
+            self._spawn_bg(self._handle_user_message(ws, frame, body))
         elif cmd == "aibot_event_callback":
             eventtype = body.get("event", {}).get("eventtype", "?")
             logger.info("智能机器人收到事件回调: %s", eventtype)
@@ -338,6 +389,11 @@ class WecomBotService:
         chattype = body.get("chattype", "?")
         msgtype = body.get("msgtype", "?")
         content = body.get("text", {}).get("content") or body.get("content", "")
+
+        msgid = body.get("msgid", "")
+        if self._is_duplicate_msg(msgid):
+            logger.info("智能机器人忽略重复重推消息 msgid=%s", msgid)
+            return
 
         logger.info("智能机器人收到用户消息 [%s/%s] %s: %s", chattype, msgtype, userid, str(content)[:100])
 
@@ -370,6 +426,9 @@ class WecomBotService:
 
         start_time = time.time()
         try:
+            await self._reply_markdown(
+                ws, frame, f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候..."
+            )
             analysis_content = await self._run_analysis(repo, symbol)
             elapsed = time.time() - start_time
             report = _build_analysis_report(analysis_content, stock_name, symbol, trigger_display, elapsed)
@@ -411,7 +470,7 @@ class WecomBotService:
         )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_prompt + _LENGTH_HINT},
         ]
 
         full_content = ""
@@ -430,9 +489,7 @@ class WecomBotService:
         body = frame.get("body", {})
         msgid = body.get("msgid", "")
 
-        max_len = 20000
-        if len(content.encode("utf-8")) > max_len:
-            content = content[:max_len] + "\n\n... (内容过长已截断)"
+        content = _truncate_reply_by_bytes(content)
 
         respond_frame = {
             "cmd": "aibot_respond_msg",

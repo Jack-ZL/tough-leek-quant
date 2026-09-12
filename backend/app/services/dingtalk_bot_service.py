@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -24,6 +25,28 @@ from datetime import datetime
 import dingtalk_stream
 
 logger = logging.getLogger(__name__)
+
+# 钉钉 Stream 服务端超时未收到 ACK 会用同一 msgId 重推消息, 按 msgId 去重的 TTL
+_MSG_DEDUP_TTL = 600.0
+
+# 钉钉智能机器人回复上限: 最长 4000 字符 (按字符计, 非字节)
+_REPLY_MAX_CHARS = 4000
+_REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
+# AI 正文字数预算: 为报告头部标的/模型/时间等 meta 信息与分隔线留余量
+_AI_BODY_CHAR_BUDGET = 3500
+_LENGTH_HINT = (
+    f"\n\n【输出长度要求】本报告将通过钉钉智能机器人发送, 平台消息上限 {_REPLY_MAX_CHARS} 字符, "
+    f"请将分析正文全文(含免责声明)控制在 {_AI_BODY_CHAR_BUDGET} 字符以内。"
+    "该要求优先于系统提示中的字数范围; 宁可压缩内容, 也不要被平台截断。"
+)
+
+
+def _truncate_reply_by_chars(content: str, max_chars: int = _REPLY_MAX_CHARS) -> str:
+    """按字符数截断回复正文 (钉钉按字符限长), 为后缀预留长度。"""
+    if len(content) <= max_chars:
+        return content
+    cut = max_chars - len(_REPLY_TRUNCATE_SUFFIX)
+    return content[:cut] + _REPLY_TRUNCATE_SUFFIX
 
 # 触发关键词 → 显示名称映射 (实际使用系统当前配置的 AI 模型)
 _TRIGGER_KEYWORDS = {
@@ -109,10 +132,11 @@ def _build_analysis_report(
     lines = [
         "📊 **AI 个股分析报告**",
         "",
-        f"📌 **标的**: {stock_name} ({symbol})",
-        f"🤖 **分析模型**: {model_name}",
-        f"⏰ **分析时间**: {now}",
-        f"⏱️ **分析用时**: {elapsed_str}",
+        # 行尾两个空格 + 单个 \n 是 Markdown 硬换行; \n\n 会被渲染成段落(间距过大)
+        f"📌 **标的**: {stock_name} ({symbol})  ",
+        f"🤖 **分析模型**: {model_name}  ",
+        f"⏰ **分析时间**: {now}  ",
+        f"⏱️ **分析用时**: {elapsed_str}  ",
         "",
         "---",
         "",
@@ -129,10 +153,12 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
         self._service = service
 
     async def process(self, message):
-        """SDK 回调: 处理机器人消息。
+        """SDK 回调: 立即 ACK, 解析与分析交给后台任务。
 
         message: CallbackMessage, 其 data 字段包含 ChatbotMessage 的原始 dict。
-        返回 (status, message) — dingtalk_stream.AckMessage.STATUS_OK 表示成功。
+        SDK 的 raw_process 会等本协程返回后才向钉钉服务端发送 ACK, 而服务端
+        要求约 10s 内 ACK, 否则按同一 msgId 重推消息; AI 分析常需数分钟,
+        因此必须先返回 ACK 再后台分析, 并按 msgId 去重防止重推导致重复回复。
         """
         try:
             incoming_message = dingtalk_stream.ChatbotMessage.from_dict(message.data)
@@ -141,6 +167,19 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
             msg_id = incoming_message.message_id or ""
 
             logger.info("钉钉智能机器人收到用户消息 [%s] msg=%s: %s", sender_nick, msg_id, str(content)[:100])
+
+            if self._service.is_duplicate_msg(msg_id):
+                logger.info("钉钉智能机器人忽略重复重推消息 msg=%s", msg_id)
+            else:
+                self._service.spawn_bg(self._handle_message(incoming_message))
+        except Exception:
+            logger.exception("钉钉机器人消息处理异常")
+        return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+
+    async def _handle_message(self, incoming_message) -> None:
+        """后台执行: 解析 → 个股分析 → 回复 (不阻塞 ACK)。"""
+        try:
+            content = incoming_message.text.content.strip() if incoming_message.text else ""
 
             parsed = _parse_stock_analysis_msg(content)
             if not parsed:
@@ -153,22 +192,27 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                     "支持的模型: DeepSeek、千问(qwen)、智谱(glm)"
                 )
                 await self._reply_markdown("使用帮助", help_text, incoming_message)
-                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+                return
 
             stock_name, trigger_display = parsed
 
             repo = self._service._app_state.repo if self._service._app_state else None
             if not repo:
                 await self._reply_markdown("系统提示", "⚠️ 系统未就绪, 请稍后重试", incoming_message)
-                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+                return
 
             symbol = _resolve_symbol(repo, stock_name)
             if not symbol:
                 await self._reply_markdown("提示", "股票名称错误或模型暂不可用", incoming_message)
-                return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+                return
 
             start_time = time.time()
             try:
+                await self._reply_markdown(
+                    "正在分析",
+                    f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候...",
+                    incoming_message,
+                )
                 analysis_content = await self._run_analysis(repo, symbol)
                 elapsed = time.time() - start_time
                 report = _build_analysis_report(analysis_content, stock_name, symbol, trigger_display, elapsed)
@@ -177,11 +221,8 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                 logger.exception("钉钉智能机器人个股分析失败: %s", e)
                 await self._reply_markdown("分析失败", f"⚠️ 分析失败: {e}", incoming_message)
 
-            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
-
         except Exception as e:
             logger.exception("钉钉机器人消息处理异常: %s", e)
-            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
     async def _run_analysis(self, repo, symbol: str) -> str:
         """执行个股分析, 返回完整分析文本 (使用系统当前配置的 AI 模型)。"""
@@ -217,7 +258,7 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
 
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_prompt + _LENGTH_HINT},
         ]
 
         full_content = ""
@@ -234,12 +275,11 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
         """通过 SDK 回复 Markdown 消息。"""
         msg_id = incoming_message.message_id or ""
 
-        max_len = 20000
-        if len(content.encode("utf-8")) > max_len:
-            content = content[:max_len] + "\n\n... (内容过长已截断)"
+        content = _truncate_reply_by_chars(content)
 
         try:
-            self.reply_markdown(title, content, incoming_message)
+            # SDK 的 reply_markdown 是同步 requests.post, 移出事件循环避免阻塞收帧/心跳
+            await asyncio.to_thread(self.reply_markdown, title, content, incoming_message)
             logger.info("钉钉智能机器人已回复 Markdown 消息 (msgId=%s, 长度=%d)", msg_id, len(content))
         except Exception as e:
             logger.exception("钉钉回复 Markdown 失败: %s", e)
@@ -256,10 +296,37 @@ class DingtalkBotService:
         self._last_error: str = ""
         self._app_state = None
         self._sdk_client = None
+        self._seen_msg_ids: dict[str, float] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
 
     def set_app_state(self, app_state) -> None:
         """注入 FastAPI app.state (供消息处理时访问 repo)。"""
         self._app_state = app_state
+
+    def is_duplicate_msg(self, msg_id: str) -> bool:
+        """msgId 去重 (带 TTL): 首次出现返回 False 并登记, 重复重推返回 True。"""
+        if not msg_id:
+            return False
+        now = time.time()
+        with self._lock:
+            expired = [k for k, ts in self._seen_msg_ids.items() if now - ts > _MSG_DEDUP_TTL]
+            for key in expired:
+                del self._seen_msg_ids[key]
+            if msg_id in self._seen_msg_ids:
+                return True
+            self._seen_msg_ids[msg_id] = now
+            return False
+
+    def spawn_bg(self, coro) -> None:
+        """在 SDK 事件循环上提交后台任务, 持强引用防止被 GC 提前回收。"""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("钉钉机器人后台任务失败: %s", task.exception())
 
     def start(self) -> bool:
         """启动长连接线程。凭证不齐或已运行则跳过。返回是否真正启动。"""
