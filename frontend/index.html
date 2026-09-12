@@ -1,47 +1,51 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <script>
-      // 预渲染主题脚本: 首屏前设置 html.dark, 避免亮暗闪烁 (FOUC)。
-      // 优先手动覆盖 (tf-theme-override, 24h 过期), 无覆盖则按时间自动: 7:00-19:00 亮色, 其余暗色。
-      (function () {
-        try {
-          const raw = localStorage.getItem('tf-theme-override')
-          if (raw) {
-            const entry = JSON.parse(raw)
-            if (Date.now() <= entry.expiresAt) {
-              if (entry.theme === 'light') {
-                document.documentElement.classList.remove('dark')
-              } else {
-                document.documentElement.classList.add('dark')
-              }
-              return
+
+<head>
+  <meta charset="UTF-8" />
+  <script>
+    // 预渲染主题脚本: 首屏前设置 html.dark, 避免亮暗闪烁 (FOUC)。
+    // 优先手动覆盖 (tf-theme-override, 24h 过期), 无覆盖则按时间自动: 7:00-19:00 亮色, 其余暗色。
+    (function () {
+      try {
+        const raw = localStorage.getItem('tf-theme-override')
+        if (raw) {
+          const entry = JSON.parse(raw)
+          if (Date.now() <= entry.expiresAt) {
+            if (entry.theme === 'light') {
+              document.documentElement.classList.remove('dark')
             } else {
-              localStorage.removeItem('tf-theme-override')
+              document.documentElement.classList.add('dark')
             }
+            return
+          } else {
+            localStorage.removeItem('tf-theme-override')
           }
-          const h = new Date().getHours()
-          if (h < 7 || h >= 19) {
-            document.documentElement.classList.add('dark')
-          }
-        } catch (e) {
+        }
+        const h = new Date().getHours()
+        if (h < 7 || h >= 19) {
           document.documentElement.classList.add('dark')
         }
-      })()
-    </script>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="theme-color" content="#8B5CF6" />
-    <title>Tick Stock Panel · Quant Terminal</title>
-    <link rel="preconnect" href="https://rsms.me/" />
-    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  </head>
-  <body class="bg-base text-foreground">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+      } catch (e) {
+        document.documentElement.classList.add('dark')
+      }
+    })()
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="theme-color" content="#8B5CF6" />
+  <title>Tick Stock Panel · Quant Terminal</title>
+  <link rel="preconnect" href="https://rsms.me/" />
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+</head>
+
+<body class="bg-base text-foreground">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>
