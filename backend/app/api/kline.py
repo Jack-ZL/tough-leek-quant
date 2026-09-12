@@ -144,11 +144,17 @@ def search_instruments(
         if df_t.is_empty() or "symbol" not in df_t.columns:
             continue
         # dtype 全部归一到 Utf8: 股票/ETF 两份缓存来源不同 (ETF 含 legacy 合并), 防 concat SchemaError
+        # 股票池里混有港股 (.HK 后缀), 单独标注为 hk 供前端渲染徽标/豁免 A 股口径
+        asset_type_expr = (
+            pl.when((pl.lit(t) == "stock") & pl.col("symbol").str.ends_with(".HK"))
+            .then(pl.lit("hk"))
+            .otherwise(pl.lit(t))
+        )
         parts.append(df_t.with_columns([
             pl.col("symbol").cast(pl.Utf8).alias("symbol"),
             (pl.col("name").cast(pl.Utf8) if "name" in df_t.columns else pl.lit("")).alias("name"),
             (pl.col("code").cast(pl.Utf8) if "code" in df_t.columns else pl.lit("")).alias("code"),
-            pl.lit(t).alias("asset_type"),
+            asset_type_expr.alias("asset_type"),
         ]).select(["symbol", "name", "code", "asset_type"]))
     if not parts:
         return {"results": []}

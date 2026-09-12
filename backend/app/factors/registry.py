@@ -298,6 +298,12 @@ _CATALOG: tuple[FactorSpec, ...] = (
         "KDJ K值 - D值, 正值代表快线在慢线上方",
         deps=frozenset({"kdj_k", "kdj_d"}),
     ),
+    # --- 估值 (跨市场比价) ---
+    _base(
+        "ah_premium", "AH溢价率", "估值",
+        "A股未复权收盘 / (H股未复权收盘 x 港币汇率) - 1, 正数为A股相对H股溢价; 仅A+H双上市个股",
+        asset_types=_STOCK_ONLY, unit="ratio",
+    ),
 )
 
 _REGISTRY: dict[str, FactorSpec] = {}

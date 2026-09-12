@@ -230,6 +230,10 @@ class QuoteService:
         # 异动边缘规则上次评估时间戳 (秒)。异动快照历史部分有 60s 缓存,
         # 但每次构建仍有全市场循环, 轮询线程里限频到 30s 一次。
         self._abnormal_last_eval = 0.0
+        # AH 溢价率 lagged 映射缓存: {A股symbol → 溢价率}, 按「上一完整收盘日」失效。
+        # 盘中 A/H 报价不同步 (A 实时、H 昨收), 监控告警用稳定日频值, 每日仅重算一次。
+        self._ah_premium_map: dict[str, float] = {}
+        self._ah_premium_map_date: date | None = None
 
         # 拉取元信息 (给 SSE / status 用)
         self._fetch_time: float = 0.0       # perf_counter (用于计算 quote_age_ms)
@@ -1144,6 +1148,52 @@ class QuoteService:
         from app.services import preferences
         preferences.save({"realtime_quotes_enabled": enabled})
 
+    @staticmethod
+    def _exclude_hk(df: pl.DataFrame) -> pl.DataFrame:
+        """剔除港股 (symbol 以 .HK 结尾) — A 股监控消费者边界。
+
+        港股日K仍被管道拉取写入 enriched (数据获取保持不变), 但监控告警/信号等
+        A 股口径场景不纳入港股 (scope=all 的价格/信号规则不得误触发港股行)。
+        """
+        if df.is_empty() or "symbol" not in df.columns:
+            return df
+        return df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
+
+    def _attach_ah_premium(self, df: pl.DataFrame) -> pl.DataFrame:
+        """给 A 股监控帧注入 lagged AH 溢价率 (上一完整收盘日, 日频信号)。
+
+        盘中 A/H 报价不同步 (A 实时、H 昨收), 直接比价会失真; 故用历史缓存最新收盘日的
+        稳定 premium。映射按该收盘日缓存, 当日盘中不再重算。失败/无配对时原样返回。
+        """
+        if df.is_empty() or self._repo is None:
+            return df
+        try:
+            lagged_df, lagged_date = self._repo.get_latest_completed_enriched()
+        except Exception as e:  # pragma: no cover - 数据访问降级, 不影响监控主流程
+            logger.debug("获取上一完整收盘日 enriched 失败: %s", e)
+            return df
+        if lagged_df.is_empty() or lagged_date is None:
+            return df
+        if self._ah_premium_map_date != lagged_date:
+            try:
+                from app.services.ah_premium import premium_map
+                instruments = self._repo.get_instruments()
+                self._ah_premium_map = premium_map(lagged_df, instruments)
+                self._ah_premium_map_date = lagged_date
+            except Exception as e:  # pragma: no cover - 数据访问降级, 不影响监控主流程
+                logger.debug("AH 溢价率映射构建失败: %s", e)
+                self._ah_premium_map = {}
+                self._ah_premium_map_date = lagged_date
+        if not self._ah_premium_map:
+            return df
+        if "ah_premium" in df.columns:
+            df = df.drop("ah_premium")
+        pm = pl.DataFrame({
+            "symbol": list(self._ah_premium_map.keys()),
+            "ah_premium": list(self._ah_premium_map.values()),
+        })
+        return df.join(pm, on="symbol", how="left")
+
     # ================================================================
     # 策略监控
     # ================================================================
@@ -1184,9 +1234,11 @@ class QuoteService:
                         logger.debug("name_map 构建失败 (不影响监控): %s", e)
                     # 股票轮: 快照未就绪时跳过 (ladder 封单也依赖股票快照日期, 一并跳过)
                     if stock_ready:
-                        eval_df = enriched_today
+                        # A 股消费者边界: 排除港股 + 注入 lagged AH 溢价率 (日频信号)。
+                        base = self._attach_ah_premium(self._exclude_hk(enriched_today))
+                        eval_df = base
                         if engine.has_rule_type("ladder"):
-                            eval_df = self._inject_sealed_vol(enriched_today, enriched_date)
+                            eval_df = self._inject_sealed_vol(base, enriched_date)
                         if engine.has_rule_type("volume_delta"):
                             eval_df = self._inject_volume_delta(eval_df)
                         eval_df = self._inject_intraday_signals(eval_df, engine, "stock")

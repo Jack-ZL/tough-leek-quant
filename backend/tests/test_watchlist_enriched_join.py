@@ -264,3 +264,20 @@ def test_watchlist_enriched_index_branch(monkeypatch):
     assert rows["510300.SH"]["asset_type"] == "etf"
     # as_of == min(三类缓存日期)
     assert res["as_of"] == "2026-07-23"
+
+
+def test_hk_watchlist_marked_as_hk(monkeypatch):
+    """港股自选标的 asset_type 应为 'hk' (前端据此豁免 A 股板块筛选/分时)。"""
+    monkeypatch.setattr(wl_api.watchlist, "list_symbols",
+                        lambda: [{"symbol": "00700.HK"}, {"symbol": "600519.SH"}])
+    repo = _FakeRepo(
+        enriched_df=_enriched_df([("00700.HK", 88.0, 0.5, 0.0), ("600519.SH", 1800.0, 1.2, 1e9)]),
+        enriched_date="2026-07-08",
+        name_map={"00700.HK": "腾讯控股", "600519.SH": "贵州茅台"},
+    )
+
+    res = wl_api.watchlist_enriched(_make_request(repo), ext_columns=None)
+
+    by_sym = {r["symbol"]: r for r in res["rows"]}
+    assert by_sym["00700.HK"]["asset_type"] == "hk"
+    assert by_sym["600519.SH"]["asset_type"] == "stock"

@@ -1145,6 +1145,25 @@ class KlineRepository:
             return pl.DataFrame(), self._enriched_cache_date
         return self._enriched_cache, self._enriched_cache_date
 
+    def get_latest_completed_enriched(self) -> tuple[pl.DataFrame, date | None]:
+        """返回最近一个「已完整收盘」交易日的全市场 enriched 帧 + 日期。
+
+        与 get_enriched_latest 的区别: 后者盘中会被实时 flush 更新为当日实时价
+        (A 股实时、H 股仍为昨收), 跨市场比价 (AH 溢价率) 需要 A/H 同刻收盘价,
+        故这里从历史缓存取最新收盘日 (盘中=上一交易日, 盘后=最近收盘日)。
+        历史缓存未就绪时返回空表 (fail-closed)。
+        """
+        if self._enriched_history_cache is None:
+            if self._enriched_warming:
+                # 后台预热中: 返回空, 不触发同步重算 (同 get_enriched_latest 守卫语义)。
+                return pl.DataFrame(), None
+            self._refresh_enriched()
+        cache = self._enriched_history_cache
+        if cache is None or cache.is_empty() or "date" not in cache.columns:
+            return pl.DataFrame(), None
+        latest = cache["date"].max()
+        return cache.filter(pl.col("date") == latest), latest
+
     def get_enriched_latest_asset(self, asset_type: str, refresh: bool = True) -> tuple[pl.DataFrame, date | None]:
         """按资产类型返回最新 enriched 缓存。stock 保持旧缓存语义。
 

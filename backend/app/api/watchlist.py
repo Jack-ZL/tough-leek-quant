@@ -454,7 +454,13 @@ def watchlist_enriched(
     )
 
     # 标注资产类型: 前端据此渲染徽标/豁免板块筛选/分时列降级
-    asset_map = {**{s: "etf" for s in etf_symbols}, **{s: "index" for s in index_symbols}}
+    # 港股无涨跌停/板块语义, 单独标注为 hk, 前端据此豁免 A 股口径 (板块筛选/分时/连板等)
+    hk_symbols = [s for s in stock_symbols if s.endswith(".HK")]
+    asset_map = {
+        **{s: "etf" for s in etf_symbols},
+        **{s: "index" for s in index_symbols},
+        **{s: "hk" for s in hk_symbols},
+    }
     df = df.with_columns(
         pl.col("symbol").replace_strict(asset_map, default="stock", return_dtype=pl.Utf8).alias("asset_type")
     )

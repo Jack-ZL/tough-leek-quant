@@ -62,6 +62,21 @@ class ScreenerService:
             return df
         return df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
 
+    def _attach_ah_premium(self, df: pl.DataFrame) -> pl.DataFrame:
+        """给含 A/H 双市场行的帧注入 ah_premium 列 (仅 stock; 其余资产原样返回)。
+
+        AH 溢价率是跨 symbol 比价, 需帧内同时含 A 股与对应 H 股行 (日频 enriched),
+        盘中单标的帧无 H 股行, attach 内部 fail-closed 原样返回 (不加列)。
+        """
+        if self.asset_type != "stock" or df.is_empty() or "raw_close" not in df.columns:
+            return df
+        instruments = self.repo.get_instruments_asset("stock")
+        if instruments is None or instruments.is_empty():
+            return df
+        from app.services.ah_premium import attach_ah_premium
+
+        return attach_ah_premium(df, instruments)
+
     def _load_enriched_for_date(self, target_date: date) -> pl.DataFrame:
         """从 enriched parquet 读取指定日期的基础数据并即时计算完整指标+信号。
 
@@ -78,7 +93,7 @@ class ScreenerService:
                 inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in df_i.columns]
                 if "name" not in df.columns:
                     df = df.join(df_i.select(inst_cols), on="symbol", how="left")
-            return self._exclude_hk(df)
+            return self._exclude_hk(self._attach_ah_premium(df))
 
         # 尝试从 repo 级预计算历史缓存中提取目标日期 (仅 stock: 该缓存为股票专用)
         if self.asset_type == "stock":
@@ -93,7 +108,7 @@ class ScreenerService:
                         inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in df_i.columns]
                         if "name" not in df.columns:
                             df = df.join(df_i.select(inst_cols), on="symbol", how="left")
-                    return self._exclude_hk(df)
+                    return self._exclude_hk(self._attach_ah_premium(df))
 
         # 历史日期: 从 parquet 读取 14 列, 即时计算指标 (慢路径)
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
@@ -114,7 +129,7 @@ class ScreenerService:
 
         # 即时计算指标: 需要加载历史窗口作 warmup
         df_full = self._compute_enriched_full(df, target_date)
-        return self._exclude_hk(df_full)
+        return self._exclude_hk(self._attach_ah_premium(df_full))
 
     def load_prior_consecutive(self, as_of: date, consec_col: str) -> pl.DataFrame:
         """窄读: 仅取前一交易日的 [symbol, consec_col] 两列 (谓词下推到单日 parquet)。
@@ -260,7 +275,7 @@ class ScreenerService:
                 elapsed = (time.perf_counter() - t0) * 1000
                 logger.info("_load_enriched_history(%s, %d): repo cache hit, %.1fms, %d rows",
                             target_date, lookback_days, elapsed, len(cached))
-                return self._exclude_hk(cached)
+                return self._exclude_hk(self._attach_ah_premium(cached))
 
         # 优先级 2: 进程级 history_cache (之前的 TTL 缓存)
         cache_key = (self.asset_type, target_date, lookback_days)
@@ -270,7 +285,7 @@ class ScreenerService:
             ts, cached_df = ttl_cached
             if now - ts < _HISTORY_CACHE_TTL:
                 logger.debug("history TTL cache hit: %s lookback=%d", target_date, lookback_days)
-                return self._exclude_hk(cached_df)
+                return self._exclude_hk(self._attach_ah_premium(cached_df))
             del _history_cache[cache_key]
 
         # 优先级 3: scan_parquet + compute_indicators (慢路径, ~5s)
@@ -344,7 +359,7 @@ class ScreenerService:
             for k in expired:
                 del _history_cache[k]
 
-        return self._exclude_hk(df_full)
+        return self._exclude_hk(self._attach_ah_premium(df_full))
 
     def run(
         self,

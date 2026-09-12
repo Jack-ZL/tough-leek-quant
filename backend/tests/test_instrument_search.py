@@ -146,3 +146,27 @@ def test_cache_returns_same_result_across_calls():
     r2 = search_instruments(req, q="payh", limit=20, asset_types="stock")["results"]
     assert r1 == r2
     assert [r["symbol"] for r in r1] == ["000001.SZ"]
+
+
+# ===== 港股 asset_type 标注 =====
+
+HK_STOCKS = pl.DataFrame({
+    "symbol": ["09966.HK", "00700.HK"],
+    "code": ["09966", "00700"],
+    "name": ["阿里健康", "腾讯控股"],
+})
+
+
+def test_hk_stock_marked_as_hk():
+    """股票池里 .HK 后缀标的应返回 asset_type='hk', 供前端区分港股。"""
+    repo = _FakeRepo({"stock": HK_STOCKS})
+    rows = search_instruments(_request(repo), q="00700", limit=20, asset_types="stock")["results"]
+    row = next(r for r in rows if r["symbol"] == "00700.HK")
+    assert row["asset_type"] == "hk"
+
+
+def test_a_share_still_marked_as_stock():
+    """非港股股票 asset_type 仍为 'stock' (不受港股标注影响)。"""
+    rows = _search("6005")
+    row = next(r for r in rows if r["symbol"] == "600519.SH")
+    assert row["asset_type"] == "stock"

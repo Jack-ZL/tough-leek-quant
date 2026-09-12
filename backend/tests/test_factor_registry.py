@@ -99,6 +99,7 @@ GOLDEN_COLUMNS: list[dict] = [
     {"id": "position_240d", "label": "一年价格位置", "group": "价格位置", "desc": "收盘价在近240个交易日最低价到最高价之间的位置 (0~1)"},
     {"id": "distance_to_high_240d", "label": "距一年高点", "group": "价格位置", "desc": "收盘价 / 240日最高收盘价 - 1, 接近0代表贴近一年新高"},
     {"id": "kdj_kd_diff", "label": "KDJ K-D差", "group": "趋势", "desc": "KDJ K值 - D值, 正值代表快线在慢线上方"},
+    {"id": "ah_premium", "label": "AH溢价率", "group": "估值", "desc": "A股未复权收盘 / (H股未复权收盘 x 港币汇率) - 1, 正数为A股相对H股溢价; 仅A+H双上市个股"},
 ]
 
 GOLDEN_VIRTUAL_DEPS: dict[str, frozenset[str]] = {
@@ -230,8 +231,8 @@ def test_scoring_warmup_snapshot() -> None:
 
 def test_catalog_counts_and_kinds() -> None:
     specs = all_factors()
-    assert len(specs) == 77
-    assert len({spec.id for spec in specs}) == 77  # id 唯一
+    assert len(specs) == 78
+    assert len({spec.id for spec in specs}) == 78  # id 唯一
     virtual = [spec for spec in specs if spec.kind == "virtual"]
     assert len(virtual) == 52  # ma/ema 10 + 原有 26 + 扩充批次 16
     financial = [spec for spec in specs if spec.pit]
@@ -261,8 +262,8 @@ def test_get_factor_and_dependencies() -> None:
 def test_asset_type_filter() -> None:
     stock = all_factors(asset_type="stock")
     etf = all_factors(asset_type="etf")
-    assert len(stock) == 77
-    assert len(etf) == 70  # 财务 7 项仅股票
+    assert len(stock) == 78
+    assert len(etf) == 70  # 财务 7 项 + AH溢价 1 项仅股票
 
 
 def test_register_factor_rejects_duplicate() -> None:
@@ -309,7 +310,7 @@ def test_factors_api_contract() -> None:
     assert response.status_code == 200
     payload = response.json()
     factors = payload["factors"]
-    assert len(factors) == 77
+    assert len(factors) == 78
     first = factors[0]
     assert first["id"] == "momentum_5d"
     assert first["kind"] == "base"

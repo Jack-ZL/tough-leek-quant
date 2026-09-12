@@ -204,6 +204,7 @@ def _build_user_prompt(
     symbol: str,
     focus: str,
     asset_type: str = "stock",
+    ah_premium: dict | None = None,
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点。
 
@@ -242,6 +243,27 @@ def _build_user_prompt(
             "(该标的暂无财务数据:当前为 Free 模式或尚未同步财务报表。"
             "请按系统提示词第 4 节的说明,在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据。)",
         ])
+
+    if symbol.upper().endswith(".HK"):
+        parts.extend([
+            "",
+            "(该标的为港股: 无涨跌停制度, 连板/涨停/跌停类信号不适用; 成交额可能缺失, "
+            "价格与成交单位为港币。财务数据按实有情况说明, 不要编造。)",
+        ])
+
+    if ah_premium:
+        h_symbol = ah_premium.get("h_symbol")
+        a_close = ah_premium.get("a_close")
+        h_close = ah_premium.get("h_close")
+        premium = ah_premium.get("premium")
+        fx = ah_premium.get("fx")
+        if h_symbol and a_close is not None and h_close is not None and premium is not None:
+            parts.extend([
+                "",
+                f"(AH 比价参考: 该 A 股存在对应 H 股 {h_symbol}; 最新 A 股收盘 {a_close:.2f} 元, "
+                f"H 股收盘 {h_close:.2f} 港币 (按汇率 {fx} 换算), AH 溢价率 {premium * 100:+.1f}%。"
+                "此跨市场比价仅供客观估值参考, 不构成操作建议。)",
+            ])
 
     from app.services.ai_provider import build_focus_instruction
     focus_instruction = build_focus_instruction(focus, report_name="个股分析报告")
@@ -304,6 +326,16 @@ async def analyze_stock_stream(
     # 3. 财务(辅助)
     fins = _load_financials(data_dir, symbol)
 
+    # 3.5 AH 溢价快照 (A 股有 H 股配对时补充跨市场比价; 失败不影响主流程)
+    ah_premium = None
+    if not symbol.upper().endswith(".HK"):
+        try:
+            from app.services.ah_premium import get_ah_premium_snapshot
+            ah_premium = get_ah_premium_snapshot(repo, symbol)
+        except Exception:
+            logger.exception("AH premium lookup failed for %s", symbol)
+            ah_premium = None
+
     # 4. meta
     yield json.dumps({
         "type": "meta",
@@ -319,7 +351,8 @@ async def analyze_stock_stream(
 
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
-                                         asset_type=repo.resolve_asset_type(symbol))
+                                         asset_type=repo.resolve_asset_type(symbol),
+                                         ah_premium=ah_premium)
         got_content = False
         async for delta in stream_ai_text(
             [
