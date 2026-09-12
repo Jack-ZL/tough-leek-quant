@@ -390,6 +390,9 @@ class BacktestEngine:
                 if attempt + 1 >= attempts:
                     raise
                 continue
+            # 回测/因子面板仅按 A 股口径, 剔除港股 (个股分析走单标的路径不受影响)
+            if asset_type == "stock" and not panel.is_empty() and "symbol" in panel.columns:
+                panel = panel.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
             return panel
         raise EnrichedGenerationUnavailableError(
             "unable to read a stable enriched data snapshot"

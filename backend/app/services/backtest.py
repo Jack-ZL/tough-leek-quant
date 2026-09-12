@@ -187,6 +187,10 @@ class BacktestService:
             logger.warning("backtest load failed: %s", e)
             return pd.DataFrame()
 
+        # 回测候选仅按 A 股口径, 剔除港股
+        if asset_type == "stock":
+            df = df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
+
         if df.is_empty():
             return pd.DataFrame()
 

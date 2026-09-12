@@ -168,6 +168,8 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
         )
         .collect()
     )
+    # 题材主线统计仅按 A 股口径, 剔除港股 (港股无涨跌停制度, 本就不会命中, 但显式过滤保持一致)
+    limit_rows = limit_rows.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
     if limit_rows.is_empty():
         return pl.DataFrame()
 

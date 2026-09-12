@@ -9,6 +9,7 @@ quote_service,depth_service}` 的依赖改为显式参数。
 公共入口:
     build_market_overview(repo, quote_service, depth_service, as_of)
 """
+
 from __future__ import annotations
 
 import math
@@ -32,6 +33,7 @@ _DIMENSION_SEP = re.compile(r"[、,，;；|/\s]+")
 # ================================================================
 # 通用工具
 # ================================================================
+
 
 def _finite(v: Any) -> float | None:
     if v is None:
@@ -77,10 +79,16 @@ def _score(value: float, low: float, high: float) -> int:
 # 指数行情(实时 quote_service 优先,回退 kline_index_daily SQL)
 # ================================================================
 
+
 def _quote_status(quote_service) -> dict:
     qs = quote_service
     if not qs:
-        return {"enabled": False, "running": False, "quote_age_ms": None, "is_trading_hours": False}
+        return {
+            "enabled": False,
+            "running": False,
+            "quote_age_ms": None,
+            "is_trading_hours": False,
+        }
     return qs.status()
 
 
@@ -126,28 +134,36 @@ def _index_quotes(repo, quote_service, as_of: date | None = None) -> list[dict]:
             if lp is not None and pc not in (None, 0):
                 change_amount = lp - pc
                 change_pct = change_amount / pc * 100
-            rows.append({
-                "symbol": symbol,
-                "name": CORE_INDEX_NAMES.get(symbol),
-                "date": str(dt) if dt else None,
-                "last_price": lp,
-                "close": lp,
-                "prev_close": pc,
-                "change_amount": change_amount,
-                "change_pct": change_pct,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": CORE_INDEX_NAMES.get(symbol),
+                    "date": str(dt) if dt else None,
+                    "last_price": lp,
+                    "close": lp,
+                    "prev_close": pc,
+                    "change_amount": change_amount,
+                    "change_pct": change_pct,
+                }
+            )
 
     by_symbol = {r.get("symbol"): r for r in rows}
     out = []
     for symbol in CORE_INDEX_SYMBOLS:
         r = by_symbol.get(symbol, {"symbol": symbol})
-        out.append({
-            "symbol": symbol,
-            "name": r.get("name") or CORE_INDEX_NAMES[symbol],
-            "last_price": _finite(r.get("last_price") if r.get("last_price") is not None else r.get("close")),
-            "change_pct": _finite(r.get("change_pct")),
-            "change_amount": _finite(r.get("change_amount")),
-        })
+        out.append(
+            {
+                "symbol": symbol,
+                "name": r.get("name") or CORE_INDEX_NAMES[symbol],
+                "last_price": _finite(
+                    r.get("last_price")
+                    if r.get("last_price") is not None
+                    else r.get("close")
+                ),
+                "change_pct": _finite(r.get("change_pct")),
+                "change_amount": _finite(r.get("change_amount")),
+            }
+        )
     return out
 
 
@@ -155,8 +171,13 @@ def _index_quotes(repo, quote_service, as_of: date | None = None) -> list[dict]:
 # 扩展数据(行业 / 概念)维度聚合
 # ================================================================
 
+
 def _dimension_field(config: ExtConfig, kind: str) -> str | None:
-    candidates = ["概念", "concept", "theme"] if kind == "concept" else ["行业", "industry", "sector"]
+    candidates = (
+        ["概念", "concept", "theme"]
+        if kind == "concept"
+        else ["行业", "industry", "sector"]
+    )
     for candidate in candidates:
         needle = candidate.lower()
         for field in config.fields:
@@ -197,7 +218,11 @@ def _read_ext_rows(data_dir, config: ExtConfig, dimension_field: str) -> list[di
 
     symbol_cols = ["symbol", "code", "股票代码", "代码"]
     for mapping in (config.symbol_map, config.code_map):
-        if isinstance(mapping, dict) and mapping.get("type") == "mapped" and mapping.get("col"):
+        if (
+            isinstance(mapping, dict)
+            and mapping.get("type") == "mapped"
+            and mapping.get("col")
+        ):
             symbol_cols.append(str(mapping["col"]))
     cols = []
     for col in [dimension_field, *symbol_cols]:
@@ -220,7 +245,11 @@ def _dimension_values(raw: Any) -> list[str]:
 def _symbol_keys(row: dict, config: ExtConfig) -> list[str]:
     fields = ["symbol", "code", "股票代码", "代码"]
     for mapping in (config.symbol_map, config.code_map):
-        if isinstance(mapping, dict) and mapping.get("type") == "mapped" and mapping.get("col"):
+        if (
+            isinstance(mapping, dict)
+            and mapping.get("type") == "mapped"
+            and mapping.get("col")
+        ):
             fields.append(str(mapping["col"]))
 
     keys: list[str] = []
@@ -247,7 +276,9 @@ def _leader_sort_key(row: dict) -> float:
     return value if value is not None else float("-inf")
 
 
-def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
+def _dimension_rank(
+    rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None
+) -> dict:
     if not rows:
         return {"leading": [], "lagging": []}
 
@@ -261,7 +292,9 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
 
     store = ExtConfigStore(repo.store.data_dir)
     groups: dict[str, dict[str, dict]] = {}
-    group_source: dict[str, str] = {}  # 组名 → 首个命中的扩展字段 "configId.field" (看板成分股弹窗用)
+    group_source: dict[str, str] = (
+        {}
+    )  # 组名 → 首个命中的扩展字段 "configId.field" (看板成分股弹窗用)
     for config in store.load_all():
         field = _dimension_field(config, kind)
         if not field:
@@ -292,20 +325,22 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
         if not changes:
             continue
         leader = max(stocks, key=_leader_sort_key)
-        items.append({
-            "name": name,
-            "count": len(stocks),
-            "avg_pct": sum(changes) / len(changes),
-            "up_count": sum(1 for v in changes if v > 0),
-            "down_count": sum(1 for v in changes if v < 0),
-            "amount": sum(_finite(s.get("amount")) or 0 for s in stocks),
-            "source_field": group_source.get(name),
-            "leader": {
-                "symbol": leader.get("symbol"),
-                "name": leader.get("name"),
-                "change_pct": _finite(leader.get("change_pct")),
-            },
-        })
+        items.append(
+            {
+                "name": name,
+                "count": len(stocks),
+                "avg_pct": sum(changes) / len(changes),
+                "up_count": sum(1 for v in changes if v > 0),
+                "down_count": sum(1 for v in changes if v < 0),
+                "amount": sum(_finite(s.get("amount")) or 0 for s in stocks),
+                "source_field": group_source.get(name),
+                "leader": {
+                    "symbol": leader.get("symbol"),
+                    "name": leader.get("name"),
+                    "change_pct": _finite(leader.get("change_pct")),
+                },
+            }
+        )
 
     leading = sorted(items, key=lambda x: x["avg_pct"], reverse=True)[:limit]
     lagging = sorted(items, key=lambda x: x["avg_pct"])[:limit]
@@ -316,7 +351,10 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
 # Top 行 / 涨跌幅分桶
 # ================================================================
 
-def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> list[dict]:
+
+def _top_rows(
+    rows: list[dict], key: str, descending: bool, limit: int = 8
+) -> list[dict]:
     filtered = [r for r in rows if _finite(r.get(key)) is not None]
     filtered.sort(key=lambda r: _finite(r.get(key)) or 0, reverse=descending)
     return [
@@ -363,6 +401,7 @@ def _pct_band_rows(values: list[float]) -> list[dict]:
 # 主装配入口
 # ================================================================
 
+
 def build_market_overview(
     repo,
     quote_service=None,
@@ -372,10 +411,10 @@ def build_market_overview(
     """装配市场总览(与原 overview._build_overview 行为一致)。
 
     Args:
-        repo: KlineRepository(必填)。
-        quote_service: QuoteService(可选;实时指数行情来源)。
-        depth_service: DepthService(可选;五档封板修正)。
-        as_of: 指定日期,None 则取最新有数据日。
+            repo: KlineRepository(必填)。
+            quote_service: QuoteService(可选;实时指数行情来源)。
+            depth_service: DepthService(可选;五档封板修正)。
+            as_of: 指定日期,None 则取最新有数据日。
     """
     svc = ScreenerService(repo)
     # 调用方未指定日期时视为"最新"请求: 指数行情走实时缓存 (quote_service),
@@ -390,13 +429,41 @@ def build_market_overview(
             "as_of": None,
             "quote_status": status,
             "indices": indices,
-            "breadth": {"total": 0, "up": 0, "down": 0, "flat": 0, "up_pct": 0, "down_pct": 0},
+            "breadth": {
+                "total": 0,
+                "up": 0,
+                "down": 0,
+                "flat": 0,
+                "up_pct": 0,
+                "down_pct": 0,
+            },
             "amount": {"total": 0, "avg": 0},
             "boards": [],
-            "limit": {"limit_up": 0, "broken": 0, "failed": 0, "limit_down": 0, "max_boards": 0, "tiers": []},
+            "limit": {
+                "limit_up": 0,
+                "broken": 0,
+                "failed": 0,
+                "limit_down": 0,
+                "max_boards": 0,
+                "tiers": [],
+            },
             "distribution": [],
-            "trend": {"above_ma5": 0, "above_ma20": 0, "above_ma60": 0, "above_ma5_pct": 0, "above_ma20_pct": 0, "above_ma60_pct": 0, "new_high": 0, "new_low": 0},
-            "activity": {"avg_turnover": 0, "high_turnover": 0, "high_vol_ratio": 0, "vol_ratio": 1},
+            "trend": {
+                "above_ma5": 0,
+                "above_ma20": 0,
+                "above_ma60": 0,
+                "above_ma5_pct": 0,
+                "above_ma20_pct": 0,
+                "above_ma60_pct": 0,
+                "new_high": 0,
+                "new_low": 0,
+            },
+            "activity": {
+                "avg_turnover": 0,
+                "high_turnover": 0,
+                "high_vol_ratio": 0,
+                "vol_ratio": 1,
+            },
             "radar": [],
             "emotion": {"score": 50, "label": "暂无"},
             "top_gainers": [],
@@ -412,18 +479,39 @@ def build_market_overview(
         rows: list[dict] = []
     else:
         cols = [
-            "symbol", "name", "close", "change_pct", "amount", "turnover_rate", "volume",
-            "vol_ratio_5d", "consecutive_limit_ups", "signal_limit_up", "signal_broken_limit_up", "signal_limit_down",
-            "ma5", "ma20", "ma60", "high_60d", "low_60d", "signal_n_day_high", "signal_n_day_low",
+            "symbol",
+            "name",
+            "close",
+            "change_pct",
+            "amount",
+            "turnover_rate",
+            "volume",
+            "vol_ratio_5d",
+            "consecutive_limit_ups",
+            "signal_limit_up",
+            "signal_broken_limit_up",
+            "signal_limit_down",
+            "ma5",
+            "ma20",
+            "ma60",
+            "high_60d",
+            "low_60d",
+            "signal_n_day_high",
+            "signal_n_day_low",
         ]
         df = df.select([c for c in cols if c in df.columns])
         rows = df.to_dicts()
 
+    # 港股已在 ScreenerService._load_enriched_for_date 内剔除, 此处不再重复过滤
+
     # 过滤真停牌（volume=0 且 change_pct=0），保留有涨跌幅的浮点误差股以对齐同花顺口径
     if rows and "volume" in rows[0]:
-        rows = [r for r in rows
-                if (_finite(r.get("volume")) or 0) > 0
-                or (_finite(r.get("change_pct")) or 0) != 0]
+        rows = [
+            r
+            for r in rows
+            if (_finite(r.get("volume")) or 0) > 0
+            or (_finite(r.get("change_pct")) or 0) != 0
+        ]
 
     total = len(rows)
     up = sum(1 for r in rows if (_finite(r.get("change_pct")) or 0) > 0)
@@ -443,10 +531,17 @@ def build_market_overview(
     strong_up = sum(1 for v in pct_values if v >= 0.03)
     strong_down = sum(1 for v in pct_values if v <= -0.03)
 
-    limit_up = sum(1 for r in rows if bool(r.get("signal_limit_up")) or (_finite(r.get("consecutive_limit_ups")) or 0) > 0)
+    limit_up = sum(
+        1
+        for r in rows
+        if bool(r.get("signal_limit_up"))
+        or (_finite(r.get("consecutive_limit_ups")) or 0) > 0
+    )
     broken = sum(1 for r in rows if bool(r.get("signal_broken_limit_up")))
     limit_down = sum(1 for r in rows if bool(r.get("signal_limit_down")))
-    max_boards = max([int(_finite(r.get("consecutive_limit_ups")) or 0) for r in rows], default=0)
+    max_boards = max(
+        [int(_finite(r.get("consecutive_limit_ups")) or 0) for r in rows], default=0
+    )
 
     # 五档 sealed 修正: 假涨停/假跌停不计入(需 Pro+ depth5.batch 能力)
     sealed_ready = False
@@ -467,13 +562,39 @@ def build_market_overview(
     seal_rate = limit_up / (limit_up + broken) * 100 if (limit_up + broken) > 0 else 0
 
     def above_ma_count(ma_key: str) -> int:
-        return sum(1 for r in rows if (_finite(r.get("close")) is not None and _finite(r.get(ma_key)) is not None and (_finite(r.get("close")) or 0) >= (_finite(r.get(ma_key)) or 0)))
+        return sum(
+            1
+            for r in rows
+            if (
+                _finite(r.get("close")) is not None
+                and _finite(r.get(ma_key)) is not None
+                and (_finite(r.get("close")) or 0) >= (_finite(r.get(ma_key)) or 0)
+            )
+        )
 
     above_ma5 = above_ma_count("ma5")
     above_ma20 = above_ma_count("ma20")
     above_ma60 = above_ma_count("ma60")
-    new_high = sum(1 for r in rows if bool(r.get("signal_n_day_high")) or (_finite(r.get("close")) is not None and _finite(r.get("high_60d")) is not None and (_finite(r.get("close")) or 0) >= (_finite(r.get("high_60d")) or 0)))
-    new_low = sum(1 for r in rows if bool(r.get("signal_n_day_low")) or (_finite(r.get("close")) is not None and _finite(r.get("low_60d")) is not None and (_finite(r.get("close")) or 0) <= (_finite(r.get("low_60d")) or 0)))
+    new_high = sum(
+        1
+        for r in rows
+        if bool(r.get("signal_n_day_high"))
+        or (
+            _finite(r.get("close")) is not None
+            and _finite(r.get("high_60d")) is not None
+            and (_finite(r.get("close")) or 0) >= (_finite(r.get("high_60d")) or 0)
+        )
+    )
+    new_low = sum(
+        1
+        for r in rows
+        if bool(r.get("signal_n_day_low"))
+        or (
+            _finite(r.get("close")) is not None
+            and _finite(r.get("low_60d")) is not None
+            and (_finite(r.get("close")) or 0) <= (_finite(r.get("low_60d")) or 0)
+        )
+    )
 
     turnovers = [_finite(r.get("turnover_rate")) for r in rows]
     turnovers = [v for v in turnovers if v is not None]
@@ -483,7 +604,9 @@ def build_market_overview(
     boards_map: dict[str, dict] = {}
     for r in rows:
         b = _board(str(r.get("symbol") or ""))
-        item = boards_map.setdefault(b, {"board": b, "count": 0, "up": 0, "down": 0, "amount": 0.0})
+        item = boards_map.setdefault(
+            b, {"board": b, "count": 0, "up": 0, "down": 0, "amount": 0.0}
+        )
         item["count"] += 1
         change = _finite(r.get("change_pct")) or 0
         if change > 0:
@@ -504,16 +627,20 @@ def build_market_overview(
             tiers_map[n] = tiers_map.get(n, 0) + 1
             sym = str(r.get("symbol") or "")
             if sym:
-                tiers_stocks.setdefault(n, []).append({
-                    "symbol": sym,
-                    "name": r.get("name") or "",
-                    "amount": _finite(r.get("amount")) or 0.0,
-                })
+                tiers_stocks.setdefault(n, []).append(
+                    {
+                        "symbol": sym,
+                        "name": r.get("name") or "",
+                        "amount": _finite(r.get("amount")) or 0.0,
+                    }
+                )
     tiers = [
         {
             "boards": k,
             "count": v,
-            "stocks": sorted(tiers_stocks.get(k, []), key=lambda x: x["amount"], reverse=True)[:5],
+            "stocks": sorted(
+                tiers_stocks.get(k, []), key=lambda x: x["amount"], reverse=True
+            )[:5],
         }
         for k, v in sorted(tiers_map.items(), key=lambda item: -item[0])
     ]
@@ -534,16 +661,67 @@ def build_market_overview(
     strong_down_pct = strong_down / total * 100 if total else 0
     tier2_count = sum(t["count"] for t in tiers if t["boards"] >= 2)
     mainline_items = [*concept_rank["leading"][:3], *industry_rank["leading"][:3]]
-    mainline_avg = max([_finite(item.get("avg_pct")) or 0 for item in mainline_items], default=0)
-    mainline_cover_pct = max([(_finite(item.get("count")) or 0) / total * 100 for item in mainline_items], default=0) if total else 0
-    mainline_score = round(_score(mainline_avg, -0.005, 0.03) * 0.65 + _score(mainline_cover_pct, 1, 12) * 0.35) if mainline_items else 50
+    mainline_avg = max(
+        [_finite(item.get("avg_pct")) or 0 for item in mainline_items], default=0
+    )
+    mainline_cover_pct = (
+        max(
+            [
+                (_finite(item.get("count")) or 0) / total * 100
+                for item in mainline_items
+            ],
+            default=0,
+        )
+        if total
+        else 0
+    )
+    mainline_score = (
+        round(
+            _score(mainline_avg, -0.005, 0.03) * 0.65
+            + _score(mainline_cover_pct, 1, 12) * 0.35
+        )
+        if mainline_items
+        else 50
+    )
 
     radar = [
         {"key": "index", "label": "指数", "value": _score(avg_index_pct, -2.5, 2.5)},
-        {"key": "profit", "label": "赚钱", "value": round(_score(up_pct, 20, 80) * 0.45 + _score(avg_pct, -0.02, 0.02) * 0.25 + _score(median_pct, -0.02, 0.02) * 0.20 + _score(strong_diff_pct, -8, 8) * 0.10)},
-        {"key": "money", "label": "量能", "value": round(_score(avg_vol_ratio, 0.6, 1.8) * 0.70 + _score(high_vol_pct, 2, 12) * 0.30)},
-        {"key": "speculation", "label": "投机", "value": round(_score(limit_up, 5, 90) * 0.25 + _score(seal_rate, 30, 85) * 0.35 + _score(max_boards, 1, 8) * 0.25 + _score(tier2_count, 0, 30) * 0.15)},
-        {"key": "resilience", "label": "抗跌", "value": 100 - round(_score(down_pct, 20, 80) * 0.55 + _score(strong_down_pct, 1, 12) * 0.45)},
+        {
+            "key": "profit",
+            "label": "赚钱",
+            "value": round(
+                _score(up_pct, 20, 80) * 0.45
+                + _score(avg_pct, -0.02, 0.02) * 0.25
+                + _score(median_pct, -0.02, 0.02) * 0.20
+                + _score(strong_diff_pct, -8, 8) * 0.10
+            ),
+        },
+        {
+            "key": "money",
+            "label": "量能",
+            "value": round(
+                _score(avg_vol_ratio, 0.6, 1.8) * 0.70
+                + _score(high_vol_pct, 2, 12) * 0.30
+            ),
+        },
+        {
+            "key": "speculation",
+            "label": "投机",
+            "value": round(
+                _score(limit_up, 5, 90) * 0.25
+                + _score(seal_rate, 30, 85) * 0.35
+                + _score(max_boards, 1, 8) * 0.25
+                + _score(tier2_count, 0, 30) * 0.15
+            ),
+        },
+        {
+            "key": "resilience",
+            "label": "抗跌",
+            "value": 100
+            - round(
+                _score(down_pct, 20, 80) * 0.55 + _score(strong_down_pct, 1, 12) * 0.45
+            ),
+        },
         {"key": "mainline", "label": "主线", "value": mainline_score},
     ]
     emotion_score = round(sum(r["value"] for r in radar) / len(radar)) if radar else 50
@@ -558,48 +736,61 @@ def build_market_overview(
     else:
         emotion_label = "冰点"
 
-    return _json_safe({
-        "as_of": str(as_of),
-        "quote_status": status,
-        "indices": indices,
-        "breadth": {
-            "total": total,
-            "up": up,
-            "down": down,
-            "flat": flat,
-            "up_pct": up_pct,
-            "down_pct": down_pct,
-            "avg_pct": avg_pct,
-            "median_pct": median_pct,
-            "strong_up": strong_up,
-            "strong_down": strong_down,
-        },
-        "amount": {"total": total_amount, "avg": avg_amount},
-        "boards": boards,
-        "limit": {"limit_up": limit_up, "broken": broken, "failed": 0, "limit_down": limit_down, "max_boards": max_boards, "seal_rate": seal_rate, "tiers": tiers, "sealed_ready": sealed_ready, "fake_up": fake_up, "fake_down": fake_down},
-        "distribution": _pct_band_rows(pct_values),
-        "trend": {
-            "above_ma5": above_ma5,
-            "above_ma20": above_ma20,
-            "above_ma60": above_ma60,
-            "above_ma5_pct": above_ma5 / total * 100 if total else 0,
-            "above_ma20_pct": above_ma20 / total * 100 if total else 0,
-            "above_ma60_pct": above_ma60 / total * 100 if total else 0,
-            "new_high": new_high,
-            "new_low": new_low,
-        },
-        "activity": {
-            "avg_turnover": avg_turnover,
-            "high_turnover": high_turnover,
-            "high_vol_ratio": high_vol_pct,
-            "vol_ratio": avg_vol_ratio,
-        },
-        "radar": radar,
-        "emotion": {"score": emotion_score, "label": emotion_label},
-        "top_gainers": _top_rows(rows, "change_pct", True),
-        "top_losers": _top_rows(rows, "change_pct", False),
-        "turnover_leaders": _top_rows(rows, "amount", True),
-        "active_leaders": _top_rows(rows, "turnover_rate", True),
-        "concept_rank": concept_rank,
-        "industry_rank": industry_rank,
-    })
+    return _json_safe(
+        {
+            "as_of": str(as_of),
+            "quote_status": status,
+            "indices": indices,
+            "breadth": {
+                "total": total,
+                "up": up,
+                "down": down,
+                "flat": flat,
+                "up_pct": up_pct,
+                "down_pct": down_pct,
+                "avg_pct": avg_pct,
+                "median_pct": median_pct,
+                "strong_up": strong_up,
+                "strong_down": strong_down,
+            },
+            "amount": {"total": total_amount, "avg": avg_amount},
+            "boards": boards,
+            "limit": {
+                "limit_up": limit_up,
+                "broken": broken,
+                "failed": 0,
+                "limit_down": limit_down,
+                "max_boards": max_boards,
+                "seal_rate": seal_rate,
+                "tiers": tiers,
+                "sealed_ready": sealed_ready,
+                "fake_up": fake_up,
+                "fake_down": fake_down,
+            },
+            "distribution": _pct_band_rows(pct_values),
+            "trend": {
+                "above_ma5": above_ma5,
+                "above_ma20": above_ma20,
+                "above_ma60": above_ma60,
+                "above_ma5_pct": above_ma5 / total * 100 if total else 0,
+                "above_ma20_pct": above_ma20 / total * 100 if total else 0,
+                "above_ma60_pct": above_ma60 / total * 100 if total else 0,
+                "new_high": new_high,
+                "new_low": new_low,
+            },
+            "activity": {
+                "avg_turnover": avg_turnover,
+                "high_turnover": high_turnover,
+                "high_vol_ratio": high_vol_pct,
+                "vol_ratio": avg_vol_ratio,
+            },
+            "radar": radar,
+            "emotion": {"score": emotion_score, "label": emotion_label},
+            "top_gainers": _top_rows(rows, "change_pct", True),
+            "top_losers": _top_rows(rows, "change_pct", False),
+            "turnover_leaders": _top_rows(rows, "amount", True),
+            "active_leaders": _top_rows(rows, "turnover_rate", True),
+            "concept_rank": concept_rank,
+            "industry_rank": industry_rank,
+        }
+    )

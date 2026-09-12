@@ -162,6 +162,8 @@ def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int |
     )
     if df is None or df.is_empty():
         return {"dates": [], "columns": {}, "concept_count": 0}
+    # 概念轮动仅统计 A 股, 剔除港股
+    df = df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
 
     # 3. 把个股 symbol 映射到维度成员, 一只股票拆成多行(每个成员一行)
     #    symbol 大写匹配(map_df 的 _sym_up 已大写)

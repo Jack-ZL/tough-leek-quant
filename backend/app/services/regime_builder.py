@@ -357,6 +357,9 @@ def _compute_batch(repo, enriched_dir, instruments, historical_shares,
 
 
 def _filter_excluded_symbols(df: pl.DataFrame, excluded_symbols: list[str]) -> pl.DataFrame:
+    # 市场环境统计仅按 A 股口径, 剔除港股 (symbol 以 .HK 结尾)
+    if "symbol" in df.columns:
+        df = df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
     if excluded_symbols and "symbol" in df.columns:
         return df.filter(~pl.col("symbol").str.to_uppercase().is_in(excluded_symbols))
     return df

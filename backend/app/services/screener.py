@@ -51,6 +51,17 @@ class ScreenerService:
         """
         _history_cache.clear()
 
+    def _exclude_hk(self, df: pl.DataFrame) -> pl.DataFrame:
+        """剔除港股 (symbol 以 .HK 结尾)。
+
+        港股日K仍会被管道拉取并写入 enriched (数据获取保持不变), 但 A 股口径的
+        统计/筛选/看板/信号等场景不纳入港股。个股分析走独立单标的读取, 不受影响。
+        仅 stock 资产适用; ETF/指数 enriched 本就无港股。
+        """
+        if self.asset_type != "stock" or df.is_empty() or "symbol" not in df.columns:
+            return df
+        return df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
+
     def _load_enriched_for_date(self, target_date: date) -> pl.DataFrame:
         """从 enriched parquet 读取指定日期的基础数据并即时计算完整指标+信号。
 
@@ -67,7 +78,7 @@ class ScreenerService:
                 inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in df_i.columns]
                 if "name" not in df.columns:
                     df = df.join(df_i.select(inst_cols), on="symbol", how="left")
-            return df
+            return self._exclude_hk(df)
 
         # 尝试从 repo 级预计算历史缓存中提取目标日期 (仅 stock: 该缓存为股票专用)
         if self.asset_type == "stock":
@@ -82,7 +93,7 @@ class ScreenerService:
                         inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in df_i.columns]
                         if "name" not in df.columns:
                             df = df.join(df_i.select(inst_cols), on="symbol", how="left")
-                    return df
+                    return self._exclude_hk(df)
 
         # 历史日期: 从 parquet 读取 14 列, 即时计算指标 (慢路径)
         enriched_dir = self.repo.store.data_dir / self._enriched_dirname
@@ -103,7 +114,7 @@ class ScreenerService:
 
         # 即时计算指标: 需要加载历史窗口作 warmup
         df_full = self._compute_enriched_full(df, target_date)
-        return df_full
+        return self._exclude_hk(df_full)
 
     def load_prior_consecutive(self, as_of: date, consec_col: str) -> pl.DataFrame:
         """窄读: 仅取前一交易日的 [symbol, consec_col] 两列 (谓词下推到单日 parquet)。
@@ -249,7 +260,7 @@ class ScreenerService:
                 elapsed = (time.perf_counter() - t0) * 1000
                 logger.info("_load_enriched_history(%s, %d): repo cache hit, %.1fms, %d rows",
                             target_date, lookback_days, elapsed, len(cached))
-                return cached
+                return self._exclude_hk(cached)
 
         # 优先级 2: 进程级 history_cache (之前的 TTL 缓存)
         cache_key = (self.asset_type, target_date, lookback_days)
@@ -259,7 +270,7 @@ class ScreenerService:
             ts, cached_df = ttl_cached
             if now - ts < _HISTORY_CACHE_TTL:
                 logger.debug("history TTL cache hit: %s lookback=%d", target_date, lookback_days)
-                return cached_df
+                return self._exclude_hk(cached_df)
             del _history_cache[cache_key]
 
         # 优先级 3: scan_parquet + compute_indicators (慢路径, ~5s)
@@ -333,7 +344,7 @@ class ScreenerService:
             for k in expired:
                 del _history_cache[k]
 
-        return df_full
+        return self._exclude_hk(df_full)
 
     def run(
         self,

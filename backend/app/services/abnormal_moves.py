@@ -116,6 +116,13 @@ def _status_of(closeness: float) -> str:
     return _STATUS_WATCH
 
 
+def _exclude_hk(df: pl.DataFrame) -> pl.DataFrame:
+    """剔除港股 (symbol 以 .HK 结尾): 异动统计仅按 A 股口径。"""
+    if df.is_empty() or "symbol" not in df.columns:
+        return df
+    return df.filter(~pl.col("symbol").cast(pl.Utf8).str.ends_with(".HK"))
+
+
 def _hist_snapshot(repo: Any) -> dict[str, Any]:
     """enriched 最新日的偏离列快照 (60s 进程内缓存)。"""
     now = time.monotonic()
@@ -125,6 +132,7 @@ def _hist_snapshot(repo: Any) -> dict[str, Any]:
             return cached
 
     df, cache_date = repo.get_enriched_latest()
+    df = _exclude_hk(df)
     rows: dict[str, dict[str, Any]] = {}
     if not df.is_empty() and "symbol" in df.columns:
         cols = ["symbol", *[c for c in ("name", "close", "change_pct",
@@ -279,6 +287,7 @@ _INTRADAY_COLS = ("symbol", "name", "close", "change_pct", "amplitude",
 def build_intraday(repo: Any, limit: int = 500) -> dict[str, Any]:
     """enriched 最新快照 → 当日异动信号命中行 (含各类型计数)。"""
     df, cache_date = repo.get_enriched_latest()
+    df = _exclude_hk(df)
     empty = {"cache_date": cache_date.isoformat() if cache_date else None,
              "counts": {}, "rows": []}
     if df.is_empty() or "symbol" not in df.columns:
