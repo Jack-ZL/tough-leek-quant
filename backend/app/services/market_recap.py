@@ -180,8 +180,9 @@ def _build_emotion_block(overview: dict) -> str:
 
 
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
-                       bench_context: str = "") -> str:
-    """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。"""
+                       bench_context: str = "", sector_flow_context: str = "") -> str:
+    """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选)
+    + 板块资金流向(可选) + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
 
     parts: list[str] = [
@@ -217,6 +218,14 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
             "",
             "## 盘前风向标(竞价)",
             bench_context,
+        ])
+
+    # 板块资金流向 (东财自建, 行业+概念净流入/净流出居前; 失败为空不占段)
+    if sector_flow_context:
+        parts.extend([
+            "",
+            "## 板块资金流向",
+            sector_flow_context,
         ])
 
     if news:
@@ -326,7 +335,12 @@ async def recap_market_stream(
         from app.services import auction_benchmark as auction_benchmark_svc
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
-        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+
+        # 板块资金流向摘要 (东财自建): 拉取失败 → 空串, 复盘主流程不受影响
+        from app.services import sector_fund_flow as sector_fund_flow_svc
+
+        sector_flow_ctx = sector_fund_flow_svc.build_recap_context(repo.store.data_dir)
+        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx, sector_flow_ctx)
         got_content = False
         async for delta in stream_ai_text(
             [

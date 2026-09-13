@@ -9,6 +9,7 @@
   DELETE /reports/{report_id}  删除一条复盘报告
   GET  /dragon-tiger           龙虎榜三榜 (fuyao 专有, 历史按日缓存)
   GET  /auction-benchmark      盘前风向标 (fuyao 专有, 含当日/次日真实收益)
+  GET  /sector-fund-flow       板块资金流向 (行业/概念, 东财自建, 历史按日缓存)
 """
 from __future__ import annotations
 
@@ -19,7 +20,13 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.services import auction_benchmark, dragon_tiger, market_recap_reports, preferences
+from app.services import (
+    auction_benchmark,
+    dragon_tiger,
+    market_recap_reports,
+    preferences,
+    sector_fund_flow,
+)
 from app.services.market_recap import recap_market_stream
 
 logger = logging.getLogger(__name__)
@@ -69,6 +76,26 @@ def get_auction_benchmark(
         except ValueError:
             raise HTTPException(400, f"date 格式应为 YYYY-MM-DD, 收到: {date}")
     return auction_benchmark.get_auction_benchmark(
+        request.app.state.repo.store.data_dir, target
+    )
+
+
+@router.get("/sector-fund-flow")
+def get_sector_fund_flow(
+    request: Request,
+    date: str | None = Query(default=None, description="复盘目标日 YYYY-MM-DD, 缺省取最近交易日"),
+):
+    """板块资金流向 (行业 + 概念两维, 各取净流入/净流出前 100)。
+
+    自建 HTTP 客户端分级降级 (东财多节点 → 新浪), 历史按日缓存; 当日拉取失败自动回退上一交易日。
+    """
+    target = None
+    if date:
+        try:
+            target = date_cls.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(400, f"date 格式应为 YYYY-MM-DD, 收到: {date}")
+    return sector_fund_flow.get_sector_fund_flow(
         request.app.state.repo.store.data_dir, target
     )
 

@@ -736,6 +736,34 @@ export interface AuctionBenchmarkPayload {
   items?: AuctionBenchmarkItem[]
 }
 
+// ===== 板块资金流向 (东财自建, 复盘页) =====
+export interface SectorFundFlowItem {
+  name?: string | null
+  code?: string | null
+  change_pct?: number | null      // 当日涨跌幅 (小数制)
+  main_net_inflow?: number | null // 主力净流入 (元)
+  main_net_ratio?: number | null  // 主力净占比 (小数制)
+  super_net?: number | null       // 超大单净额 (元)
+  large_net?: number | null       // 大单净额 (元)
+  medium_net?: number | null      // 中单净额 (元)
+  small_net?: number | null       // 小单净额 (元)
+}
+
+export interface SectorFundFlowKind {
+  inflow?: SectorFundFlowItem[]   // 净流入前 100 (降序)
+  outflow?: SectorFundFlowItem[]  // 净流出前 100 (升序, 最负在前)
+}
+
+export interface SectorFundFlowPayload {
+  state: 'ok' | 'fallback_prev' | 'no_data'
+  source?: string
+  requested_date?: string | null
+  trade_date?: string | null
+  message?: string
+  industry?: SectorFundFlowKind
+  concept?: SectorFundFlowKind
+}
+
 // ===== Strategy Engine =====
 export interface StrategyParamDef {
   id: string
@@ -3426,6 +3454,12 @@ export const api = {
   auctionBenchmark: (date?: string) =>
     request<AuctionBenchmarkPayload>(
       `/api/market-recap/auction-benchmark${date ? `?date=${encodeURIComponent(date)}` : ''}`,
+    ),
+
+  /** 板块资金流向 (东财自建; 行业+概念净流入/净流出排名, 历史日按服务端缓存) */
+  sectorFundFlow: (date?: string) =>
+    request<SectorFundFlowPayload>(
+      `/api/market-recap/sector-fund-flow${date ? `?date=${encodeURIComponent(date)}` : ''}`,
     ),
 
   reviewReportSave: (r: {

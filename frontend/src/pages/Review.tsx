@@ -12,14 +12,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   BookOpenCheck, RefreshCw, Sparkles, Trash2, History, ChevronRight, AlertTriangle,
-  Database, Wand2, Copy, Download, Clock, X, Check, Trophy, ChevronDown, ChevronUp,
+  Database, Wand2, Copy, Download, Clock, X, Check, Trophy, ChevronDown, ChevronUp, Waves,
 } from 'lucide-react'
 
-import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem } from '@/lib/api'
+import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem, type SectorFundFlowItem } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { SectorFundFlowTreemap } from '@/components/SectorFundFlowTreemap'
 import { boardTag } from '@/components/stock-table/primitives'
 import { fmtBigNum } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
@@ -340,6 +341,9 @@ export function Review() {
 
               {/* ===== 龙虎榜 (fuyao 专有, 资金动向上下文; 复盘日联动) ===== */}
               <DragonTigerCard date={dtDate} onOpenStock={setPreviewSymbol} />
+
+              {/* ===== 板块资金流向 (东财自建, 行业/概念净流入流出; 复盘日联动) ===== */}
+              <SectorFundFlowCard date={dtDate} />
 
               {/* ===== 关注点输入 ===== */}
               <div className="flex items-center gap-2 rounded-card border border-border bg-surface/80 px-3.5 py-2.5 transition-colors focus-within:border-accent/40">
@@ -1415,6 +1419,247 @@ function DragonTigerCard({ date, onOpenStock }: {
                   onOpenStock={onOpenStock}
                 />
               )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+// ================================================================
+// 板块资金流向卡片 (东财自建) —— 龙虎榜之下, 行业/概念净流入流出排名
+// 视觉对齐 DragonTigerCard: 徽章头部 + 排名药丸收起态; 展开态分行业/概念两 tab,
+// 各含净流入 / 净流出 Top10 两列。状态: 当日拉取失败自动显示上一期 (fallback_prev)。
+// ================================================================
+type _SffTabKey = 'industry' | 'concept'
+const _SFF_TABS: { key: _SffTabKey; label: string }[] = [
+  { key: 'industry', label: '行业' },
+  { key: 'concept', label: '概念' },
+]
+type _SffViewKey = 'heatmap' | 'list'
+const _SFF_VIEWS: { key: _SffViewKey; label: string }[] = [
+  { key: 'heatmap', label: '热力图' },
+  { key: 'list', label: '榜单' },
+]
+// 榜单视图的流向方向指示色 (与热力图深浅色一致: 红流入 / 绿流出)
+const _SFF_DOT = { inflow: { deep: '#DC2626' }, outflow: { deep: '#16A34A' } }
+
+function _SffPill({ item, idx, onOpen }: {
+  item: SectorFundFlowItem
+  idx: number
+  onOpen: (item: SectorFundFlowItem) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(item)}
+      className="group inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-elevated/40 py-0.5 pl-0.5 pr-2.5 transition-all hover:border-accent/40 hover:bg-elevated/70"
+      title={`${item.name ?? '—'} · 主力净流入 ${fmtVolume(item.main_net_inflow ?? null)}`}
+    >
+      <span className={cn('grid h-[18px] w-[18px] min-w-[18px] place-items-center rounded-full font-mono text-[9px] font-bold leading-none', _rankCls(idx))}>
+        {idx + 1}
+      </span>
+      <span className="max-w-[7rem] truncate text-[11px] text-foreground">{item.name ?? '—'}</span>
+      <span className={cn('font-mono text-[10px] tabular-nums', priceColorClass(item.main_net_inflow ?? null))}>
+        {fmtVolume(item.main_net_inflow ?? null)}
+      </span>
+    </button>
+  )
+}
+
+// 榜单视图: 净流入/净流出 Top10 两列 (与热力图可切换, 保留原文字榜)
+function _SffRankList({ inflow, outflow }: { inflow: SectorFundFlowItem[]; outflow: SectorFundFlowItem[] }) {
+  const render = (items: SectorFundFlowItem[], label: string, dot: string) => (
+    <div>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full" style={{ background: dot }} />
+        <span className="text-[11px] font-medium tracking-wide text-muted">{label}</span>
+      </div>
+      <div className="space-y-1">
+        {items.slice(0, 10).map((it, idx) => (
+          <div
+            key={it.code ?? it.name ?? idx}
+            className="flex items-center gap-2 rounded-lg border border-border/50 bg-elevated/30 px-2 py-1.5"
+          >
+            <span className={cn('grid h-[18px] w-[18px] min-w-[18px] place-items-center rounded-full font-mono text-[9px] font-bold leading-none', _rankCls(idx))}>
+              {idx + 1}
+            </span>
+            <span className="max-w-[7rem] truncate text-[11px] text-foreground">{it.name ?? '—'}</span>
+            <span className={cn('font-mono text-[10px] tabular-nums', priceColorClass(it.change_pct ?? null))}>
+              {fmtPct(it.change_pct ?? null)}
+            </span>
+            <span className={cn('ml-auto font-mono text-[10px] tabular-nums', priceColorClass(it.main_net_inflow ?? null))}>
+              {fmtVolume(it.main_net_inflow ?? null)}
+            </span>
+          </div>
+        ))}
+        {!items.length && <div className="py-2 text-[11px] text-muted">暂无数据</div>}
+      </div>
+    </div>
+  )
+  return (
+    <div className="grid gap-4 sm:grid-cols-2">
+      {render(inflow, '净流入居前', _SFF_DOT.inflow.deep)}
+      {render(outflow, '净流出居前', _SFF_DOT.outflow.deep)}
+    </div>
+  )
+}
+
+function SectorFundFlowCard({ date }: { date?: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [tab, setTab] = useState<_SffTabKey>('industry')
+  const [view, setView] = useState<_SffViewKey>('heatmap')
+  const q = useQuery({
+    queryKey: ['sector-fund-flow', date ?? 'latest'],
+    queryFn: () => api.sectorFundFlow(date),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  })
+  const d = q.data
+
+  if (q.isLoading) {
+    return (
+      <div className="flex items-center gap-3 rounded-card border border-border bg-surface/80 px-4 py-3">
+        <span className="grid h-8 w-8 shrink-0 animate-pulse place-items-center rounded bg-elevated">
+          <Waves className="h-4 w-4 text-muted/50" />
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="h-3 w-14 animate-pulse rounded-full bg-elevated/80" />
+          <span className="h-3 w-24 animate-pulse rounded-full bg-elevated/60" />
+          <span className="h-3 w-20 animate-pulse rounded-full bg-elevated/40" />
+        </div>
+      </div>
+    )
+  }
+
+  // 拉取失败: 轻提示 + 重试 (不占复盘页视觉重量)
+  if (!d || d.state === 'no_data') {
+    return (
+      <div className="flex items-center gap-3 rounded-card border border-border bg-surface/50 px-4 py-3">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded bg-elevated/60">
+          <Waves className="h-4 w-4 text-muted/50" />
+        </span>
+        <span className="text-[11px] text-muted">板块资金流向暂不可用{d?.message ? ` (${d.message.slice(0, 40)})` : ''}</span>
+        <button onClick={() => q.refetch()} className="ml-auto text-[10px] text-accent hover:underline">重试</button>
+      </div>
+    )
+  }
+
+  const concept = d.concept ?? {}
+  const conceptIn = concept.inflow ?? []
+  const conceptOut = concept.outflow ?? []
+  const isFallback = d.state === 'fallback_prev'
+
+  return (
+    <div className="rounded-card border border-border bg-surface/80">
+      {/* 头部: 波浪徽章 + 概要, 常驻可点击展开 */}
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="group flex w-full items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/20">
+          <Waves className={cn('h-4 w-4 transition-transform group-hover:scale-110', expanded && 'scale-110')} />
+        </span>
+        <span className="leading-tight">
+          <span className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-foreground">板块资金流向</span>
+            {isFallback && (
+              <span
+                className="rounded border border-warning/30 bg-warning/10 px-1.5 py-px text-[9px] leading-tight text-warning"
+                title="当日数据尚未就绪, 已自动显示上一交易日"
+              >
+                显示上一期
+              </span>
+            )}
+          </span>
+          <span className="mt-0.5 block text-[10px] text-muted">
+            {d.trade_date} · 行业/概念净流入流出排名 · 点击{expanded ? '收起' : '查看明细'}
+          </span>
+        </span>
+        <span className="ml-auto flex items-center gap-1.5">
+          <ChevronDown className={cn('h-4 w-4 text-muted transition-transform duration-200 group-hover:text-secondary', expanded && 'rotate-180')} />
+        </span>
+      </button>
+
+      {/* 收起态: 概念净流入/净流出排名药丸摘要 */}
+      {!expanded && (
+        <div className="flex flex-col gap-1.5 px-4 pb-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-muted">概念净流入</span>
+            {conceptIn.slice(0, 5).map((it, idx) => (
+              <_SffPill key={it.code ?? it.name ?? idx} item={it} idx={idx} onOpen={() => setExpanded(true)} />
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-muted">概念净流出</span>
+            {conceptOut.slice(0, 5).map((it, idx) => (
+              <_SffPill key={it.code ?? it.name ?? idx} item={it} idx={idx} onOpen={() => setExpanded(true)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 展开态: 分段式 tab + 行业/概念明细 */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-border/60 px-4 py-3">
+              {/* 分段式 tab + 视图切换 */}
+              <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div className="inline-flex items-center gap-0.5 rounded-full border border-border/50 bg-base/70 p-0.5">
+                  {_SFF_TABS.map(t => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setTab(t.key)}
+                      className={cn(
+                        'rounded-full px-3 py-1 text-[11px] transition-all',
+                        tab === t.key
+                          ? 'bg-accent/15 font-medium text-accent shadow-sm'
+                          : 'text-secondary hover:text-foreground',
+                      )}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="inline-flex items-center gap-0.5 rounded-full border border-border/50 bg-base/70 p-0.5">
+                  {_SFF_VIEWS.map(v => (
+                    <button
+                      key={v.key}
+                      type="button"
+                      onClick={() => setView(v.key)}
+                      className={cn(
+                        'rounded-full px-3 py-1 text-[11px] transition-all',
+                        view === v.key
+                          ? 'bg-accent/15 font-medium text-accent shadow-sm'
+                          : 'text-secondary hover:text-foreground',
+                      )}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {(() => {
+                const kind = tab === 'industry' ? (d.industry ?? {}) : concept
+                const inflow = kind.inflow ?? []
+                const outflow = kind.outflow ?? []
+                return view === 'heatmap' ? (
+                  <SectorFundFlowTreemap inflow={inflow} outflow={outflow} />
+                ) : (
+                  <_SffRankList inflow={inflow} outflow={outflow} />
+                )
+              })()}
             </div>
           </motion.div>
         )}
