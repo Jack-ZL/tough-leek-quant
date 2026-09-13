@@ -13,7 +13,7 @@ export function PageHeader({ title, subtitle, titleExtra, right, className }: Pr
 	return (
 		<header
 			className={cn(
-				'px-5 pt-3 pb-2 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-2',
+				'px-5 pt-3 pb-3 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-2',
 				className,
 			)}
 		>

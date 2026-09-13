@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
+import {useState, useEffect, useCallback, useRef, useMemo} from 'react'
+import {useQuery, useMutation, useQueryClient} from '@tanstack/react-query'
+import {motion} from 'framer-motion'
 import {
 	ScanSearch,
 	Clock,
@@ -16,22 +16,22 @@ import {
 	RotateCcw,
 	X
 } from 'lucide-react'
-import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
-import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
-import { DEFAULT_STRATEGY_NOTIFY_EVENTS } from '@/lib/strategyMonitorEvents'
-import { toast } from '@/components/Toast'
-import { useDataStatus, usePreferences, useCapabilities, useQuoteStatus } from '@/lib/useSharedQueries'
-import { useWatchlistBatchAdd } from '@/lib/useSharedMutations'
-import { QK } from '@/lib/queryKeys'
-import { storage } from '@/lib/storage'
-import { PageHeader } from '@/components/PageHeader'
-import { EmptyState } from '@/components/EmptyState'
-import { DatePicker } from '@/components/DatePicker'
-import { StockPreviewDialog, type NavItem } from '@/components/StockPreviewDialog'
-import { WatchlistAddMenu } from '@/components/WatchlistAddMenu'
-import { useStrategyPool } from '@/lib/useStrategyPool'
-import { StrategyCard, CardSize, loadCardSize, cardWrapCls } from '@/components/screener/StrategyCard'
-import { ScreenerTable } from '@/components/screener/ScreenerTable'
+import {api, genRuleId, type ScreenerStrategy, type ScreenerResult} from '@/lib/api'
+import {fetchMinuteBatchIncremental} from '@/lib/minuteBatchIncremental'
+import {DEFAULT_STRATEGY_NOTIFY_EVENTS} from '@/lib/strategyMonitorEvents'
+import {toast} from '@/components/Toast'
+import {useDataStatus, usePreferences, useCapabilities, useQuoteStatus} from '@/lib/useSharedQueries'
+import {useWatchlistBatchAdd} from '@/lib/useSharedMutations'
+import {QK} from '@/lib/queryKeys'
+import {storage} from '@/lib/storage'
+import {PageHeader} from '@/components/PageHeader'
+import {EmptyState} from '@/components/EmptyState'
+import {DatePicker} from '@/components/DatePicker'
+import {StockPreviewDialog, type NavItem} from '@/components/StockPreviewDialog'
+import {WatchlistAddMenu} from '@/components/WatchlistAddMenu'
+import {useStrategyPool} from '@/lib/useStrategyPool'
+import {StrategyCard, CardSize, loadCardSize, cardWrapCls} from '@/components/screener/StrategyCard'
+import {ScreenerTable} from '@/components/screener/ScreenerTable'
 import {
 	ScreenerFilter as ScreenerFilterType,
 	defaultFilter,
@@ -40,14 +40,14 @@ import {
 	applyFilter,
 	FilterPanel
 } from '@/components/screener/ScreenerFilter'
-import { StrategySettingsDialog } from '@/components/screener/StrategySettingsDialog'
-import { StrategyPoolDialog } from '@/components/screener/StrategyPoolDialog'
-import { StrategyBuilderDialog } from '@/components/screener/StrategyBuilderDialog'
-import { StrategyStoreDialog } from '@/components/screener/StrategyStoreDialog'
-import { CompositeStrategyDialog } from '@/components/screener/CompositeStrategyDialog'
-import { ListColumnCustomizer } from '@/components/ListColumnCustomizer'
-import { useTableSort } from '@/components/stock-table/useTableSort'
-import { resolveCandleConfig } from '@/lib/list-columns'
+import {StrategySettingsDialog} from '@/components/screener/StrategySettingsDialog'
+import {StrategyPoolDialog} from '@/components/screener/StrategyPoolDialog'
+import {StrategyBuilderDialog} from '@/components/screener/StrategyBuilderDialog'
+import {StrategyStoreDialog} from '@/components/screener/StrategyStoreDialog'
+import {CompositeStrategyDialog} from '@/components/screener/CompositeStrategyDialog'
+import {ListColumnCustomizer} from '@/components/ListColumnCustomizer'
+import {useTableSort} from '@/components/stock-table/useTableSort'
+import {resolveCandleConfig} from '@/lib/list-columns'
 import {
 	SCREENER_BUILTIN_COLUMNS,
 	SCREENER_COLUMN_GROUPS,
@@ -83,7 +83,7 @@ export function Screener() {
 	const [builderMode, setBuilderMode] = useState<'create' | 'modify'>('create')
 	const [showStore, setShowStore] = useState(false)
 	const [showComposite, setShowComposite] = useState(false)
-	const { pool, addToPool, removeFromPool, reorderPool, prune } = useStrategyPool()
+	const {pool, addToPool, removeFromPool, reorderPool, prune} = useStrategyPool()
 	const [cardSize, setCardSize] = useState<CardSize>(loadCardSize)
 	// 日k蜡烛图显示开关（仅当 candle 列可见时才有意义；持久化）
 	const [dailyKChartVisible, setDailyKChartVisible] = useState<boolean>(() => storage.screenerCandle.get(true))
@@ -156,7 +156,7 @@ export function Screener() {
 
 	// 切换策略时恢复该策略之前保存的筛选
 	const handleStrategySwitch = useCallback((strategyId: string) => {
-		setFilter(filterMap.current.get(strategyId) ?? { ...defaultFilter })
+		setFilter(filterMap.current.get(strategyId) ?? {...defaultFilter})
 	}, [])
 
 	// 对原始结果应用过滤 (memo: 否则每次渲染都对全部结果行过滤,
@@ -166,7 +166,7 @@ export function Screener() {
 		[result, filter],
 	)
 
-	const { data: prefs } = usePreferences()
+	const {data: prefs} = usePreferences()
 	const screenerAutoRun = prefs?.screener_auto_run ?? true
 
 	// 统一列表: 不按周期过滤, 日线+分钟策略合并返回, 分钟策略带 timeframes 标识
@@ -209,7 +209,7 @@ export function Screener() {
 			&& summaryQuery.data?.results[activeStrategy]?.as_of === asOf,
 	})
 
-	const dataStatus = useDataStatus({ staleTime: 0 })
+	const dataStatus = useDataStatus({staleTime: 0})
 
 	// 默认日期 = enriched 最新日期（始终跟随最新）
 	useEffect(() => {
@@ -286,7 +286,7 @@ export function Screener() {
 
 	// 进入页面自动跑策略池中的策略，获取命中数 (仅日线策略; 分钟策略手动单跑)
 	const runAll = useMutation({
-		mutationFn: ({ date, strategyIds }: { date?: string; strategyIds?: string[] } = {}) =>
+		mutationFn: ({date, strategyIds}: { date?: string; strategyIds?: string[] } = {}) =>
 			api.screenerRunAll(
 				date,
 				strategyIds ?? dailyPoolIds,
@@ -298,15 +298,15 @@ export function Screener() {
 			for (const [id, item] of Object.entries(data.results)) {
 				counts[id] = item.total
 			}
-			setHitCounts(prev => ({ ...prev, ...counts }))
+			setHitCounts(prev => ({...prev, ...counts}))
 			// 渐进式返回: 慢策略后台继续算, 开启摘要轮询逐个点亮
 			setPendingRun(
 				data.pending?.length
-					? { ids: [...data.pending], startedAt: data.started_at ?? 0 }
+					? {ids: [...data.pending], startedAt: data.started_at ?? 0}
 					: null,
 			)
 			if (data.error) toast(`策略计算失败：${data.error}`, 'error')
-			qc.invalidateQueries({ queryKey: ['screener-cached'] })
+			qc.invalidateQueries({queryKey: ['screener-cached']})
 		},
 	})
 
@@ -358,7 +358,7 @@ export function Screener() {
 			}
 			const rest = pendingRun.ids.filter(id => !arrived(id))
 			if (rest.length !== pendingRun.ids.length) {
-				setPendingRun(rest.length ? { ...pendingRun, ids: rest } : null)
+				setPendingRun(rest.length ? {...pendingRun, ids: rest} : null)
 			}
 		}
 	}, [summaryQuery.data, asOf, pendingRun])
@@ -376,14 +376,14 @@ export function Screener() {
 		if (!cached || showAll || cached.strategy !== activeStrategy || cached.as_of !== asOf) return
 		setResult(cached)
 		if (activeStrategy) {
-			setHitCounts(prev => ({ ...prev, [activeStrategy]: cached.total }))
+			setHitCounts(prev => ({...prev, [activeStrategy]: cached.total}))
 		}
 	}, [singleCachedQuery.data, showAll, activeStrategy, asOf])
 
 	const effectiveResults = useMemo(() => {
 		if (fullCachedQuery.data?.as_of !== asOf) return null
 		const entries = Object.entries(fullCachedQuery.data.results)
-			.filter(([, item]) => item.as_of === asOf)
+		.filter(([, item]) => item.as_of === asOf)
 		return Object.fromEntries(entries)
 	}, [fullCachedQuery.data, asOf])
 
@@ -433,12 +433,12 @@ export function Screener() {
 		if (!everRows || !result || result.as_of !== asOf) return []
 		const currentSymbols = new Set(result.rows.map((row: any) => row.symbol))
 		return Object.entries(everRows)
-			.filter(([symbol]) => !currentSymbols.has(symbol))
-			.map(([, row]) => ({ ...row, _expired: true }))
+		.filter(([symbol]) => !currentSymbols.has(symbol))
+		.map(([, row]) => ({...row, _expired: true}))
 	}, [singleCachedQuery.data, result, asOf])
 
 	// 表头排序（受控）：用户点击列则按该列；未点时下方按评分默认降序
-	const { sort, toggle, sortRows } = useTableSort()
+	const {sort, toggle, sortRows} = useTableSort()
 
 	// 当前显示的行数据 (全部模式 或 单策略模式) + 失效行
 	const displayRows = useMemo(() => {
@@ -465,7 +465,7 @@ export function Screener() {
 
 	// 日k列是否启用 → 决定是否加载批量 kline 数据
 	const candleColumn = useMemo(() =>
-		columns.find(c => c.source.type === 'builtin' && c.source.key === 'candle' && c.visible),
+			columns.find(c => c.source.type === 'builtin' && c.source.key === 'candle' && c.visible),
 		[columns],
 	)
 	const candleColumnEnabled = !!candleColumn
@@ -491,7 +491,7 @@ export function Screener() {
 
 	// 分时列是否启用 → 决定是否加载批量分时数据 (需 kline.minute.batch 能力)
 	const intradayColumn = useMemo(() =>
-		columns.find(c => c.source.type === 'builtin' && c.source.key === 'intraday' && c.visible),
+			columns.find(c => c.source.type === 'builtin' && c.source.key === 'intraday' && c.visible),
 		[columns],
 	)
 	// 分时图依赖分钟K批量数据 (kline.minute.batch), 无数据时开了列也不拉
@@ -563,19 +563,19 @@ export function Screener() {
 		// 未覆盖: 受系统开关控制
 		if (!screenerAutoRun) return
 		runAllDateRef.current = runKey
-		requestRunAll({ date: asOf, strategyIds: missingStrategyIds })
+		requestRunAll({date: asOf, strategyIds: missingStrategyIds})
 	}, [asOf, strategyPresets.length, summaryQuery.isSuccess, dailyPoolIds, cacheCoversPool, missingStrategyIds, screenerAutoRun, assetType, tfFilter, runAll.isPending, requestRunAll])
 
 	// 执行周期由策略自身声明决定: 日线走盘后缓存/单跑, 分钟走本地分钟K分区实时跑
 	const run = useMutation({
-		mutationFn: ({ id, date, timeframe: tf }: { id: string; date: string; timeframe: '1d' | '1m' }) =>
+		mutationFn: ({id, date, timeframe: tf}: { id: string; date: string; timeframe: '1d' | '1m' }) =>
 			api.screenerRunPreset(id, undefined, date || undefined, extColumnsParam || undefined, assetType, tf),
 		onSuccess: (data, vars) => {
 			setResult(data)
 			// 同步更新卡片上的命中数
-			setHitCounts(prev => ({ ...prev, [vars.id]: data.total }))
+			setHitCounts(prev => ({...prev, [vars.id]: data.total}))
 			// 单策略重跑后刷新摘要和当前按需明细，避免参数保存后回退到旧缓存。
-			qc.invalidateQueries({ queryKey: ['screener-cached'] })
+			qc.invalidateQueries({queryKey: ['screener-cached']})
 		},
 	})
 
@@ -588,12 +588,12 @@ export function Screener() {
 		// ETF 模式无股票盘后缓存、分钟策略走本地分钟分区 → 始终实时单跑。
 		// 传空日期让后端用自身的最新交易日 (ETF 与分钟分区跟股票 enriched 可能不同日)。
 		if (assetType !== 'stock' || tf === '1m') {
-			run.mutate({ id: s.id, date: '', timeframe: tf })
+			run.mutate({id: s.id, date: '', timeframe: tf})
 			return
 		}
 		// 摘要命中时由 singleCachedQuery 按需加载明细；缺失时才单独计算。
 		if (summaryQuery.data?.results[s.id]?.as_of === asOf || runAll.isPending) return
-		run.mutate({ id: s.id, date: asOf, timeframe: tf })
+		run.mutate({id: s.id, date: asOf, timeframe: tf})
 	}
 
 	// 日期变化交给统一 effect 计算一次，避免这里与 effect 重复请求。
@@ -621,19 +621,19 @@ export function Screener() {
 	// 单只股票加入/移出自选
 	const toggleWatchlist = useMutation({
 		mutationFn: ({
-			symbol,
-			action,
-			groupId,
-		}: {
+			             symbol,
+			             action,
+			             groupId,
+		             }: {
 			symbol: string
 			action: 'add' | 'remove'
 			groupId?: string | null
 		}) => action === 'remove'
-				? api.watchlistRemove(symbol)
-				: api.watchlistAdd(symbol, '', groupId),
+			? api.watchlistRemove(symbol)
+			: api.watchlistAdd(symbol, '', groupId),
 		onSuccess: () => {
-			qc.invalidateQueries({ queryKey: QK.watchlist })
-			qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
+			qc.invalidateQueries({queryKey: QK.watchlist})
+			qc.invalidateQueries({queryKey: ['watchlist-enriched']})
 		},
 	})
 
@@ -641,13 +641,13 @@ export function Screener() {
 	const reloadStrategies = useMutation({
 		mutationFn: api.strategyReload,
 		onSuccess: () => {
-			qc.invalidateQueries({ queryKey: ['screener-strategies'] })
-			if (asOf) requestRunAll({ date: asOf })
+			qc.invalidateQueries({queryKey: ['screener-strategies']})
+			if (asOf) requestRunAll({date: asOf})
 		},
 	})
 
 	// 策略监控: 查询规则, 建立 strategyId → ruleId 映射 (只看 type=strategy 且 enabled)
-	const monitorRules = useQuery({ queryKey: QK.monitorRules, queryFn: api.monitorRulesList })
+	const monitorRules = useQuery({queryKey: QK.monitorRules, queryFn: api.monitorRulesList})
 	const strategyMonitorMap = useMemo(() => {
 		const m = new Map<string, string>()
 		for (const r of monitorRules.data?.rules ?? []) {
@@ -663,7 +663,7 @@ export function Screener() {
 		if (existingRuleId) {
 			// 已监控 → 删除规则
 			api.monitorRuleDelete(existingRuleId).then(() =>
-				qc.invalidateQueries({ queryKey: QK.monitorRules }),
+				qc.invalidateQueries({queryKey: QK.monitorRules}),
 			)
 		} else {
 			// 未监控 → 直接创建 type=strategy 规则
@@ -683,14 +683,14 @@ export function Screener() {
 				cooldown_seconds: 3600,
 				severity: 'info',
 				message: '',
-			}).then(() => qc.invalidateQueries({ queryKey: QK.monitorRules }))
+			}).then(() => qc.invalidateQueries({queryKey: QK.monitorRules}))
 		}
 	}
 
 	const handleBatchAdd = (groupId: string | null) => {
 		if (!displayRows.length) return
 		const symbols = displayRows.map((r: any) => r.symbol)
-		batchAdd.mutate({ symbols, groupId }, {
+		batchAdd.mutate({symbols, groupId}, {
 			onSuccess: (data) => {
 				setBatchMsg(`已添加 ${data.added} 只到自选`)
 				setTimeout(() => setBatchMsg(''), 3000)
@@ -709,7 +709,7 @@ export function Screener() {
 				title="策略"
 				subtitle="基于本地 enriched 表 · 毫秒级 SQL"
 				right={
-					<div className="flex flex-wrap items-center justify-end gap-1.5">
+					<div className="flex flex-wrap items-center justify-end gap-2">
 						{/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
 						<div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
 							{(['stock', 'etf'] as const).map(t => (
@@ -722,10 +722,10 @@ export function Screener() {
 										setShowAll(false)
 									}}
 									className={`h-full px-2 text-xs font-medium whitespace-nowrap transition-colors
-                    cursor-pointer ${assetType === t
-											? 'bg-accent/10 text-accent'
-											: 'text-muted hover:text-secondary hover:bg-elevated'
-										}`}
+                                        cursor-pointer ${assetType === t
+										? 'bg-accent/10 text-accent'
+										: 'text-muted hover:text-secondary hover:bg-elevated'
+									}`}
 								>
 									{t === 'stock' ? '股票' : 'ETF'}
 								</button>
@@ -744,10 +744,10 @@ export function Screener() {
 										setShowAll(false)
 									}}
 									className={`h-full px-2 text-xs font-medium whitespace-nowrap transition-colors cursor-pointer
-                    ${tfFilter === tf
-											? 'bg-accent/10 text-accent'
-											: 'text-muted hover:text-secondary hover:bg-elevated'
-										}`}
+                                        ${tfFilter === tf
+										? 'bg-accent/10 text-accent'
+										: 'text-muted hover:text-secondary hover:bg-elevated'
+									}`}
 								>
 									{tf === 'all' ? '全部' : tf === '1d' ? '日线' : '分钟'}
 								</button>
@@ -759,11 +759,11 @@ export function Screener() {
 							disabled={reloadStrategies.isPending}
 							title="重新加载策略并运行全部策略，刷新当前符合条件的个股"
 							className="inline-flex items-center gap-1.5 h-7 px-2 rounded-btn whitespace-nowrap shrink-0
-                border border-border bg-surface text-xs font-medium text-muted
-                hover:text-accent hover:border-accent/50 transition-colors cursor-pointer
-                disabled:opacity-50 disabled:cursor-wait"
+                                border border-border bg-surface text-xs font-medium text-muted
+                                hover:text-accent hover:border-accent/50 transition-colors cursor-pointer
+                                disabled:opacity-50 disabled:cursor-wait"
 						>
-							<RefreshCw className={`h-3.5 w-3.5 ${reloadStrategies.isPending ? 'animate-spin' : ''}`} />
+							<RefreshCw className={`h-3.5 w-3.5 ${reloadStrategies.isPending ? 'animate-spin' : ''}`}/>
 							重载
 						</button>
 						{asOf && (
@@ -782,12 +782,12 @@ export function Screener() {
 							})}
 							title="显示全部策略个股"
 							className={`inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-btn border transition-colors cursor-pointer
-                ${showAll
-									? 'border-accent/50 bg-accent/10 text-accent'
-									: 'border-border bg-surface text-muted hover:text-secondary hover:border-accent/40'
-								}`}
+                                ${showAll
+								? 'border-accent/50 bg-accent/10 text-accent'
+								: 'border-border bg-surface text-muted hover:text-secondary hover:border-accent/40'
+							}`}
 						>
-							<Network className="h-3.5 w-3.5" />
+							<Network className="h-3.5 w-3.5"/>
 						</button>
 						{/* 卡片尺寸切换 */}
 						<div className="flex items-center h-7 rounded-btn border border-border overflow-hidden shrink-0">
@@ -798,11 +798,10 @@ export function Screener() {
 										setCardSize(sz);
 										storage.screenerCardSize.set(sz)
 									}}
-									className={`h-full px-1.5 text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer
-                    ${cardSize === sz
-											? 'bg-accent/10 text-accent'
-											: 'text-muted hover:text-secondary hover:bg-elevated'
-										}`}
+									className={`h-full px-1.5 text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer ${cardSize === sz
+										? 'bg-accent/10 text-accent'
+										: 'text-muted hover:text-secondary hover:bg-elevated'
+									}`}
 								>
 									{sz === 'hidden' ? '隐藏' : sz === 'mini' ? '紧凑' : sz === 'normal' ? '标准' : '详细'}
 								</button>
@@ -811,11 +810,9 @@ export function Screener() {
 						{/* 策略池按钮 */}
 						<button
 							onClick={() => setShowPoolDialog(true)}
-							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0
-                border border-border bg-surface text-xs font-medium text-secondary
-                hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
+							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0 border border-border bg-surface text-xs font-medium text-secondary hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
 						>
-							<Layers className="h-3.5 w-3.5" />
+							<Layers className="h-3.5 w-3.5"/>
 							策略池
 							<span className="ml-0.5 min-w-[28px] h-4 flex items-center justify-center rounded-full bg-accent/15 text-accent text-[10px] font-bold">
 								{visiblePool.length}/{strategyPresets.length}
@@ -824,11 +821,9 @@ export function Screener() {
 						{/* 创建叠加策略 */}
 						<button
 							onClick={() => setShowComposite(true)}
-							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0
-                text-xs font-medium text-teal-400 border border-teal-500/20 bg-teal-500/5
-                hover:bg-teal-500/15 transition-colors cursor-pointer"
+							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0 text-xs font-medium text-teal-400 border border-teal-500/20 bg-teal-500/5 hover:bg-teal-500/15 transition-colors cursor-pointer"
 						>
-							<Layers className="h-3.5 w-3.5" />
+							<Layers className="h-3.5 w-3.5"/>
 							叠加策略
 						</button>
 						{/* 创建策略 */}
@@ -837,22 +832,18 @@ export function Screener() {
 								setBuilderMode('create');
 								setShowBuilder(true)
 							}}
-							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0
-                text-xs font-medium text-amber-400 border border-amber-400/20 bg-amber-400/5
-                hover:bg-amber-400/15 transition-colors cursor-pointer"
+							className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn whitespace-nowrap shrink-0 text-xs font-medium text-amber-400 border border-amber-400/20 bg-amber-400/5 hover:bg-amber-400/15 transition-colors cursor-pointer"
 						>
-							<Sparkles className="h-3.5 w-3.5" />
+							<Sparkles className="h-3.5 w-3.5"/>
 							创建策略 · AI
 						</button>
 						{/* 获取策略（占位，敬请期待）— 暂时隐藏 */}
 						{SHOW_STRATEGY_STORE && (
 							<button
 								onClick={() => setShowStore(true)}
-								className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
-                  border border-border bg-surface text-xs font-medium text-secondary
-                  hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
+								className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn border border-border bg-surface text-xs font-medium text-secondary  hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
 							>
-								<Store className="h-3.5 w-3.5" />
+								<Store className="h-3.5 w-3.5"/>
 								获取策略
 							</button>
 						)}
@@ -912,9 +903,9 @@ export function Screener() {
 					{(showAll ? allRows.length > 0 : !!result) && (
 						<motion.div
 							key={showAll ? `all-${asOf}` : `${result!.as_of}-${result!.strategy}`}
-							initial={{ opacity: 0, y: 8 }}
-							animate={{ opacity: 1, y: 0 }}
-							transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+							initial={{opacity: 0, y: 8}}
+							animate={{opacity: 1, y: 0}}
+							transition={{duration: 0.25, ease: [0.16, 1, 0.3, 1]}}
 							className="space-y-3"
 						>
 							<div className="flex items-center justify-between">
@@ -922,7 +913,7 @@ export function Screener() {
 									{!showAll && activeStrategy && (
 										<span className="text-secondary">{strategyIdToName[activeStrategy] ?? ''}</span>
 									)}
-									<TrendingUp className="h-4 w-4 text-accent" />
+									<TrendingUp className="h-4 w-4 text-accent"/>
 									{showAll ? '全部' : ''}命中 <span className="text-accent num">{displayRows.length}</span> 只
 									{filterActive(filter) && displayRows.length !== (showAll ? allRows.length : result!.total) && (
 										<span className="text-muted text-xs">/ {showAll ? allRows.length : result!.total}</span>
@@ -943,14 +934,14 @@ export function Screener() {
 											<button
 												onClick={() => setShowFilter(v => !v)}
 												className={`inline-flex items-center gap-1.5 px-2.5 text-xs font-medium transition-colors duration-150 cursor-pointer
-                          ${filterActive(filter)
-														? 'bg-accent/15 text-accent'
-														: showFilter
-															? 'bg-accent/8 text-accent'
-															: 'text-secondary hover:bg-elevated hover:text-foreground'
-													}`}
+                                                    ${filterActive(filter)
+													? 'bg-accent/15 text-accent'
+													: showFilter
+														? 'bg-accent/8 text-accent'
+														: 'text-secondary hover:bg-elevated hover:text-foreground'
+												}`}
 											>
-												<Filter className="h-3 w-3" />
+												<Filter className="h-3 w-3"/>
 												筛选
 												{filterActive(filter) && (
 													<span className="bg-accent text-base rounded-full min-w-4 h-4 px-1 flex items-center justify-center text-[10px] font-bold leading-none">
@@ -960,17 +951,16 @@ export function Screener() {
 											</button>
 											{filterActive(filter) && (
 												<>
-													<span className="w-px self-stretch my-1 bg-border" />
+													<span className="w-px self-stretch my-1 bg-border"/>
 													<button
 														onClick={() => {
 															setFilter(defaultFilter)
 															if (activeStrategy) filterMap.current.delete(activeStrategy)
 														}}
 														title="清空筛选条件"
-														className="inline-flex items-center gap-1 px-2 text-muted
-                              hover:bg-danger/10 hover:text-danger transition-colors duration-150 cursor-pointer"
+														className="inline-flex items-center gap-1 px-2 text-muted hover:bg-danger/10 hover:text-danger transition-colors duration-150 cursor-pointer"
 													>
-														<RotateCcw className="h-3 w-3" />
+														<RotateCcw className="h-3 w-3"/>
 													</button>
 												</>
 											)}
@@ -984,30 +974,30 @@ export function Screener() {
 											title="批量加自选"
 											ariaLabel="批量加入自选"
 											triggerClassName="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-btn
-                        border border-accent/40 bg-accent/10 text-accent text-xs font-medium
-                        hover:bg-accent/20 disabled:opacity-50 transition-colors duration-150 cursor-pointer"
+                                                border border-accent/40 bg-accent/10 text-accent text-xs font-medium
+                                                hover:bg-accent/20 disabled:opacity-50 transition-colors duration-150 cursor-pointer"
 										>
-											<Star className="h-3 w-3" />
+											<Star className="h-3 w-3"/>
 											{batchAdd.isPending ? '添加中…' : '批量加自选'}
 										</WatchlistAddMenu>
 									)}
 									<button
 										onClick={() => setCustomizerOpen(true)}
 										title="列表配置"
-										className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border text-xs font-medium transition-colors cursor-pointer
-                      ${customizerOpen
-												? 'border-accent/50 bg-accent/10 text-accent'
-												: 'border-border bg-surface text-secondary hover:text-accent hover:border-accent/50'
-											}`}
+										className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border text-xs font-medium transition-colors cursor-pointer 
+										${customizerOpen
+											? 'border-accent/50 bg-accent/10 text-accent'
+											: 'border-border bg-surface text-secondary hover:text-accent hover:border-accent/50'
+										}`}
 									>
-										<Settings2 className="h-3 w-3" />
+										<Settings2 className="h-3 w-3"/>
 									</button>
 									{batchMsg && (
 										<span className="text-xs text-accent animate-pulse">{batchMsg}</span>
 									)}
 									{!showAll && result && result.elapsed_ms > 0 && (
 										<div className="flex items-center gap-2 text-xs text-muted">
-											<Clock className="h-3 w-3" />
+											<Clock className="h-3 w-3"/>
 											<span className="num">{result.elapsed_ms.toFixed(1)} ms</span>
 										</div>
 									)}
@@ -1021,7 +1011,7 @@ export function Screener() {
 												className="text-warning/50 hover:text-warning transition-colors"
 												title="关闭提示"
 											>
-												<X className="h-3 w-3" />
+												<X className="h-3 w-3"/>
 											</button>
 										</span>
 									)}
@@ -1064,8 +1054,15 @@ export function Screener() {
 											setPreviewName(name ?? '');
 											setPreviewNavList(navList ?? [])
 										}}
-										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({ symbol, action: 'add', groupId })}
-										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({ symbol, action: 'remove' })}
+										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({
+											symbol,
+											action: 'add',
+											groupId
+										})}
+										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({
+											symbol,
+											action: 'remove'
+										})}
 										watchlistPending={toggleWatchlist.isPending}
 										klineData={klineData}
 										dailyKChartVisible={dailyKChartVisible}
@@ -1089,7 +1086,7 @@ export function Screener() {
 					{!showAll && !result && !run.isPending && (
 						<div className="flex flex-col items-center justify-center py-16 gap-4">
 							<div className="w-16 h-16 rounded-2xl bg-accent/5 border border-border flex items-center justify-center">
-								<ScanSearch className="h-7 w-7 text-accent/40" />
+								<ScanSearch className="h-7 w-7 text-accent/40"/>
 							</div>
 							<div className="flex flex-col items-center gap-1.5">
 								<span className="text-sm text-secondary">点击策略卡片查看选股结果</span>
@@ -1127,10 +1124,10 @@ export function Screener() {
 				onClose={() => setSettingsStrategyId(null)}
 				onSaved={(limit) => {
 					if (settingsStrategyId) {
-						setStrategyLimits(prev => ({ ...prev, [settingsStrategyId]: limit }))
+						setStrategyLimits(prev => ({...prev, [settingsStrategyId]: limit}))
 						// 按策略自身周期重跑: 日线用当前 asOf, 分钟实时单跑交后端取最新分区
 						const tf = strategyMap.get(settingsStrategyId)?.timeframes?.includes('1m') ? '1m' as const : '1d' as const
-						run.mutate({ id: settingsStrategyId, date: tf === '1m' ? '' : asOf, timeframe: tf })
+						run.mutate({id: settingsStrategyId, date: tf === '1m' ? '' : asOf, timeframe: tf})
 					}
 				}}
 				onAiModify={async () => {
@@ -1160,11 +1157,11 @@ export function Screener() {
 						delete rules[settingsStrategyId];
 						storage.strategyRules.set(rules)
 						setStrategyLimits(prev => {
-							const next = { ...prev };
+							const next = {...prev};
 							delete next[settingsStrategyId];
 							return next
 						})
-						qc.invalidateQueries({ queryKey: ['screener-strategies'] })
+						qc.invalidateQueries({queryKey: ['screener-strategies']})
 					}
 				}}
 			/>
@@ -1179,7 +1176,7 @@ export function Screener() {
 							const addedDaily = newPool.filter(
 								id => !prev.has(id) && !(strategyMap.get(id)?.timeframes?.includes('1m') ?? false),
 							)
-							if (addedDaily.length > 0) requestRunAll({ date: asOf || undefined, strategyIds: addedDaily })
+							if (addedDaily.length > 0) requestRunAll({date: asOf || undefined, strategyIds: addedDaily})
 						}
 						reorderPool(newPool)
 					}}
@@ -1209,7 +1206,7 @@ export function Screener() {
 					// 新建策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
 					const preset = data.presets.find(s => s.id === id)
 					if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m')) {
-						requestRunAll({ date: asOf || undefined, strategyIds: [id] })
+						requestRunAll({date: asOf || undefined, strategyIds: [id]})
 					}
 				}}
 			/>
@@ -1227,7 +1224,7 @@ export function Screener() {
 					// 新建叠加策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
 					const preset = data.presets.find(s => s.id === id)
 					if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m')) {
-						requestRunAll({ date: asOf || undefined, strategyIds: [id] })
+						requestRunAll({date: asOf || undefined, strategyIds: [id]})
 					}
 				}}
 			/>
