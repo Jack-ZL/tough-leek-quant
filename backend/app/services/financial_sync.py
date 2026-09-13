@@ -30,12 +30,14 @@ FINANCIAL_TABLES = ("metrics", "income", "balance_sheet", "cash_flow", "shares")
 # ================================================================
 
 def _get_symbols(data_dir: Path) -> list[str]:
-    """从 instruments 表获取标的列表。"""
+    """从 instruments 表获取标的列表, 排除港股(财务数据仅覆盖 A 股)。"""
     inst_path = data_dir / "instruments" / "instruments.parquet"
     if not inst_path.exists():
         return []
     try:
-        df = pl.read_parquet(inst_path, columns=["symbol"])
+        df = pl.read_parquet(inst_path)
+        if "exchange" in df.columns:
+            df = df.filter(pl.col("exchange") != "HK")
         return df["symbol"].to_list()
     except Exception as e:
         logger.warning("读取 instruments 失败: %s", e)
