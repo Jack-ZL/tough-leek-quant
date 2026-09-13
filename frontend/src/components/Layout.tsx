@@ -121,6 +121,7 @@ function ClockDisplay() {
 	return <span>{time}</span>
 }
 
+// 核心四只指数 — 与后端 index_const.py 单一权威对齐 (前端展示层固定清单)
 const CORE_INDEXES = [
 	{ symbol: '000001.SH', name: '上证指数' },
 	{ symbol: '399001.SZ', name: '深证成指' },
