@@ -33,7 +33,7 @@ import { Logo } from '@/components/Logo'
 
 const STEPS = ['声明', '欢迎', '数据源', '能力路由', '完成'] as const
 
-const BRAND = '#8B5CF6'
+const BRAND = '#F04438'
 
 const HIGHLIGHTS = [
   { icon: LineChart,   title: '看板与自选', desc: '市场全景看板、涨跌分布、情绪雷达,自定义自选列表', tint: 'text-accent' },
