@@ -18,12 +18,12 @@ dependencies = [
     "polars>=1.44,<1.45",
     "duckdb>=1.0",
     "pyarrow>=16.0",
-    "pandas>=2.2",                # 仅在 BacktestService 边界使用,见 §7.4 / ADR-19
-    "psutil>=5.9",                # 独立回测 worker 的峰值 RSS 与退出后内存指标
+    "pandas>=2.2", # 仅在 BacktestService 边界使用,见 §7.4 / ADR-19
+    "psutil>=5.9", # 独立回测 worker 的峰值 RSS 与退出后内存指标
     # llvmlite 不再提供 macOS Intel wheel；该平台使用 Matrix 纯 Python fallback。
     "numba>=0.65.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "fastexcel>=0.10",            # Polars 读取 xlsx/xls
-    "pypinyin>=0.50",             # 股票名拼音首字母搜索 (同花顺式 payh → 平安银行)
+    "fastexcel>=0.10", # Polars 读取 xlsx/xls
+    "pypinyin>=0.50", # 股票名拼音首字母搜索 (同花顺式 payh → 平安银行)
     # TickFlow 官方 SDK
     "tickflow[all]>=0.1.23",
     # TdxQuant 内置数据源插件的原生 TCP 客户端 (wheel 自带跨平台库, 无需系统依赖)
@@ -34,11 +34,11 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     # AI(可选,但默认装上)
-    "openai>=1.66",               # OpenAI 兼容适配器复用 openai SDK; 1.66+ 提供 Responses API
+    "openai>=1.66", # OpenAI 兼容适配器复用 openai SDK; 1.66+ 提供 Responses API
     "httpx>=0.27",
-    "platformdirs>=4.0",          # 桌面版用户数据目录 (跨平台持久可写)
-    "winotify>=1.1; sys_platform == 'win32'",  # Windows 系统通知 (进操作中心)
-    "plyer>=2.1",                 # 系统通知跨平台兜底 (macOS/Linux)
+    "platformdirs>=4.0", # 桌面版用户数据目录 (跨平台持久可写)
+    "winotify>=1.1; sys_platform == 'win32'", # Windows 系统通知 (进操作中心)
+    "plyer>=2.1", # 系统通知跨平台兜底 (macOS/Linux)
     # Watchlist screenshot OCR (Tesseract)
     "pytesseract>=0.3.10",
     "Pillow>=10.0",
@@ -97,13 +97,13 @@ target-version = "py311"
 #    但正因如此, 这条门禁从来没人守——本改动让它**可执行**, 代价是 236 条既有沉默违规显形。
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "BLE"]
 ignore = [
-    "E501",    # 长行交给 fmt
+    "E501", # 长行交给 fmt
     # 本仓注释/文档字符串以中文书写, 全角标点(，。：（）×)是正常书写而非笔误。
     # 不忽略会让「ruff error 清零」永远不可达: 实测 backend/app 共 1420 条告警,
     # 其中 RUF001/2/3 占 815 条(57.4%) ⇒ 忽略后降到 605 条, 门禁才谈得上可执行。
-    "RUF001",  # String contains ambiguous unicode character
-    "RUF002",  # Docstring contains ambiguous unicode character
-    "RUF003",  # Comment contains ambiguous unicode character
+    "RUF001", # String contains ambiguous unicode character
+    "RUF002", # Docstring contains ambiguous unicode character
+    "RUF003", # Comment contains ambiguous unicode character
 ]
 
 [tool.pytest.ini_options]
