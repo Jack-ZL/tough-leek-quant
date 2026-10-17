@@ -276,3 +276,22 @@ def test_unknown_verdict_is_cached_within_short_ttl(monkeypatch):
     assert is_trading_day(monday) is None
     assert is_trading_day(monday) is None
     assert calls == {"fuyao": 1, "tickflow": 1}
+
+
+# ---- 下一交易日 (侧栏轻提示, 周末跳过; 未来节假日按周几近似) ----
+
+def test_next_trading_day_from_friday_is_monday():
+    friday = datetime(2026, 10, 16, 20, 0, tzinfo=CN)  # 周五
+    assert trading_day.next_trading_day(friday) == date(2026, 10, 19)
+
+
+def test_next_trading_day_from_weekend_is_monday():
+    sat = datetime(2026, 10, 17, 10, 0, tzinfo=CN)  # 周六
+    sun = datetime(2026, 10, 18, 10, 0, tzinfo=CN)  # 周日
+    assert trading_day.next_trading_day(sat) == date(2026, 10, 19)
+    assert trading_day.next_trading_day(sun) == date(2026, 10, 19)
+
+
+def test_next_trading_day_from_weekday_is_next_weekday():
+    thu = datetime(2026, 10, 15, 20, 0, tzinfo=CN)  # 周四 (节假日近似)
+    assert trading_day.next_trading_day(thu) == date(2026, 10, 16)

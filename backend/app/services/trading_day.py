@@ -27,7 +27,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 
 from app.market_time import CN_TZ, cn_now
 
@@ -139,3 +139,16 @@ def _ttl_of(verdict: bool | None) -> float:
     if verdict is False:
         return _TTL_HOLIDAY_S
     return _TTL_UNKNOWN_S
+
+
+def next_trading_day(now: datetime | None = None) -> date:
+    """下一个交易日 (自 tomorrow 起, 跳过周末)。
+
+    未来节假日无公开交易日历可查 (fuyao 交易日历仅覆盖 [今日-1年, 今日]),
+    故按周一~周五近似 —— 与 assistant 侧「无交易日历, 按周一~周五近似,
+    节假日会高估」口径一致。仅用于侧栏「下一交易日」轻提示, 非交易判定依据。
+    """
+    d = (now or cn_now()).date() + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
