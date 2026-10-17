@@ -1901,6 +1901,49 @@ export interface SponsorModelItem {
   output_price?: number | null
 }
 
+/** 模型档案精简项 (GET /api/settings 概览下发, 不含密钥, 侧边栏切换用) */
+export interface AiProfileSlim {
+  id: string
+  name: string
+  provider: string
+  model: string
+}
+
+/** 模型档案全量项 (GET /api/settings/ai/profiles 下发, 含 api_key 供设置页回显) */
+export interface AiProfile extends AiProfileSlim {
+  protocol?: string
+  base_url?: string
+  api_key?: string
+  user_agent?: string
+  max_output_tokens?: number
+  context_window?: number
+  web_search?: boolean
+  reasoning_effort?: string
+  codex_command?: string
+  codex_model?: string
+  codex_reasoning_effort?: string
+}
+
+/** 档案保存/激活后的生效配置响应 (与 saveAiSettings 响应同构) */
+export interface AiEffectiveState {
+  ok: boolean
+  ai_provider?: string
+  ai_protocol?: string
+  ai_model?: string
+  ai_openai_model?: string
+  ai_reasoning_effort?: string
+  ai_codex_model?: string
+  ai_codex_command?: string
+  ai_codex_reasoning_effort?: string
+  ai_configured?: boolean
+  ai_max_output_tokens?: number
+  ai_context_window?: number
+  ai_round_checkpoint?: number
+  ai_web_search?: boolean
+  ai_profiles?: AiProfileSlim[]
+  ai_active_profile?: string
+}
+
 export interface SettingsState {
   mode: 'none' | 'free' | 'api_key'
   tickflow_api_key_masked: string
@@ -1932,6 +1975,9 @@ export interface SettingsState {
   ai_context_window?: number
   ai_round_checkpoint?: number
   ai_web_search?: boolean
+  /** 模型档案库 (精简项) + 当前激活档案 id */
+  ai_profiles?: AiProfileSlim[]
+  ai_active_profile?: string
 }
 
 /** 保存 TickFlow Key 的响应(先探后存) */
@@ -2381,11 +2427,35 @@ export const api = {
       '/api/settings/onboarding/complete', { method: 'POST' },
     ),
 
-  /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; round_checkpoint?: number; web_search?: boolean }) =>
-    request<{ ok: boolean; ai_provider?: string; ai_protocol?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; ai_round_checkpoint?: number; ai_web_search?: boolean }>('/api/settings/ai', {
+  /** 保存 AI 配置 (同步写回当前模型档案) */
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; round_checkpoint?: number; web_search?: boolean; profile_id?: string; profile_name?: string }) =>
+    request<AiEffectiveState>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
+    }),
+
+  /** 模型档案库全量列表 (含 api_key, 设置页回显用) */
+  getAiProfiles: () =>
+    request<{ profiles: AiProfile[]; active: string }>('/api/settings/ai/profiles'),
+
+  /** 新建/更新模型档案; apply=true 时同时激活 (立即生效) */
+  saveAiProfile: (p: { id?: string; name?: string; provider?: string; protocol?: string; base_url?: string; api_key?: string; model?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; web_search?: boolean; reasoning_effort?: string; codex_command?: string; codex_model?: string; codex_reasoning_effort?: string; apply?: boolean }) =>
+    request<AiEffectiveState & { profiles: AiProfile[]; saved_id: string }>('/api/settings/ai/profiles', {
+      method: 'POST',
+      body: JSON.stringify(p),
+    }),
+
+  /** 激活指定档案 (镜像到生效配置, 全局立即生效) */
+  activateAiProfile: (id: string) =>
+    request<AiEffectiveState>('/api/settings/ai/profiles/activate', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+
+  /** 删除档案 (激活中的档案后端会拒绝, 需先切换) */
+  deleteAiProfile: (id: string) =>
+    request<{ ok: boolean; profiles: AiProfile[]; active: string }>(`/api/settings/ai/profiles/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 
   /** 一键清空 AI 配置(保留自定义 UA) */

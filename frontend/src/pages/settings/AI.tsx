@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Save, Loader2, Check, Wifi, Eye, EyeOff, Shield, SlidersHorizontal,
+  Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, SlidersHorizontal,
   Shuffle, ExternalLink, Trash2, FileCog, RefreshCw,
   Terminal, ChevronDown, Sparkles, Atom, Waves, Cloud, Gem, Moon,
+  Plus, CheckCircle2, Zap,
 } from 'lucide-react'
 import { useSettings } from '@/lib/useSharedQueries'
-import { api, type SettingsState, type SponsorModelItem } from '@/lib/api'
+import { api, type AiProfile, type SettingsState, type SponsorModelItem } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { AnchorWrap } from '@/lib/useCardFlash'
 import { copyText } from '@/lib/clipboard'
@@ -88,6 +89,8 @@ type AiPreset = {
   description: ReactNode
   custom?: boolean
   sponsor?: boolean
+  /** 除 url 精确匹配外的域名特征 (官方备用域/专线入口, 如千问 token-plan 端点) */
+  hostHints?: string[]
   icon: React.ComponentType<{ className?: string }>
 }
 
@@ -104,19 +107,29 @@ const presetMeta = (p: AiPreset) => {
 
 const PRESETS: AiPreset[] = [
   { label: '自定义', url: '', model: '', website: '', websiteLabel: '', description: '不自动填充任何配置，完全手动填写 API 地址、模型和密钥。', custom: true, icon: SlidersHorizontal },
-  { label: 'RunningHub', url: 'https://llm.runninghub.ai/v1', model: 'openai/gpt-6-astra-saver', website: 'https://www.runninghub.ai/zh-cn/call-api/llm/models?source=github&inviteCode=edt5wh7c', websiteLabel: 'www.runninghub.ai · 赞助', sponsor: true, icon: Sparkles, description: <>本项目赞助商 · OpenAI 兼容中转，单一接口直连 400+ 主流大模型，<span className="font-medium text-amber-600 dark:text-amber-400">Claude、ChatGPT、Gemini</span> 等国际模型直连稳定不掉线。<span className="font-medium text-amber-600 dark:text-amber-400">DeepSeek v4.1 Flash 低至 3 折</span>，<span className="text-muted">全场最高优惠 80%</span>，<span className="font-medium text-amber-600 dark:text-amber-400">邀请链接注册赠送 1000 RH 积分</span><span className="text-muted">(积分可用于视频生成)</span>。</> },
+  { label: 'RunningHub', url: 'https://llm.runninghub.ai/v1', model: 'openai/gpt-6-astra-saver', website: 'https://www.runninghub.ai/zh-cn/call-api/llm/models?source=github&inviteCode=edt5wh7c', websiteLabel: 'www.runninghub.ai · 赞助', sponsor: true, hostHints: ['runninghub'], icon: Sparkles, description: <>本项目赞助商 · OpenAI 兼容中转，单一接口直连 400+ 主流大模型，<span className="font-medium text-amber-600 dark:text-amber-400">Claude、ChatGPT、Gemini</span> 等国际模型直连稳定不掉线。<span className="font-medium text-amber-600 dark:text-amber-400">DeepSeek v4.1 Flash 低至 3 折</span>，<span className="text-muted">全场最高优惠 80%</span>，<span className="font-medium text-amber-600 dark:text-amber-400">邀请链接注册赠送 1000 RH 积分</span><span className="text-muted">(积分可用于视频生成)</span>。</> },
   { label: 'OpenAI', provider: OPENAI_PROVIDER, url: 'https://api.openai.com/v1', model: DEFAULT_OPENAI_MODEL, website: 'https://platform.openai.com/', websiteLabel: 'platform.openai.com', description: 'OpenAI 官方接口，可单独配置模型支持的推理强度。', icon: Atom },
-  { label: 'DeepSeek', url: 'https://api.deepseek.com', model: 'deepseek-v4-pro', website: 'https://www.deepseek.com/', websiteLabel: 'deepseek.com', description: 'DeepSeek 官方 OpenAI 兼容接口。', icon: Waves },
-  { label: '通义千问', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-3.6plus', website: 'https://tongyi.aliyun.com/', websiteLabel: 'tongyi.aliyun.com', description: '阿里云 DashScope 兼容模式接口。', icon: Cloud },
-  { label: '智谱 GLM', url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.2', website: 'https://open.bigmodel.cn/', websiteLabel: 'open.bigmodel.cn', description: '智谱 AI 官方 OpenAI 兼容接口。', icon: Gem },
-  { label: 'Kimi', url: 'https://api.moonshot.cn/v1', model: 'kimi-k2.7-code', website: 'https://platform.moonshot.cn/', websiteLabel: 'platform.moonshot.cn', description: '月之暗面 Moonshot 官方 OpenAI 兼容接口，支持超长上下文。', icon: Moon },
+  { label: 'DeepSeek', url: 'https://api.deepseek.com', model: 'deepseek-v4-pro', website: 'https://www.deepseek.com/', websiteLabel: 'deepseek.com', hostHints: ['deepseek'], description: 'DeepSeek 官方 OpenAI 兼容接口。', icon: Waves },
+  { label: '通义千问', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-3.6plus', website: 'https://tongyi.aliyun.com/', websiteLabel: 'tongyi.aliyun.com', hostHints: ['aliyuncs', 'dashscope', 'qianwen'], description: '阿里云 DashScope 兼容模式接口。', icon: Cloud },
+  { label: '智谱 GLM', url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.2', website: 'https://open.bigmodel.cn/', websiteLabel: 'open.bigmodel.cn', hostHints: ['bigmodel'], description: '智谱 AI 官方 OpenAI 兼容接口。', icon: Gem },
+  { label: 'Kimi', url: 'https://api.moonshot.cn/v1', model: 'kimi-k2.7-code', website: 'https://platform.moonshot.cn/', websiteLabel: 'platform.moonshot.cn', hostHints: ['moonshot'], description: '月之暗面 Moonshot 官方 OpenAI 兼容接口，支持超长上下文。', icon: Moon },
   { label: 'Codex CLI', provider: CODEX_PROVIDER, url: '', model: DEFAULT_CODEX_MODEL, codexCommand: CODEX_COMMAND, website: 'https://developers.openai.com/codex/noninteractive', websiteLabel: 'codex exec', description: '调用本机 Codex CLI 的 codex exec, 适合已登录 ChatGPT/Codex 的本地环境。', icon: Terminal },
 ]
 
 const findPreset = (provider: string, baseUrl: string, codexCommand: string) => PRESETS.find(p => {
   if (p.custom || (p.provider ?? OPENAI_COMPAT_PROVIDER) !== provider) return false
   if (provider === OPENAI_PROVIDER) return true
-  return provider === CODEX_PROVIDER ? p.codexCommand === codexCommand : p.url === baseUrl
+  if (provider === CODEX_PROVIDER) return p.codexCommand === codexCommand
+  if (p.url === baseUrl) return true
+  // 官方备用域/专线入口 (如千问 token-plan 端点) 按域名特征归类, 避免误判为「自定义」
+  if (!p.hostHints?.length || !baseUrl) return false
+  let host = baseUrl
+  try {
+    host = new URL(baseUrl).hostname
+  } catch {
+    // 非标准 URL 时退化为原串匹配
+  }
+  return p.hostHints.some(h => host.includes(h))
 }) ?? PRESETS[0]
 
 export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
@@ -147,6 +160,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
   const [reloaded, setReloaded] = useState(false)
   // 赞助商预设的模型列表下拉（/models 接口 + 关键词过滤）
   const [modelsOpen, setModelsOpen] = useState(false)
+  const [providerOpen, setProviderOpen] = useState(false)
+  const providerBoxRef = useRef<HTMLDivElement | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState('')
   const [modelItems, setModelItems] = useState<SponsorModelItem[]>([])
@@ -155,6 +170,13 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [selectedPresetLabel, setSelectedPresetLabel] = useState(PRESETS[0].label)
+  // ===== 模型档案 (多模型配置库, 可回显/激活/删除) =====
+  const [profiles, setProfiles] = useState<AiProfile[]>([])
+  const [activeProfileId, setActiveProfileId] = useState('')
+  const [editingProfileId, setEditingProfileId] = useState('')
+  const [profileName, setProfileName] = useState('')
+  const [profileBusy, setProfileBusy] = useState<string | null>(null)
+  const [profileError, setProfileError] = useState('')
   const directDrafts = useRef({
     custom: { baseUrl: '', model: '' },
     openai: { baseUrl: 'https://api.openai.com/v1', model: DEFAULT_OPENAI_MODEL },
@@ -170,6 +192,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
   const savedCodexProvider = s?.ai_provider === CODEX_PROVIDER
   const configured = s?.ai_configured ?? (savedCodexProvider ? !!(s?.ai_codex_command ?? CODEX_COMMAND) : s?.has_ai_key)
   const selectedPreset = PRESETS.find(p => p.label === selectedPresetLabel) ?? PRESETS[0]
+  const SelectedPresetIcon = selectedPreset.icon
   const savedCodexModel = s?.ai_codex_model ?? (savedCodexProvider ? (s?.ai_model ?? '') : '')
   const savedCodexEffort = s?.ai_codex_reasoning_effort ?? ''
   const savedCodexOptionKnown = CODEX_MODEL_OPTIONS.some(option =>
@@ -257,6 +280,118 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     }
   }
 
+  // ===== 模型档案: 拉取 / 回显 / 新建 / 激活 / 删除 =====
+  const refreshProfiles = async () => {
+    try {
+      const r = await api.getAiProfiles()
+      setProfiles(r.profiles ?? [])
+      setActiveProfileId(r.active ?? '')
+      return r
+    } catch {
+      return null
+    }
+  }
+
+  // 首次挂载: 拉档案库, 标记当前激活档案为编辑目标
+  useEffect(() => {
+    void refreshProfiles().then(r => {
+      if (!r?.active) return
+      setEditingProfileId(r.active)
+      const p = r.profiles.find(x => x.id === r.active)
+      if (p) setProfileName(p.name ?? '')
+    })
+  }, [])
+
+  // 档案 → 表单回显 (含 api_key, 来自本机档案库)
+  const loadProfileIntoForm = (p: AiProfile) => {
+    userEditedRef.current = true
+    const prov = p.provider || OPENAI_COMPAT_PROVIDER
+    setProvider(prov)
+    setSelectedPresetLabel(findPreset(prov, p.base_url ?? '', p.codex_command ?? CODEX_COMMAND).label)
+    setProtocol(prov === CODEX_PROVIDER ? 'chat_completions' : (p.protocol ?? 'chat_completions'))
+    if (prov === CODEX_PROVIDER) {
+      setBaseUrl('')
+      setModel('')
+      setCodexModel(p.codex_model || p.model || '')
+      setCodexReasoningEffort(p.codex_reasoning_effort ?? '')
+      setCodexCommand(p.codex_command || CODEX_COMMAND)
+    } else {
+      setBaseUrl(p.base_url ?? '')
+      setModel(p.model ?? '')
+    }
+    setApiKey(p.api_key ?? '')
+    setReasoningEffort(p.reasoning_effort || DEFAULT_REASONING_EFFORT)
+    setCustomUa(!!p.user_agent)
+    setUserAgent(p.user_agent ?? '')
+    setMaxOutputTokens(p.max_output_tokens ? String(p.max_output_tokens) : '16384')
+    setContextWindow(p.context_window ? String(p.context_window) : '128000')
+    setWebSearch(Boolean(p.web_search))
+    setProfileName(p.name ?? '')
+    setEditingProfileId(p.id)
+    setTestResult(null)
+    setProfileError('')
+  }
+
+  // 新建档案: 表单回到默认值, 输入框以 placeholder 提示默认内容
+  const startNewProfile = () => {
+    userEditedRef.current = true
+    setEditingProfileId('')
+    setProfileName('')
+    setProvider(OPENAI_COMPAT_PROVIDER)
+    setSelectedPresetLabel(PRESETS[0].label)
+    setProtocol('chat_completions')
+    setBaseUrl('')
+    setModel('')
+    setApiKey('')
+    setReasoningEffort(DEFAULT_REASONING_EFFORT)
+    setCodexModel('')
+    setCodexReasoningEffort('')
+    setCodexCommand(CODEX_COMMAND)
+    setCustomUa(false)
+    setUserAgent('')
+    setMaxOutputTokens('16384')
+    setContextWindow('128000')
+    setWebSearch(false)
+    setTestResult(null)
+    setProfileError('')
+  }
+
+  const handleActivateProfile = async (id: string) => {
+    setProfileBusy(id)
+    setProfileError('')
+    try {
+      await api.activateAiProfile(id)
+      setActiveProfileId(id)
+      const p = profiles.find(x => x.id === id)
+      if (p) loadProfileIntoForm(p)
+      void qc.invalidateQueries({ queryKey: QK.settings })
+    } catch (e: any) {
+      setProfileError(String(e?.message ?? '激活失败'))
+    } finally {
+      setProfileBusy(null)
+    }
+  }
+
+  const handleDeleteProfile = async (id: string) => {
+    const p = profiles.find(x => x.id === id)
+    if (!confirm(`删除模型档案 "${p?.name || id}"?`)) return
+    setProfileBusy(id)
+    setProfileError('')
+    try {
+      const r = await api.deleteAiProfile(id)
+      setProfiles(r.profiles ?? [])
+      setActiveProfileId(r.active ?? '')
+      if (editingProfileId === id) {
+        setEditingProfileId('')
+        setProfileName('')
+      }
+    } catch (e: any) {
+      setProfileError(String(e?.message ?? '删除失败'))
+    } finally {
+      setProfileBusy(null)
+    }
+  }
+
   const copySecretsPath = async () => {
     if (!s?.secrets_path) return
     if (await copyText(s.secrets_path)) {
@@ -279,6 +414,9 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     context_window: toPositiveInt(contextWindow),
     round_checkpoint: toIntAllowZero(roundCheckpoint),
     web_search: webSearch,
+    // 档案同步: 保存时把表单写回当前编辑的档案 (无档案则后端生成 "default")
+    profile_id: editingProfileId || undefined,
+    profile_name: profileName.trim() || undefined,
   })
 
   const save = useMutation({
@@ -302,11 +440,19 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         ai_context_window: result.ai_context_window ?? toPositiveInt(contextWindow),
         ai_round_checkpoint: result.ai_round_checkpoint ?? toIntAllowZero(roundCheckpoint),
         ai_web_search: result.ai_web_search ?? webSearch,
+        ai_profiles: result.ai_profiles ?? prev.ai_profiles,
+        ai_active_profile: result.ai_active_profile ?? prev.ai_active_profile,
         ...(apiKey ? {
           has_ai_key: true,
           ai_api_key_masked: `${apiKey.slice(0, 4)}......${apiKey.slice(-4)}`,
         } : {}),
       } : prev)
+      // 保存后档案库已同步 (后端 upsert + 激活): 刷新本地档案列表与编辑目标
+      if (result.ai_active_profile) {
+        setActiveProfileId(result.ai_active_profile)
+        setEditingProfileId(result.ai_active_profile)
+      }
+      void refreshProfiles()
       qc.invalidateQueries({ queryKey: QK.settings })
       setTimeout(() => setSaved(false), 2000)
     },
@@ -336,6 +482,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
       setRoundCheckpoint('100')
       setWebSearch(false)
       setTestResult(null)
+      // 后端 clear 同时清空档案库
+      setProfiles([])
+      setActiveProfileId('')
+      setEditingProfileId('')
+      setProfileName('')
+      setProfileError('')
       qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
         ...prev,
         ai_provider: OPENAI_COMPAT_PROVIDER,
@@ -350,6 +502,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         ai_max_output_tokens: 16384,
         ai_context_window: 128000,
         ai_web_search: false,
+        ai_profiles: [],
+        ai_active_profile: '',
         has_ai_key: false,
         ai_configured: false,
         ai_api_key_masked: '',
@@ -455,6 +609,16 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [modelsOpen])
 
+  // 服务商下拉: 点击外部关闭
+  useEffect(() => {
+    if (!providerOpen) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (providerBoxRef.current && !providerBoxRef.current.contains(e.target as Node)) setProviderOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [providerOpen])
+
   const handleTest = async () => {
     setTesting(true)
     setTestResult(null)
@@ -477,8 +641,18 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     }
   }
 
+  // 档案名称字段 (与「模型/推理档」同行, 两个厂商分支复用)
+  const profileNameField = (
+    <Field label="档案名称" hint={editingProfileId ? '保存时写回当前档案; 留空则沿用原名称' : '新档案名称, 留空自动按模型名生成'}>
+      <input type="text" value={profileName}
+        onChange={e => { setProfileName(e.target.value); userEditedRef.current = true }}
+        placeholder={editingProfileId ? (profiles.find(x => x.id === editingProfileId)?.name ?? '') : '如: 千问-max'}
+        className={INPUT_CLS} />
+    </Field>
+  )
+
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-5xl">
       <AnchorWrap highlight={highlight} anchor="ai-connection">
       {/* 拆成多张卡 (与 数据源 页同构): 原先 7 个区块挤在一张卡里, 只靠细分割线
           区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
@@ -527,40 +701,111 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-card border border-border bg-surface">
-        {/* 服务商 */}
-        <div className="px-5 py-4">
-          <SectionHeader label="服务商" />
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {PRESETS.map(p => {
-              const active = selectedPreset?.label === p.label
-              const Icon = p.icon
-              return (
-                <button key={p.label} type="button" onClick={() => handlePreset(p)} aria-pressed={active}
-                  className={`group relative flex flex-col gap-1.5 rounded-lg border p-2.5 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98] ${
-                    active
-                      ? 'border-accent/60 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(59,130,246,0.12),0_0_12px_-3px_rgba(59,130,246,0.45)]'
-                      : 'border-border/60 bg-base/40 hover:border-accent/30 hover:bg-base'
-                  }`}>
-                  {/* 选中标记: 8 张卡同构时仅靠描边难以辨认, 左上角给一道主色竖标 */}
-                  <span aria-hidden="true"
-                    className={`absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150 ${
-                      active ? 'opacity-100' : 'opacity-0'
-                    }`} />
-                  <span className="flex items-center gap-2">
-                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
-                      active ? 'bg-accent/20 text-accent' : 'bg-elevated/60 text-muted group-hover:text-secondary'
-                    }`}>
-                      <Icon className="h-3.5 w-3.5" />
-                    </span>
-                    <span className={`truncate text-xs font-medium ${active ? 'text-foreground' : 'text-secondary'}`}>{p.label}</span>
-                    {p.sponsor && <span className="ml-auto shrink-0 rounded-full bg-amber-400/15 px-1.5 py-px text-[9px] font-semibold leading-none text-amber-600 dark:text-amber-400">优惠</span>}
-                  </span>
-                  <span className="truncate font-mono text-[10px] text-muted">{presetMeta(p)}</span>
-                </button>
-              )
-            })}
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[264px_minmax(0,1fr)]">
+      {/* 左栏: 模型档案列表 (点击回显到右侧表单) */}
+      <aside className="lg:sticky lg:top-4">
+        <section className="overflow-hidden rounded-card border border-border bg-surface">
+          <div className="flex items-center gap-2 border-b border-border/40 px-3.5 py-2.5">
+            <SectionHeader label="模型档案" inline />
+            <button type="button" onClick={startNewProfile}
+              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/50 px-2 py-1 text-[10px] text-secondary transition-colors hover:border-accent/40 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 active:scale-[0.98]">
+              <Plus className="h-3 w-3" /> 新建
+            </button>
           </div>
+          {profileError && (
+            <p className="px-3.5 pt-2 text-[11px] text-danger">{profileError}</p>
+          )}
+          {profiles.length === 0 ? (
+            <p className="px-3.5 py-3 text-[11px] leading-relaxed text-muted">
+              暂无档案 — 在右侧表单填写参数并保存后自动生成档案; 支持保存多个模型一键切换。
+            </p>
+          ) : (
+            <div className="space-y-1 p-1.5">
+              {profiles.map(p => {
+                const isActive = p.id === activeProfileId
+                const isEditing = p.id === editingProfileId
+                const busy = profileBusy === p.id
+                return (
+                  <div key={p.id}
+                    className={`group flex items-center gap-1 rounded-lg border px-2.5 py-2 transition-colors ${
+                      isEditing ? 'border-accent/50 bg-accent/[0.06]' : 'border-transparent hover:bg-elevated/50'
+                    }`}>
+                    <button type="button" onClick={() => loadProfileIntoForm(p)} disabled={busy}
+                      className="min-w-0 flex-1 text-left focus-visible:outline-none disabled:opacity-50"
+                      title="载入此档案的配置到右侧表单">
+                      <span className="flex items-center gap-1.5">
+                        <span className="truncate text-xs font-medium text-foreground">{p.name || p.model || p.id}</span>
+                        {isActive && (
+                          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-bear/10 px-1.5 py-px text-[9px] font-medium text-bear">
+                            <CheckCircle2 className="h-2.5 w-2.5" /> 使用中
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted">
+                        {findPreset(p.provider || OPENAI_COMPAT_PROVIDER, p.base_url ?? '', p.codex_command ?? CODEX_COMMAND).label}
+                        {p.model ? ` · ${p.model}` : ''}
+                      </span>
+                    </button>
+                    <span className="flex shrink-0 items-center gap-0.5">
+                      {!isActive && (
+                        <button type="button" onClick={() => void handleActivateProfile(p.id)} disabled={busy}
+                          className="rounded-md p-1 text-muted transition-colors hover:bg-accent/10 hover:text-accent disabled:opacity-50"
+                          title="激活此档案 (立即全局生效)">
+                          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                        </button>
+                      )}
+                      {!isActive && (
+                        <button type="button" onClick={() => void handleDeleteProfile(p.id)} disabled={busy}
+                          className="rounded-md p-1 text-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                          title="删除此档案">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      </aside>
+      {/* 右栏: 配置表单 (服务商下拉 + 按厂商适配的字段) */}
+      <div className="min-w-0 space-y-4">
+
+      <section className="overflow-hidden rounded-card border border-border bg-surface">
+        {/* 接口配置 */}
+        <div className="px-5 py-4">
+          {/* 服务商下拉 (logo + 名称) 独占一行, 下方表单项随厂商适配 */}
+          <Field label="服务商" hint="选择模型服务商, 表单项随厂商适配">
+            <div ref={providerBoxRef} className="relative">
+              <button type="button" onClick={() => setProviderOpen(v => !v)} aria-haspopup="listbox" aria-expanded={providerOpen}
+                className={`${INPUT_CLS} flex items-center gap-2 text-left`}>
+                <SelectedPresetIcon className="h-3.5 w-3.5 shrink-0 text-muted" />
+                <span className="min-w-0 flex-1 truncate">{selectedPreset.label}</span>
+                {selectedPreset.sponsor && <span className="shrink-0 rounded-full bg-amber-400/15 px-1.5 py-px text-[9px] font-semibold leading-none text-amber-600 dark:text-amber-400">优惠</span>}
+                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted transition-transform ${providerOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {providerOpen && (
+                <div role="listbox" className="absolute z-20 mt-1 max-h-64 w-full min-w-[220px] overflow-y-auto rounded-lg border border-border/40 bg-base py-1 shadow-lg">
+                  {PRESETS.map(p => {
+                    const Icon = p.icon
+                    const active = p.label === selectedPresetLabel
+                    return (
+                      <button key={p.label} type="button" role="option" aria-selected={active}
+                        onClick={() => { handlePreset(p); setProviderOpen(false) }}
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent/10 ${active ? 'text-accent' : 'text-secondary'}`}>
+                        <Icon className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-accent' : 'text-muted'}`} />
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">{p.label}</span>
+                        <span className="shrink-0 font-mono text-[10px] text-muted/70">{presetMeta(p)}</span>
+                        {p.sponsor && <span className="shrink-0 rounded-full bg-amber-400/15 px-1.5 py-px text-[9px] font-semibold leading-none text-amber-600 dark:text-amber-400">优惠</span>}
+                        {active && <Check className="h-3 w-3 shrink-0" />}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </Field>
           {selectedPreset && (
             <div className="mt-2.5 rounded-lg bg-base/40 px-3.5 py-2.5">
               <p className="text-[11px] leading-relaxed text-secondary">{selectedPreset.description}</p>
@@ -573,15 +818,9 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
               )}
             </div>
           )}
-        </div>
-      </section>
-
-      <section className="overflow-hidden rounded-card border border-border bg-surface">
-        {/* 接口配置 */}
-        <div className="px-5 py-4">
           {/* 标题行: 左侧区段名, 右侧请求方式 (属于本区段内可编辑项, 与下方表单同组) */}
-          <div className="mb-3 flex items-center gap-3">
-            <SectionHeader label={isCodexProvider ? '本地 CLI 配置' : '接口配置'} inline />
+          <div className="mb-3 mt-4 flex items-center gap-3">
+            <span className="text-xs font-medium text-secondary">{isCodexProvider ? '本地 CLI 配置' : '接口配置'}</span>
             {!isCodexProvider && (
               <div className="ml-auto flex items-center rounded-full border border-border/40 bg-base/50 p-0.5"
                 title="Chat Completions 兼容面最广; Responses 为 OpenAI 官方新协议, 仅官方及少数网关支持。不确定就保持默认。">
@@ -604,38 +843,39 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           </div>
           <div className="space-y-4">
           {isCodexProvider ? (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {profileNameField}
+                <Field
+                  label="模型 / 推理档"
+                  hint={selectedCodexModelOption.hint}
+                >
+                  <select
+                    value={codexModelSelectValue}
+                    onChange={e => {
+                      const value = e.target.value
+                      const option = codexModelOptions.find(item => item.value === value) ?? CODEX_MODEL_OPTIONS[0]
+                      setCodexModel(option.model)
+                      setCodexReasoningEffort(option.effort)
+                    }}
+                    className={INPUT_CLS}
+                  >
+                    {codexModelOptions.map(option => (
+                      <option key={option.value || 'codex-local-default'} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
               <Field label="CLI 命令" hint="固定使用默认 codex 命令, 由后端自动解析本机 Codex Desktop/CLI, 不支持自定义可执行路径。">
                 <div className={`${INPUT_CLS} flex items-center text-muted/80 select-none`} aria-label="Codex CLI command">
                   {CODEX_COMMAND}
                 </div>
               </Field>
-              <Field
-                label="模型 / 推理档"
-                hint={selectedCodexModelOption.hint}
-              >
-                <select
-                  value={codexModelSelectValue}
-                  onChange={e => {
-                    const value = e.target.value
-                    const option = codexModelOptions.find(item => item.value === value) ?? CODEX_MODEL_OPTIONS[0]
-                    setCodexModel(option.model)
-                    setCodexReasoningEffort(option.effort)
-                  }}
-                  className={INPUT_CLS}
-                >
-                  {codexModelOptions.map(option => (
-                    <option key={option.value || 'codex-local-default'} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </Field>
             </div>
           ) : (
             <>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="API 地址">
-                  <input type="text" value={baseUrl} onChange={e => handleBaseUrlChange(e.target.value)} placeholder="https://llm.runninghub.ai/v1" className={INPUT_CLS} />
-                </Field>
+                {profileNameField}
                 <Field label="模型">
                   <div ref={modelBoxRef} className="relative">
                     <input type="text" value={model} onChange={e => handleModelChange(e.target.value)} placeholder="gpt-5.6-sol" className={`${INPUT_CLS} ${selectedPreset?.sponsor ? 'pr-9' : ''}`} />
@@ -689,6 +929,9 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                   </div>
                 </Field>
               </div>
+              <Field label="API 地址">
+                <input type="text" value={baseUrl} onChange={e => handleBaseUrlChange(e.target.value)} placeholder="https://llm.runninghub.ai/v1" className={INPUT_CLS} />
+              </Field>
 
               {isOpenAIProvider && (
                 <div className="max-w-[220px]">
@@ -698,7 +941,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                 </div>
               )}
 
-              <Field label="API Key">
+              <Field label={<>API Key <span className="ml-1 inline-flex items-center gap-1 font-normal tracking-normal text-amber-500 dark:text-amber-400"><AlertCircle className="h-3 w-3 shrink-0" />仅保存在本机项目文件, 不会上传到任何服务器。</span></>}>
                 <div className="relative">
                   <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={configured ? `${s?.ai_api_key_masked} · 留空不修改` : 'sk-...'} className={`${INPUT_CLS} pr-9`} />
                   <button onClick={() => setShowKey(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted/40 hover:text-muted" tabIndex={-1} aria-label={showKey ? '隐藏' : '显示'}>
@@ -707,10 +950,21 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                 </div>
               </Field>
 
-              <div className="flex items-center gap-2 border-t border-border/30 pt-3.5">
-                <span className="text-xs font-medium text-secondary">自定义 User-Agent</span>
-                <span className="text-[10px] text-muted">绕过 CDN/WAF 的 Bot 拦截</span>
-                <div className="ml-auto"><Toggle checked={customUa} onChange={() => setCustomUa(v => !v)} /></div>
+              <div className="grid grid-cols-1 gap-x-6 gap-y-3 border-t border-border/30 pt-3.5 sm:grid-cols-2">
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-medium text-secondary">自定义 User-Agent</span>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-muted">绕过 CDN/WAF 的 Bot 拦截</p>
+                  </div>
+                  <div className="shrink-0"><Toggle checked={customUa} onChange={() => setCustomUa(v => !v)} /></div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-medium text-secondary">联网搜索</span>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-muted">让模型可以联网搜索实时信息</p>
+                  </div>
+                  <div className="shrink-0"><Toggle checked={webSearch} onChange={() => setWebSearch(v => !v)} /></div>
+                </div>
               </div>
               {customUa && (
                 <div className="flex gap-2">
@@ -720,12 +974,6 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                   </button>
                 </div>
               )}
-
-              <div className="flex items-center gap-2 border-t border-border/30 pt-3.5">
-                <span className="text-xs font-medium text-secondary">联网搜索</span>
-                <span className="text-[10px] text-muted">请求附带 enable_search, 个股分析消息面可引用最新新闻; 仅千问/百炼等支持的模型生效, DeepSeek 自动回退无联网模式</span>
-                <div className="ml-auto"><Toggle checked={webSearch} onChange={() => setWebSearch(v => !v)} /></div>
-              </div>
             </>
           )}
           </div>
@@ -737,7 +985,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         <div>
           <button type="button" onClick={() => setAdvancedOpen(v => !v)} aria-expanded={advancedOpen}
             className="flex w-full items-center gap-2 px-5 py-3.5 text-left transition-colors hover:bg-elevated/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
-            <SectionHeader label="高级参数" inline />
+            <span className="text-xs font-medium text-secondary">高级参数</span>
             <ChevronDown className={`ml-auto h-3.5 w-3.5 text-muted transition-transform duration-200 ${advancedOpen ? 'rotate-180' : ''}`} />
           </button>
           {advancedOpen && (
@@ -759,16 +1007,16 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
       {/* 操作卡: 安全说明 + 保存/清空 + 配置文件入口。
           独立成卡让「保存」始终在视觉收尾处, 不必滚过长表单才找到。 */}
       <section className="overflow-hidden rounded-card border border-border bg-surface">
-        <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 items-start gap-2 sm:flex-1">
-            <Shield className="mt-px h-3.5 w-3.5 shrink-0 text-muted/70" />
-            <p className="text-[11px] leading-relaxed text-muted">
-              {isCodexProvider
-                ? 'Codex CLI 会复用本机已登录账户, 分析上下文将发送给 OpenAI/Codex。'
-                : 'API Key 仅保存在本机项目文件, 不会上传到任何服务器。'}
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-col gap-3 px-5 py-4">
+          {isCodexProvider && (
+            <div className="flex min-w-0 items-start gap-2 sm:flex-1">
+              <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0 text-amber-500 dark:text-amber-400" />
+              <p className="text-[11px] font-medium leading-relaxed text-amber-500 dark:text-amber-300">
+                Codex CLI 会复用本机已登录账户, 分析上下文将发送给 OpenAI/Codex。
+              </p>
+            </div>
+          )}
+          <div className="flex w-full flex-wrap items-center gap-2">
             {testResult && (
               <span title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
                 className={`inline-flex max-w-[280px] items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${testResult.ok ? 'border-bear/25 bg-bear/[0.06] text-bear' : 'border-danger/25 bg-danger/[0.06] text-danger'}`}>
@@ -776,20 +1024,20 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                 <span className="min-w-0 truncate">{testResult.msg}</span>
               </span>
             )}
-            {configured && (
-              <button onClick={() => setConfirmClear(true)} disabled={clear.isPending} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-danger/10 hover:text-danger text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="Clear AI provider configuration">
-                <Trash2 className="h-3.5 w-3.5" />
-                清空
-              </button>
-            )}
-            <button onClick={handleTest} disabled={testing || !canTest} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-elevated hover:text-foreground text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="测试当前表单的连接, 不保存配置">
-              {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-              {testing ? '测试中' : '测试连接'}
-            </button>
             <button onClick={() => save.mutate()} disabled={save.isPending || !canSave} className="h-9 px-5 rounded-lg bg-accent text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]">
               {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
               {save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
             </button>
+            <button onClick={handleTest} disabled={testing || !canTest} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-elevated hover:text-foreground text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="测试当前表单的连接, 不保存配置">
+              {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+              {testing ? '测试中' : '测试连接'}
+            </button>
+            {configured && (
+              <button onClick={() => setConfirmClear(true)} disabled={clear.isPending} className="ml-auto h-9 px-3.5 rounded-lg text-sm font-medium text-danger hover:bg-danger/10 flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="Clear AI provider configuration">
+                <Trash2 className="h-3.5 w-3.5" />
+                清空
+              </button>
+            )}
           </div>
         </div>
 
@@ -822,6 +1070,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         )}
       </section>
       </div>
+      </div>
+      </div>
       </AnchorWrap>
 
       {confirmClear && (
@@ -830,7 +1080,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           <div className="relative w-[90vw] max-w-[380px] rounded-card border border-border bg-base shadow-2xl p-6">
             <h3 className="text-sm font-medium text-foreground mb-2">清空 AI 配置</h3>
             <p className="text-xs text-secondary mb-5 leading-relaxed">
-              这会清空已保存的 provider、API Key、API 地址、模型和 Codex CLI 命令。之后可以重新配置。
+              这会清空已保存的 provider、API Key、API 地址、模型和 Codex CLI 命令, 并同时删除全部模型档案, 操作不可撤销。之后可以重新配置。
             </p>
             <div className="flex items-center justify-end gap-2">
               <button onClick={() => setConfirmClear(false)} className="px-3 py-1.5 rounded-btn bg-elevated text-secondary hover:bg-elevated/80 text-sm transition-colors">
@@ -860,7 +1110,7 @@ function SectionHeader({ label, inline }: { label: string; inline?: boolean }) {
 // ===== 表单字段(统一 label + 输入框样式) =====
 
 function Field({ label, hint, inline, children }: {
-  label: string
+  label: React.ReactNode
   hint?: string
   inline?: boolean
   children: React.ReactNode
@@ -869,16 +1119,15 @@ function Field({ label, hint, inline, children }: {
     return (
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-[10px] font-medium text-muted">{label}</div>
+          <div className="text-xs font-medium text-secondary">{label}</div>
           {hint && <div className="text-[10px] text-muted/70 mt-0.5">{hint}</div>}
-        </div>
-        {children}
+        </div>        {children}
       </div>
     )
   }
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] font-medium tracking-wide text-muted">{label}</div>
+      <div className="text-xs font-medium text-secondary">{label}</div>
       {children}
       {hint && <div className="text-[10px] text-muted/80">{hint}</div>}
     </div>

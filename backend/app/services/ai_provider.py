@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -211,6 +212,116 @@ def web_search_supported() -> bool:
         return False
     model = current_ai_model().strip().lower()
     return not any(h in model for h in _SEARCH_UNSUPPORTED_MODEL_HINTS)
+
+
+# 厂商关键词映射: 输入端友好叫法 (中英文/别名) → 厂商标识。
+# 档案归属哪个厂商由其 名称/模型名/codex模型/API地址/服务商 字段中出现的关键词判定,
+# 因此消息里写 "千问"、"qwen"、"智谱"、"glm" 等都能命中对应档案, 无需与配置名完全一致。
+_VENDOR_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "qwen": ("qwen", "千问", "通义", "tongyi", "dashscope"),
+    "deepseek": ("deepseek", "深度求索"),
+    "kimi": ("kimi", "moonshot"),
+    "glm": ("glm", "智谱", "zhipu", "chatglm", "bigmodel"),
+    "doubao": ("doubao", "豆包", "volcengine", "火山引擎"),
+    "claude": ("claude", "anthropic"),
+    "gpt": ("chatgpt", "gpt", "openai"),
+    "gemini": ("gemini", "google"),
+    "grok": ("grok",),
+    "minimax": ("minimax", "abab"),
+    "hunyuan": ("hunyuan", "混元"),
+    "ernie": ("ernie", "文心", "qianfan", "千帆"),
+    "baichuan": ("baichuan", "百川"),
+    "stepfun": ("stepfun", "阶跃"),
+    "codex": ("codex",),
+}
+
+
+def _profile_vendors(prof: dict) -> set[str]:
+    """根据档案字段判定其所属厂商集合 (可能命中多个, 如 codex 档案含 openai 地址)。
+
+    provider 为 openai_compat 时是协议标记而非厂商, 不参与判定,
+    避免所有兼容模式的档案都被误判为 OpenAI。
+    """
+    blob = " ".join(
+        str(prof.get(k) or "").lower() for k in ("name", "model", "codex_model", "base_url")
+    )
+    provider = str(prof.get("provider") or "").lower()
+    if provider and provider != OPENAI_COMPAT_PROVIDER:
+        blob += " " + provider
+    return {
+        vendor
+        for vendor, keywords in _VENDOR_KEYWORDS.items()
+        if any(kw in blob for kw in keywords)
+    }
+
+
+def match_profile_in_text(text: str) -> tuple[dict | None, str]:
+    """在消息文本中查找已配置模型档案的别名, 返回 (档案含 id, 移除别名后的文本)。
+
+    两轮匹配 (均忽略大小写, 最长优先):
+    ① 精确别名: 档案名/模型名/codex模型名 原样出现在消息中;
+    ② 厂商关键词: "千问/qwen/智谱/glm/deepseek/kimi..." 等友好叫法 →
+       归属该厂商的唯一档案 (同厂商多档案时优先激活档案, 否则取第一个)。
+    未命中返回 (None, 原文); 供 IM 机器人 "@机器人 模型名称 标的名称" 场景使用,
+    未命中时调用方回退激活档案。
+    """
+    profiles = secrets_store.list_ai_profiles()
+    low_text = (text or "").lower()
+
+    def _hit(alias: str, prof: dict) -> tuple[dict, str]:
+        idx = low_text.find(alias)
+        cleaned = (text[:idx] + text[idx + len(alias):]).strip()
+        return prof, cleaned
+
+    # ① 精确别名 (最长优先)
+    candidates: list[tuple[str, dict]] = []
+    for prof in profiles:
+        seen: set[str] = set()
+        for key in ("name", "model", "codex_model"):
+            alias = str(prof.get(key) or "").strip().lower()
+            if len(alias) >= 2 and alias not in seen:
+                seen.add(alias)
+                candidates.append((alias, prof))
+    candidates.sort(key=lambda item: len(item[0]), reverse=True)
+    for alias, prof in candidates:
+        if alias in low_text:
+            return _hit(alias, prof)
+
+    # ② 厂商关键词 (最长优先); 关键词 → 归属该厂商的档案
+    vendor_profiles: dict[str, list[dict]] = {}
+    for prof in profiles:
+        for vendor in _profile_vendors(prof):
+            vendor_profiles.setdefault(vendor, []).append(prof)
+    active_id = secrets_store.get_active_ai_profile_id()
+    keyword_candidates: list[tuple[str, str]] = [
+        (kw, vendor)
+        for vendor in vendor_profiles
+        for kw in _VENDOR_KEYWORDS[vendor]
+    ]
+    keyword_candidates.sort(key=lambda item: len(item[0]), reverse=True)
+    for kw, vendor in keyword_candidates:
+        if kw not in low_text:
+            continue
+        matched = vendor_profiles[vendor]
+        prof = next((p for p in matched if p.get("id") == active_id), matched[0])
+        return _hit(kw, prof)
+    return None, text
+
+
+@contextlib.contextmanager
+def profile_override(profile: dict | None):
+    """当前异步上下文内临时按指定档案执行 AI 请求 (不落盘、不改激活档案)。
+
+    profile 为 None 时等价无覆盖; 机器人消息未命中已配置模型名时以此回退激活模型。
+    """
+    if not profile:
+        yield None
+        return
+    token = secrets_store.set_runtime_override(secrets_store.flat_from_profile(profile))
+    try:
+        yield profile
+    finally:
+        secrets_store.reset_runtime_override(token)
 
 
 def _resolve_max_tokens(max_tokens: int | None) -> int | None:
