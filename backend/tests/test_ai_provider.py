@@ -718,3 +718,111 @@ async def test_codex_exec_args_exclude_ephemeral(monkeypatch):
     assert "--ephemeral" not in args
     assert "exec" in args and "--skip-git-repo-check" in args
     assert args[args.index("--model") + 1] == "gpt-5.6-sol"
+
+
+# ===== 联网搜索 (enable_search) =====
+
+def test_openai_kwargs_web_search_adds_enable_search():
+    kwargs = ai_provider._openai_kwargs(
+        temperature=0.5,
+        max_tokens=None,
+        model="qwen-plus",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        web_search=True,
+    )
+    assert kwargs["extra_body"] == {
+        "enable_search": True,
+        "search_options": {"forced_search": True, "search_strategy": "max"},
+    }
+
+    # 开关关闭 (默认) 不携带
+    kwargs_off = ai_provider._openai_kwargs(
+        temperature=0.5,
+        max_tokens=None,
+        model="qwen-plus",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    assert "extra_body" not in kwargs_off
+
+
+def test_openai_kwargs_web_search_merges_with_thinking_body():
+    """enable_search 与 thinking 禁用共存时合并进同一 extra_body, 不互相覆盖。"""
+    kwargs = ai_provider._openai_kwargs(
+        temperature=None,
+        max_tokens=None,
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com/v1",
+        prefer_final_answer=True,
+        web_search=True,
+    )
+    assert kwargs["extra_body"] == {
+        "thinking": {"type": "disabled"},
+        "enable_search": True,
+        "search_options": {"forced_search": True, "search_strategy": "max"},
+    }
+
+
+def test_web_search_supported_gating(monkeypatch):
+    stored = {"ai_provider": "openai_compat", "ai_model": "qwen-plus"}
+    monkeypatch.setattr(secrets_store, "load", lambda: stored)
+
+    # 默认关闭
+    assert ai_provider.web_search_supported() is False
+
+    stored["ai_web_search"] = True
+    assert ai_provider.web_search_supported() is True
+
+    # DeepSeek 官方聊天 API 无 enable_search, 模型命中即回退
+    stored["ai_model"] = "deepseek-chat"
+    assert ai_provider.web_search_supported() is False
+
+    # Responses 协议联网走 tools=web_search, 暂未接入 → 不启用
+    stored["ai_model"] = "qwen-plus"
+    stored["ai_protocol"] = "responses"
+    assert ai_provider.web_search_supported() is False
+
+    # Codex CLI 本地子进程, 无该参数
+    del stored["ai_protocol"]
+    stored["ai_provider"] = "codex_cli"
+    assert ai_provider.web_search_supported() is False
+
+
+def test_search_body_rejected_removes_only_enable_search():
+    """网关 400 拒绝 enable_search: 摘除搜索相关键重试, 保留 thinking 等其它键。"""
+    response = httpx.Response(
+        400,
+        json={"error": {"message": "unsupported parameter: enable_search"}},
+        request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+    )
+    exc = openai.BadRequestError(
+        "bad request", response=response,
+        body={"error": {"message": "unsupported parameter: enable_search"}},
+    )
+    kwargs = {
+        "max_tokens": None,
+        "extra_body": {
+            "thinking": {"type": "disabled"},
+            "enable_search": True,
+            "search_options": {"forced_search": True},
+        },
+    }
+    retry = ai_provider._openai_retry_kwargs(exc, kwargs)
+    assert retry == {"max_tokens": None, "extra_body": {"thinking": {"type": "disabled"}}}
+    # 原 kwargs 不被修改
+    assert kwargs["extra_body"]["enable_search"] is True
+
+    # extra_body 只有搜索键时整个移除
+    kwargs_only = {"max_tokens": None, "extra_body": {"enable_search": True, "search_options": {"forced_search": True}}}
+    assert ai_provider._openai_retry_kwargs(exc, kwargs_only) == {"max_tokens": None}
+
+    # 与搜索无关的 400 不触发该回退
+    response_other = httpx.Response(
+        400,
+        json={"error": {"message": "model not found"}},
+        request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+    )
+    exc_other = openai.BadRequestError(
+        "bad request", response=response_other,
+        body={"error": {"message": "model not found"}},
+    )
+    assert ai_provider._openai_retry_kwargs(exc_other, kwargs_only) is None

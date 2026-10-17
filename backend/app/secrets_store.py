@@ -129,6 +129,19 @@ def get_ai_config_int(key: str, default: int) -> int:
     return int(getattr(settings, key, default) or default)
 
 
+def get_ai_config_bool(key: str, default: bool) -> bool:
+    """取 AI 布尔配置项 (如 ai_web_search): secrets.json 优先,否则 config。"""
+    val = load().get(key)
+    if val is not None:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(val)
+    from app.config import settings
+    return bool(getattr(settings, key, default))
+
+
 def get_custom_webhook_secret() -> str:
     """Return the optional HMAC secret for the generic outbound webhook."""
     return str(load().get("custom_webhook_secret") or "")

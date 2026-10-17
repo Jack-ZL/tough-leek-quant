@@ -62,6 +62,7 @@ def get_settings() -> dict:
         current_ai_model,
         current_ai_protocol,
         current_ai_round_checkpoint,
+        current_ai_web_search,
         current_codex_command,
         current_codex_model,
         current_codex_reasoning_effort,
@@ -101,6 +102,7 @@ def get_settings() -> dict:
         "ai_max_output_tokens": current_ai_max_output_tokens(),
         "ai_context_window": current_ai_context_window(),
         "ai_round_checkpoint": current_ai_round_checkpoint(),
+        "ai_web_search": current_ai_web_search(),
     }
 
 
@@ -266,6 +268,7 @@ class AiSettingsIn(BaseModel):
     max_output_tokens: int | None = None   # 输出上限, 钳制所有任务的 max_tokens
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
     round_checkpoint: int | None = None    # 助手工具轮次检查点; 0=不检查
+    web_search: bool | None = None         # 联网搜索开关 (enable_search); None=保持原值
 
 
 class AiTestIn(BaseModel):
@@ -327,6 +330,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         current_ai_protocol,
         current_ai_provider,
         current_ai_round_checkpoint,
+        current_ai_web_search,
         current_codex_command,
         current_codex_model,
         current_codex_reasoning_effort,
@@ -395,6 +399,9 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
             raise HTTPException(status_code=400, detail="轮次检查点须为 0(不检查)或不小于 5 的整数")
         updates["ai_round_checkpoint"] = req.round_checkpoint
         settings.ai_round_checkpoint = req.round_checkpoint
+    if req.web_search is not None:
+        updates["ai_web_search"] = req.web_search
+        settings.ai_web_search = req.web_search
 
     if updates:
         secrets_store.save(updates)
@@ -414,6 +421,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         "ai_max_output_tokens": current_ai_max_output_tokens(),
         "ai_context_window": current_ai_context_window(),
         "ai_round_checkpoint": current_ai_round_checkpoint(),
+        "ai_web_search": current_ai_web_search(),
     }
 
 
@@ -435,7 +443,7 @@ def clear_ai_settings() -> dict:
         "ai_codex_command",
         "ai_codex_reasoning_effort",
     )
-    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window")
+    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window", "ai_web_search")
     # 同步重置运行时内存(provider 回默认值,其余置空)
     settings.ai_provider = "openai_compat"
     settings.ai_protocol = "chat_completions"
@@ -446,6 +454,7 @@ def clear_ai_settings() -> dict:
     settings.ai_codex_reasoning_effort = ""
     settings.ai_max_output_tokens = 16384
     settings.ai_context_window = 128000
+    settings.ai_web_search = False
 
     return {"ok": True}
 

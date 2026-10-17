@@ -188,6 +188,31 @@ def current_ai_round_checkpoint() -> int:
     return secrets_store.get_ai_config_int("ai_round_checkpoint", settings.ai_round_checkpoint)
 
 
+def current_ai_web_search() -> bool:
+    """用户开关: 聊天请求是否要求联网搜索 (enable_search)。"""
+    return secrets_store.get_ai_config_bool("ai_web_search", settings.ai_web_search)
+
+
+# DeepSeek 官方聊天 API 无 enable_search 参数 (联网需 /v1/tools/search 自行编排),
+# 命中该关键字时不传参数, 提示词也退回无联网变体。
+_SEARCH_UNSUPPORTED_MODEL_HINTS = ("deepseek",)
+
+
+def web_search_supported() -> bool:
+    """当前配置下能否真正启用联网搜索 (请求参数与提示词变体共用同一判定)。
+
+    条件: 开关开启 + OpenAI 系 chat_completions 协议 + 模型不在不支持名单。
+    Responses 协议的联网走 tools=[{"type":"web_search"}], 暂未接入;
+    网关若拒绝 enable_search, 由 _openai_retry_kwargs 移除该参数后重试。
+    """
+    if not current_ai_web_search():
+        return False
+    if is_codex_cli_provider() or is_responses_protocol():
+        return False
+    model = current_ai_model().strip().lower()
+    return not any(h in model for h in _SEARCH_UNSUPPORTED_MODEL_HINTS)
+
+
 def _resolve_max_tokens(max_tokens: int | None) -> int | None:
     """显式传入的 max_tokens 钳制到配置输出上限; None 保持 None。
 
@@ -548,7 +573,12 @@ async def _run_openai_message_once(
     client = _openai_client(ai_key, timeout)
     model = current_ai_model()
     req_messages = list(messages)
-    kwargs = _openai_kwargs(temperature=temperature, max_tokens=max_tokens, tools=tools)
+    kwargs = _openai_kwargs(
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        web_search=web_search_supported(),
+    )
     while True:
         try:
             resp = await client.chat.completions.create(
@@ -593,6 +623,7 @@ async def _stream_openai(
         model=model,
         base_url=base_url,
         prefer_final_answer=prefer_final_answer,
+        web_search=web_search_supported(),
     )
     while True:
         try:
@@ -741,6 +772,7 @@ async def probe_ai_config(
 _TEMP_REJECT_HINTS = ("temperature", "only 1 is allowed")
 _REASONING_EFFORT_REJECT_HINTS = ("reasoning_effort", "reasoning effort")
 _THINKING_BODY_REJECT_HINTS = ("thinking",)
+_SEARCH_BODY_REJECT_HINTS = ("enable_search", "search_options", "web_search", "web search")
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:
@@ -773,6 +805,16 @@ def _is_thinking_body_rejected(exc: Exception) -> bool:
     )
 
 
+def _is_search_body_rejected(exc: Exception) -> bool:
+    """True if the upstream 400 specifically rejects the enable_search extra_body."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    text = _openai_error_detail(exc) or str(exc)
+    return _openai_error_param(exc) == "enable_search" or any(
+        h in text.lower() for h in _SEARCH_BODY_REJECT_HINTS
+    )
+
+
 def _openai_error_param(exc: Exception) -> str:
     body = getattr(exc, "body", None)
     if not isinstance(body, dict):
@@ -792,6 +834,18 @@ def _openai_retry_kwargs(exc: Exception, kwargs: dict) -> dict | None:
     if "reasoning_effort" in retry_kwargs and _is_reasoning_effort_rejected(exc):
         retry_kwargs.pop("reasoning_effort")
         return retry_kwargs
+    if "extra_body" in retry_kwargs and _is_search_body_rejected(exc):
+        # 网关/模型不支持联网搜索参数: 仅移除搜索相关键重试,
+        # 保留 extra_body 其它键 (如 thinking 禁用)。
+        body = retry_kwargs["extra_body"]
+        _search_keys = ("enable_search", "search_options")
+        if isinstance(body, dict) and any(k in body for k in _search_keys):
+            rest = {k: v for k, v in body.items() if k not in _search_keys}
+            if rest:
+                retry_kwargs["extra_body"] = rest
+            else:
+                retry_kwargs.pop("extra_body")
+            return retry_kwargs
     if "extra_body" in retry_kwargs and _is_thinking_body_rejected(exc):
         # DeepSeek thinking 禁用参数被拒 (模型/API 版本差异): 回退默认思考模式
         # 重试; 报告若因此被推理挤占正文, 由 _iter_openai_text 显式报错。
@@ -811,11 +865,13 @@ def _openai_kwargs(
     base_url: str = "",
     prefer_final_answer: bool = False,
     tools: Sequence[dict] | None = None,
+    web_search: bool = False,
 ) -> dict:
     """Build OpenAI create() kwargs and map supported provider capabilities.
 
     max_tokens=None 时不传 — 由服务端默认上限管理(推理模型的思考 token 也
     计入该参数预算, 限制会挤占正文, 见 stream_ai_text 文档)。
+    web_search=True 时附带 enable_search (千问/百炼系联网搜索开关)。
     """
     kwargs: dict = {}
     if max_tokens is not None:
@@ -826,6 +882,7 @@ def _openai_kwargs(
         reasoning_effort = current_openai_reasoning_effort()
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
+    extra_body: dict = {}
     if (
         prefer_final_answer
         and model.strip().lower() in _DEEPSEEK_V4_MODELS
@@ -834,7 +891,16 @@ def _openai_kwargs(
         # DeepSeek V4 defaults to thinking mode. For report-style tasks the
         # hidden reasoning shares max_tokens with the final answer and can
         # exhaust the budget before any visible content is emitted.
-        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        extra_body["thinking"] = {"type": "disabled"}
+    if web_search:
+        # 千问/百炼 OpenAI 兼容模式的联网搜索参数; 不支持的网关会 400 拒绝,
+        # 由 _openai_retry_kwargs 移除后重试 (见 _is_search_body_rejected)。
+        extra_body["enable_search"] = True
+        # 强制搜索 + 最大检索量: 实测长提示词下模型常自行跳过搜索或检索
+        # 预算内放弃 (输出"未检索到相关消息"), forced_search 保证必搜。
+        extra_body["search_options"] = {"forced_search": True, "search_strategy": "max"}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     if tools:
         kwargs["tools"] = list(tools)
     return kwargs
