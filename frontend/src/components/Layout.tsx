@@ -56,6 +56,7 @@ import {
   type BrandIconProps,
 } from './BrandIcons'
 import { Logo } from './Logo'
+import { MarketClock } from './MarketClock'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/lib/useMediaQuery'
@@ -101,7 +102,7 @@ function ThemeToggle() {
     <button
       onClick={() => toggleTheme()}
       className="flex items-center justify-center rounded-btn p-2 text-foreground/80 transition-colors duration-150 ease-smooth hover:bg-elevated hover:text-foreground cursor-pointer"
-      title={dark ? '切换到亮色模式' : '切换到暗色模式'}
+      title={dark ? '切换到亮色模式（24 小时后自动恢复跟随系统）' : '切换到暗色模式（24 小时后自动恢复跟随系统）'}
     >
       {dark ? <Sun className="h-4 w-4 shrink-0" /> : <Moon className="h-4 w-4 shrink-0" />}
     </button>
@@ -772,6 +773,13 @@ export function Layout() {
               </button>
             )}
           </div>
+
+            {/* 日期/时间 + 交易日状态 — 收起时隐藏 */}
+            {!railMode && (
+              <div className="mt-2.5">
+                <MarketClock />
+              </div>
+            )}
 
             {/* 状态卡 — 收起时隐藏 */}
             {!railMode && (
