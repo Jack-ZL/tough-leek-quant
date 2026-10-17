@@ -51,9 +51,11 @@ _REPORT_DISCLAIMER = (
 _HELP_TEXT = (
     "📊 **AI 个股分析机器人**\n\n"
     "请使用以下格式发送分析请求:\n"
-    "```\n@机器人 股票名称\n```\n\n"
+    "```\n@机器人 [模型名称] 股票名称\n```\n\n"
     "示例:\n"
-    "```\n@机器人 贵州茅台\n```"
+    "```\n@机器人 贵州茅台\n@机器人 deepseek 贵州茅台\n@机器人 千问 贵州茅台\n```\n\n"
+    "模型名称可选: 支持档案名/模型名, 也支持厂商简称 (如 千问/qwen、deepseek、kimi、智谱/glm, "
+    "不区分大小写); 命中已配置的模型档案时本次分析改用该模型, 未命中则使用当前生效模型。"
 )
 
 # 服务端超时未收到响应可能按同一 msgId 重推消息, 按 msgId 去重的 TTL
@@ -189,7 +191,10 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
 
             content = incoming_message.text.content.strip() if incoming_message.text else ""
 
-            stock_name = _parse_stock_analysis_msg(content)
+            from app.services import ai_provider
+
+            profile, cleaned = ai_provider.match_profile_in_text(content)
+            stock_name = _parse_stock_analysis_msg(cleaned or content)
             if not stock_name:
                 await self._reply_markdown("使用帮助", _HELP_TEXT, incoming_message)
                 return
@@ -211,9 +216,10 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
                 await self._reply_markdown(
                     "分析中", f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候...", incoming_message
                 )
-                analysis_content = await self._run_analysis(repo, symbol)
-                elapsed = time.time() - start_time
-                model = _current_model_label()
+                with ai_provider.profile_override(profile):
+                    analysis_content = await self._run_analysis(repo, symbol)
+                    elapsed = time.time() - start_time
+                    model = _current_model_label()
                 report = _build_analysis_report(analysis_content, stock_name, symbol, elapsed, model)
                 await self._reply_markdown("AI 个股分析报告", report, incoming_message)
             except Exception as e:  # 分析失败需回复用户

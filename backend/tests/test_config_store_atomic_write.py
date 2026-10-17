@@ -73,7 +73,10 @@ def test_secrets_survive_a_torn_write(data_dir: Path, torn_write) -> None:
     with pytest.raises(OSError):
         secrets_store.save({"tickflow_token": "replacement"})
 
-    assert secrets_store.load() == {"tickflow_token": "keep-me"}
+    # load() 视图含 AI 档案归一化键 (ai_profiles/ai_active_profile), 只校验业务键未被撕裂写替换
+    data = secrets_store.load()
+    assert data["tickflow_token"] == "keep-me"
+    assert data["ai_profiles"] == {} and data["ai_active_profile"] == ""
 
 
 def test_ext_config_survives_a_torn_write(data_dir: Path, torn_write) -> None:
@@ -186,7 +189,9 @@ def test_a_normal_save_still_writes_what_it_was_given(data_dir: Path) -> None:
 
     secrets_store.save({"a": "1"})
     secrets_store.save({"b": "2"})
-    assert secrets_store.load() == {"a": "1", "b": "2"}
+    # load() 视图含 AI 档案归一化键, 业务键按合并语义保留
+    data = secrets_store.load()
+    assert data["a"] == "1" and data["b"] == "2"
 
     written = json.loads(
         (data_dir / "user_data" / "preferences.json").read_text(encoding="utf-8")

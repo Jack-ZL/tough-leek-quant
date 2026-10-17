@@ -103,6 +103,17 @@ def get_settings() -> dict:
         "ai_context_window": current_ai_context_window(),
         "ai_round_checkpoint": current_ai_round_checkpoint(),
         "ai_web_search": current_ai_web_search(),
+        # 模型档案库 (侧边栏一键切换用, 精简字段不含 api_key/base_url)
+        "ai_profiles": [
+            {
+                "id": p["id"],
+                "name": p.get("name") or p.get("model") or p["id"],
+                "provider": p.get("provider") or "openai_compat",
+                "model": p.get("model") or p.get("codex_model") or "",
+            }
+            for p in secrets_store.list_ai_profiles()
+        ],
+        "ai_active_profile": secrets_store.get_active_ai_profile_id(),
     }
 
 
@@ -269,6 +280,33 @@ class AiSettingsIn(BaseModel):
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
     round_checkpoint: int | None = None    # 助手工具轮次检查点; 0=不检查
     web_search: bool | None = None         # 联网搜索开关 (enable_search); None=保持原值
+    profile_id: str = ""                   # 同步更新的模型档案 id; 空=当前激活档案
+    profile_name: str = ""                 # 档案显示名 (仅档案库展示用)
+
+
+class AiProfileIn(BaseModel):
+    """模型档案 upsert 入参 (档案库条目, apply=true 时同时写入生效配置)。"""
+
+    id: str = ""                           # 空=新建 (按 name/model 生成)
+    name: str = ""
+    provider: str = "openai_compat"
+    protocol: str = ""
+    base_url: str = ""
+    api_key: str | None = None             # None=保留档案原值 (编辑时不必重填)
+    model: str = ""
+    user_agent: str = ""
+    max_output_tokens: int | None = None
+    context_window: int | None = None
+    web_search: bool | None = None
+    reasoning_effort: str = ""
+    codex_command: str = ""
+    codex_model: str = ""
+    codex_reasoning_effort: str = ""
+    apply: bool = False                    # true=保存后立即激活 (镜像到扁平键)
+
+
+class AiProfileActivateIn(BaseModel):
+    id: str
 
 
 class AiTestIn(BaseModel):
@@ -315,14 +353,9 @@ async def test_ai_settings(req: AiTestIn) -> dict:
     return {"ok": True, "model": req.model.strip() or provider, "response": text[:80]}
 
 
-@router.post("/ai")
-def save_ai_settings(req: AiSettingsIn) -> dict:
-    """保存 AI 配置（全部持久化到 secrets.json）"""
-    from app.config import settings
+def _ai_effective_payload() -> dict:
+    """当前生效 AI 配置的统一响应体 (保存/激活/档案应用共用)。"""
     from app.services.ai_provider import (
-        CHAT_COMPLETIONS_PROTOCOL,
-        OPENAI_PROVIDER,
-        RESPONSES_PROTOCOL,
         ai_configured,
         current_ai_context_window,
         current_ai_max_output_tokens,
@@ -336,6 +369,83 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         current_codex_reasoning_effort,
         current_openai_model,
         current_openai_reasoning_effort,
+    )
+
+    provider = current_ai_provider()
+    return {
+        "ok": True,
+        "ai_provider": provider,
+        "ai_protocol": current_ai_protocol(),
+        "ai_model": current_ai_model(),
+        "ai_openai_model": current_openai_model(),
+        "ai_reasoning_effort": current_openai_reasoning_effort(),
+        "ai_codex_model": current_codex_model(),
+        "ai_codex_command": current_codex_command(),
+        "ai_codex_reasoning_effort": current_codex_reasoning_effort(),
+        "ai_configured": ai_configured(provider),
+        "ai_max_output_tokens": current_ai_max_output_tokens(),
+        "ai_context_window": current_ai_context_window(),
+        "ai_round_checkpoint": current_ai_round_checkpoint(),
+        "ai_web_search": current_ai_web_search(),
+        "ai_profiles": [
+            {
+                "id": p["id"],
+                "name": p.get("name") or p.get("model") or p["id"],
+                "provider": p.get("provider") or "openai_compat",
+                "model": p.get("model") or p.get("codex_model") or "",
+            }
+            for p in secrets_store.list_ai_profiles()
+        ],
+        "ai_active_profile": secrets_store.get_active_ai_profile_id(),
+    }
+
+
+# 激活/清空档案后重置运行时内存用的默认值 (与 clear_ai_settings 的重置值一致;
+# ai_reasoning_effort/ai_codex_model 不是 Settings 字段, 仅存于 secrets.json)
+_AI_RUNTIME_DEFAULTS: dict = {
+    "ai_provider": "openai_compat",
+    "ai_protocol": "chat_completions",
+    "ai_base_url": "",
+    "ai_api_key": "",
+    "ai_model": "",
+    "ai_user_agent": "",
+    "ai_codex_command": "codex",
+    "ai_codex_reasoning_effort": "",
+    "ai_max_output_tokens": 16384,
+    "ai_context_window": 128000,
+    "ai_web_search": False,
+}
+
+
+def _sync_ai_runtime() -> None:
+    """把 secrets.json 扁平 AI 键同步进内存 settings.* (激活档案后调用)。
+
+    扁平键缺失时回落到默认值 — 否则上一个模型残留的 settings.* 会在
+    get_ai_config* 的 fallback 分支继续生效 (如已删除的 web_search 开关)。
+    """
+    from app.config import settings as _s
+
+    stored = secrets_store.load()
+    for key, dflt in _AI_RUNTIME_DEFAULTS.items():
+        val = stored.get(key, dflt)
+        if key in ("ai_max_output_tokens", "ai_context_window"):
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                val = dflt
+        elif key == "ai_web_search":
+            val = val if isinstance(val, bool) else str(val).strip().lower() in ("1", "true", "yes", "on")
+        setattr(_s, key, val)
+
+
+@router.post("/ai")
+def save_ai_settings(req: AiSettingsIn) -> dict:
+    """保存 AI 配置（全部持久化到 secrets.json, 并同步当前模型档案）"""
+    from app.config import settings
+    from app.services.ai_provider import (
+        CHAT_COMPLETIONS_PROTOCOL,
+        OPENAI_PROVIDER,
+        RESPONSES_PROTOCOL,
         normalize_codex_command,
         normalize_codex_model,
         normalize_codex_reasoning_effort,
@@ -406,28 +516,94 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if updates:
         secrets_store.save(updates)
 
-    provider = current_ai_provider()
-    return {
-        "ok": True,
-        "ai_provider": provider,
-        "ai_protocol": current_ai_protocol(),
-        "ai_model": current_ai_model(),
-        "ai_openai_model": current_openai_model(),
-        "ai_reasoning_effort": current_openai_reasoning_effort(),
-        "ai_codex_model": current_codex_model(),
-        "ai_codex_command": current_codex_command(),
-        "ai_codex_reasoning_effort": current_codex_reasoning_effort(),
-        "ai_configured": ai_configured(provider),
-        "ai_max_output_tokens": current_ai_max_output_tokens(),
-        "ai_context_window": current_ai_context_window(),
-        "ai_round_checkpoint": current_ai_round_checkpoint(),
-        "ai_web_search": current_ai_web_search(),
+    # 档案库同步: 扁平键已是最新生效配置, 把它写回对应档案 (缺省=当前激活档案),
+    # 保证设置页/侧边栏展示的档案与实际运行配置一致。
+    if req.api_key == "":
+        updates["ai_api_key"] = ""  # 显式清 Key 也要反映到档案
+    prof_fields = {
+        f: updates[f"ai_{f}"]
+        for f in secrets_store.AI_PROFILE_FIELDS
+        if f"ai_{f}" in updates
     }
+    if req.profile_name.strip():
+        prof_fields["name"] = req.profile_name.strip()
+    if prof_fields:
+        pid = (req.profile_id or "").strip() or secrets_store.get_active_ai_profile_id() or "default"
+        _, pid = secrets_store.upsert_ai_profile(pid, prof_fields)
+        secrets_store.save({"ai_active_profile": pid})
+
+    return _ai_effective_payload()
+
+
+@router.get("/ai/profiles")
+def get_ai_profiles() -> dict:
+    """模型档案库全量列表 (含 api_key/base_url, 供设置页回显; 本机应用不下发掩码)。"""
+    return {
+        "profiles": secrets_store.list_ai_profiles(),
+        "active": secrets_store.get_active_ai_profile_id(),
+    }
+
+
+@router.post("/ai/profiles")
+def save_ai_profile(req: AiProfileIn) -> dict:
+    """新建/更新模型档案; apply=true 时同时激活 (镜像到扁平键, 立即生效)。"""
+    from app.services.ai_provider import (
+        CHAT_COMPLETIONS_PROTOCOL,
+        RESPONSES_PROTOCOL,
+        normalize_codex_command,
+        normalize_codex_model,
+        normalize_codex_reasoning_effort,
+    )
+
+    if req.provider not in ("openai_compat", "openai", "codex_cli"):
+        raise HTTPException(status_code=400, detail=f"不支持的供应商: {req.provider}")
+    if req.protocol and req.protocol not in (CHAT_COMPLETIONS_PROTOCOL, RESPONSES_PROTOCOL):
+        raise HTTPException(status_code=400, detail=f"不支持的协议: {req.protocol}")
+    for label, val in (("输出上限", req.max_output_tokens), ("上下文窗口", req.context_window)):
+        if val is not None and val <= 0:
+            raise HTTPException(status_code=400, detail=f"{label}必须为正整数")
+
+    fields = req.model_dump(exclude={"id", "apply"})
+    fields["base_url"] = req.base_url.strip()
+    fields["model"] = req.model.strip()
+    if req.provider == "codex_cli":
+        try:
+            fields["codex_command"] = normalize_codex_command(req.codex_command)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        fields["codex_model"] = normalize_codex_model(req.model or req.codex_model)
+        fields["codex_reasoning_effort"] = normalize_codex_reasoning_effort(req.codex_reasoning_effort)
+    profiles, pid = secrets_store.upsert_ai_profile(req.id, fields)
+
+    if req.apply:
+        if secrets_store.activate_ai_profile(pid) is None:
+            raise HTTPException(status_code=500, detail="激活失败: 档案写入后读取不到")
+        _sync_ai_runtime()
+    return {**_ai_effective_payload(), "profiles": profiles, "saved_id": pid}
+
+
+@router.post("/ai/profiles/activate")
+def activate_ai_profile(req: AiProfileActivateIn) -> dict:
+    """激活指定档案: 字段镜像写入扁平 ai_* 键并同步运行时内存, 立即全局生效。"""
+    profile = secrets_store.activate_ai_profile(req.id.strip())
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"档案不存在: {req.id}")
+    _sync_ai_runtime()
+    return _ai_effective_payload()
+
+
+@router.delete("/ai/profiles/{profile_id}")
+def delete_ai_profile(profile_id: str) -> dict:
+    """删除档案; 激活中的档案须先切换到其他档案再删 (避免误删正在用的配置)。"""
+    if profile_id == secrets_store.get_active_ai_profile_id():
+        raise HTTPException(status_code=400, detail="不能删除当前激活的档案, 请先切换到其他档案")
+    profiles = secrets_store.delete_ai_profile(profile_id)
+    return {"ok": True, "profiles": profiles, "active": secrets_store.get_active_ai_profile_id()}
 
 
 @router.delete("/ai")
 def clear_ai_settings() -> dict:
-    """一键清空 AI 配置(provider / base_url / api_key / model)。
+    """一键清空 AI 配置(provider / base_url / api_key / model)与模型档案库。
 
     保留 ai_user_agent —— 自定义请求头与凭证解耦,清空凭证不影响绕过 CDN 拦截的设置。
     """
@@ -443,7 +619,7 @@ def clear_ai_settings() -> dict:
         "ai_codex_command",
         "ai_codex_reasoning_effort",
     )
-    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window", "ai_web_search")
+    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window", "ai_web_search", "ai_profiles", "ai_active_profile")
     # 同步重置运行时内存(provider 回默认值,其余置空)
     settings.ai_provider = "openai_compat"
     settings.ai_protocol = "chat_completions"

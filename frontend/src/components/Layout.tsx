@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
@@ -57,7 +58,7 @@ import {
 } from './BrandIcons'
 import { Logo } from './Logo'
 import { MarketClock } from './MarketClock'
-import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
+import { api, type CapabilityMatrix, type IndexQuote, type SettingsState } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { useIsDesktop } from '@/lib/useMediaQuery'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
@@ -338,27 +339,41 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
   )
 }
 
-function AIConfigBadge({ configured, model }: { configured?: boolean; model?: string }) {
+function AIConfigBadge({ configured, model, isOpen, onToggle, buttonRef }: {
+  configured?: boolean
+  model?: string
+  isOpen: boolean
+  onToggle: () => void
+  buttonRef: React.RefObject<HTMLButtonElement>
+}) {
   const descText = configured ? (model || '已接入模型') : '接入策略生成模型'
   return (
-    <NavLink
-      to="/settings?tab=ai"
-      className="group relative flex items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70"
-      title={`AI 配置 — ${descText}`}
-    >
-      <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-foreground transition-colors" />
-      {configured ? (
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors">
-          {model || '已接入模型'}
-        </span>
-      ) : (
-        <>
-          <span className="text-[11px] text-secondary group-hover:text-foreground transition-colors">AI 配置</span>
-          <span className="ml-auto text-[11px] font-mono leading-none text-muted">未配置</span>
-        </>
-      )}
-      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${configured ? 'bg-bear' : 'bg-warning'}`} />
-    </NavLink>
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={onToggle}
+        className="group relative flex w-full items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 text-left transition-colors duration-150 hover:bg-elevated/70"
+        title={`AI 配置 — ${descText}`}
+      >
+        <span className="pointer-events-none absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-purple-400/50 transition-colors group-hover:bg-purple-400" />
+        <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted transition-colors group-hover:text-purple-400" />
+        {configured ? (
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-secondary transition-colors group-hover:text-foreground">
+            {model || '已接入模型'}
+          </span>
+        ) : (
+          <>
+            <span className="text-[11px] text-secondary transition-colors group-hover:text-foreground">AI 配置</span>
+            <span className="ml-auto font-mono text-[11px] leading-none text-muted">未配置</span>
+          </>
+        )}
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${configured ? 'bg-bear' : 'bg-warning'}`} />
+        {configured && (
+          <ChevronDown className={cn('h-3 w-3 shrink-0 text-muted transition-transform duration-150', isOpen && 'rotate-180')} />
+        )}
+      </button>
+    </div>
   )
 }
 
@@ -490,6 +505,70 @@ export function Layout() {
   // 开启实时行情时若存在排队中的挖掘任务 → 确认弹窗 (实时落盘会让排队任务开跑即失败)
   const [miningQueuedWarning, setMiningQueuedWarning] = useState<number | null>(null)
   const miningWarnBackdrop = useDialogBackdrop(() => setMiningQueuedWarning(null))
+  // ===== 侧边栏 AI 模型一键切换 (档案库下拉, 参考 dev 项目交互) =====
+  const [aiDropdownOpen, setAiDropdownOpen] = useState(false)
+  const [aiActivating, setAiActivating] = useState<string | null>(null)
+  const aiButtonRef = useRef<HTMLButtonElement>(null)
+  const [aiMenuStyle, setAiMenuStyle] = useState<Record<string, string | number>>({})
+  const aiProfiles = settingsState?.ai_profiles ?? []
+  const aiCanSwitch = !!settingsState?.ai_configured && aiProfiles.length > 0
+  // 下拉用 portal 渲染到 body (侧边栏 overflow 会裁剪), 跟随按钮定位
+  useEffect(() => {
+    if (!aiDropdownOpen || !aiButtonRef.current) return
+    const updatePosition = () => {
+      if (!aiButtonRef.current) return
+      const rect = aiButtonRef.current.getBoundingClientRect()
+      // 从按钮正下方弹出 (左对齐), 宽度与按钮一致
+      setAiMenuStyle({ position: 'fixed', left: rect.left, top: rect.bottom + 6, width: rect.width, zIndex: 99999 })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [aiDropdownOpen])
+  // 点击外部关闭
+  useEffect(() => {
+    if (!aiDropdownOpen) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('[data-ai-dropdown]') && !aiButtonRef.current?.contains(target)) {
+        setAiDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [aiDropdownOpen])
+  const handleAiActivate = useCallback(async (id: string) => {
+    setAiActivating(id)
+    try {
+      const result = await api.activateAiProfile(id)
+      // 乐观更新缓存 → 侧边栏/状态立即反映新模型, 再后台 invalidate 兜底
+      qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
+        ...prev,
+        ai_provider: result.ai_provider ?? prev.ai_provider,
+        ai_model: result.ai_model ?? prev.ai_model,
+        ai_openai_model: result.ai_openai_model ?? prev.ai_openai_model,
+        ai_reasoning_effort: result.ai_reasoning_effort ?? prev.ai_reasoning_effort,
+        ai_codex_model: result.ai_codex_model ?? prev.ai_codex_model,
+        ai_codex_command: result.ai_codex_command ?? prev.ai_codex_command,
+        ai_codex_reasoning_effort: result.ai_codex_reasoning_effort ?? prev.ai_codex_reasoning_effort,
+        ai_configured: result.ai_configured ?? prev.ai_configured,
+        ai_max_output_tokens: result.ai_max_output_tokens ?? prev.ai_max_output_tokens,
+        ai_context_window: result.ai_context_window ?? prev.ai_context_window,
+        ai_web_search: result.ai_web_search ?? prev.ai_web_search,
+        ai_active_profile: result.ai_active_profile ?? id,
+      } : prev)
+      void qc.invalidateQueries({ queryKey: QK.settings })
+    } catch {
+      toast('模型切换失败', 'error')
+    } finally {
+      setAiActivating(null)
+      setAiDropdownOpen(false)
+    }
+  }, [qc])
   // 两态切换 (仅桌面): 展开 <-> 图标条
   const toggleNavCollapsed = () => {
     setNavStatePersist(navState === 'expanded' ? 'rail' : 'expanded')
@@ -789,6 +868,12 @@ export function Layout() {
               <AIConfigBadge
                 configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
                 model={settingsState?.ai_model}
+                isOpen={aiDropdownOpen}
+                buttonRef={aiButtonRef}
+                onToggle={() => {
+                  if (aiCanSwitch) setAiDropdownOpen(v => !v)
+                  else navigate('/settings?tab=ai')
+                }}
               />
               {/* 快捷行: 数据 + 扩展快捷方式 (AI 助手) 一行两个半宽 chip */}
               <div className="mx-2 mt-1 flex items-stretch gap-1 border-t border-border/45 pt-1">
@@ -1176,6 +1261,52 @@ export function Layout() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* AI 模型切换下拉 (portal 到 body, 避免侧边栏 overflow 裁剪) */}
+      {aiDropdownOpen && aiCanSwitch && createPortal(
+        <div
+          style={{ ...aiMenuStyle, userSelect: 'none' }}
+          className="rounded-lg border border-border/60 shadow-xl overflow-hidden bg-surface/95 backdrop-blur-md"
+          data-ai-dropdown
+        >
+          <div className="px-3 py-1.5 border-b border-border/40">
+            <span className="text-[10px] font-medium text-muted uppercase tracking-wider">切换模型</span>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {aiProfiles.map(p => {
+              const isActive = p.id === settingsState?.ai_active_profile
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => void handleAiActivate(p.id)}
+                  disabled={aiActivating === p.id}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors',
+                    isActive
+                      ? 'bg-purple-500/10 text-foreground'
+                      : 'text-secondary hover:bg-elevated hover:text-foreground',
+                    aiActivating === p.id && 'opacity-50 cursor-wait',
+                  )}
+                >
+                  <Sparkles className={cn('h-3 w-3 shrink-0', isActive ? 'text-purple-500' : 'text-muted')} />
+                  <span className="truncate text-xs font-medium flex-1">{p.name || p.model || p.id}</span>
+                  {isActive && <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />}
+                  {aiActivating === p.id && <Loader2 className="h-3 w-3 animate-spin text-muted shrink-0" />}
+                </button>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => { setAiDropdownOpen(false); navigate('/settings?tab=ai') }}
+            className="w-full border-t border-border/40 px-3 py-1.5 text-left text-[11px] text-muted transition-colors hover:bg-elevated hover:text-foreground"
+          >
+            管理模型档案…
+          </button>
+        </div>,
+        document.body,
       )}
     </div>
   )
