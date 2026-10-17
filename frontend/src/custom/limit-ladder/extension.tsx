@@ -583,6 +583,7 @@ function MonitorMenu({ stock, direction, sealMode, monitorRule, anchorRect, hasD
               {([
                 { key: 'feishu', label: '飞书' },
                 { key: 'wecom', label: '企微' },
+                { key: 'dingtalk', label: '钉钉' },
                 { key: 'custom', label: '第三方' },
                 { key: 'email', label: '邮件' },
               ] as const).map(ch => {

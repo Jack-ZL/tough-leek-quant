@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import date as _date
 from pathlib import Path
 
 import polars as pl
@@ -1214,6 +1215,17 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     url, "每日复盘", full_body
                 )
                 logger.info("review push(wecom) %s", "sent" if ok else "failed")
+            elif ch == "dingtalk":
+                url = preferences.get_dingtalk_webhook_url()
+                if not url:
+                    logger.info("review push(dingtalk) skipped: webhook not configured")
+                    continue
+                # 钉钉 markdown 标题已含一级标题, subtitle 拼到正文首行
+                full_body = (f"**{subtitle}**\n\n{content}" if subtitle else content)
+                ok = webhook_adapter.send_dingtalk_markdown(
+                    url, "每日复盘", full_body, preferences.get_dingtalk_webhook_secret()
+                )
+                logger.info("review push(dingtalk) %s", "sent" if ok else "failed")
             elif ch == "custom":
                 url = preferences.get_custom_webhook_url()
                 if not url:

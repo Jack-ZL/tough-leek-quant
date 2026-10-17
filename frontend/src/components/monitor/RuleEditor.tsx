@@ -86,6 +86,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
   const quoteInterval = quoteStatus?.interval_s
   const feishuConfigured = !!(prefs?.feishu_webhook_url)
   const wecomConfigured = !!(prefs?.wecom_webhook_url)
+  const dingtalkConfigured = !!(prefs?.dingtalk_webhook_url)
   const customConfigured = !!(prefs?.custom_webhook_url)
   const emailConfigured = !!(
     prefs?.email_smtp_config?.host
@@ -1576,6 +1577,23 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
             )}
           </label>
 
+          {/* 钉钉 (可用) */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={(draft.webhook_channels ?? []).includes('dingtalk')}
+              onChange={() => toggleChannel('dingtalk')}
+              className="h-3 w-3 accent-accent cursor-pointer"
+            />
+            <span className="text-[11px] text-foreground">钉钉</span>
+            <span className="text-[9px] text-muted">群推送 Webhook</span>
+            {(draft.webhook_channels ?? []).includes('dingtalk') && (
+              <span className={`ml-auto text-[9px] ${dingtalkConfigured ? 'text-emerald-500' : 'text-warning'}`}>
+                {dingtalkConfigured ? '已配置' : '未配置'}
+              </span>
+            )}
+          </label>
+
         </div>
 
         {/* 勾选了某渠道但该渠道地址未配置 → 提示前往设置 */}
@@ -1584,6 +1602,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
           const unconfigured: string[] = []
           if (selected.includes('feishu') && !feishuConfigured) unconfigured.push('飞书')
           if (selected.includes('wecom') && !wecomConfigured) unconfigured.push('企业微信')
+          if (selected.includes('dingtalk') && !dingtalkConfigured) unconfigured.push('钉钉')
           if (selected.includes('custom') && !customConfigured) unconfigured.push('第三方系统')
           if (selected.includes('email') && !emailConfigured) unconfigured.push('邮件')
           if (unconfigured.length === 0) return null
@@ -1599,6 +1618,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
           const ready: string[] = []
           if (selected.includes('feishu') && feishuConfigured) ready.push('飞书')
           if (selected.includes('wecom') && wecomConfigured) ready.push('企业微信')
+          if (selected.includes('dingtalk') && dingtalkConfigured) ready.push('钉钉')
           if (selected.includes('custom') && customConfigured) ready.push('第三方系统')
           if (selected.includes('email') && emailConfigured) ready.push('邮件')
           if (ready.length === 0) return null

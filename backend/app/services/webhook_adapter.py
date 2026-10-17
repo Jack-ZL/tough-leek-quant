@@ -1,7 +1,7 @@
 """Webhook 推送适配器 — 把告警事件推送到外部 IM / 量化软件。
 
 职责: 把后端产生的告警事件, 通过用户配置的 Webhook 地址推送到外部。
-     目前支持飞书、企业微信和通用第三方 JSON Webhook。
+     目前支持飞书、企业微信、钉钉和通用第三方 JSON Webhook。
 
 飞书自定义机器人接入:
   1. 飞书群 → 群设置 → 群推送 Webhook → 添加「自定义机器人」
@@ -345,6 +345,163 @@ def send_wecom_markdown(webhook_url: str, title: str, body_md: str) -> bool:
 
     payload: dict = {"msgtype": "markdown", "markdown": {"content": content}}
     return _post_wecom(webhook_url, payload)
+
+
+# ================================================================
+# 钉钉群推送 Webhook
+# ================================================================
+
+DINGTALK_HOOK_PREFIX = "https://oapi.dingtalk.com/robot/send"
+_DINGTALK_MAX_ATTEMPTS = 3
+# 钉钉 markdown 消息上限 (按字符计, 非字节)
+_DINGTALK_MD_MAX_CHARS = 20000
+
+
+def is_valid_dingtalk_url(url: str) -> bool:
+    """校验是否为合法的钉钉自定义机器人 Webhook 地址。
+
+    允许两种写法:
+      - 完整: https://oapi.dingtalk.com/robot/send?access_token=xxx
+      - 仅 access_token: xxx (钉钉 access_token 为较长的 token 字符串)
+    """
+    if not url:
+        return False
+    if url.startswith(DINGTALK_HOOK_PREFIX):
+        return True
+    token = (url or "").strip()
+    if " " in token or "/" in token or "?" in token:
+        return False
+    return len(token) >= 20
+
+
+def normalize_dingtalk_url(url: str) -> str:
+    """把纯 access_token 补全为完整 Webhook URL。已是完整 URL 则原样返回。"""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if url.startswith(DINGTALK_HOOK_PREFIX):
+        return url
+    return f"{DINGTALK_HOOK_PREFIX}?access_token={url}"
+
+
+def _gen_dingtalk_sign(timestamp: str, secret: str) -> str:
+    """计算钉钉机器人加签参数 sign。
+
+    官方算法: 以 secret 为 key, 对 `timestamp + "\\n" + secret` 做 HMAC-SHA256,
+    结果 Base64 编码后再做 URL 编码 (quote_plus)。
+    """
+    from urllib.parse import quote_plus
+
+    string_to_sign = f"{timestamp}\n{secret}"
+    hmac_code = hmac.new(
+        secret.encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).digest()
+    return quote_plus(base64.b64encode(hmac_code).decode("utf-8"))
+
+
+def _post_dingtalk(
+    webhook_url: str,
+    payload: dict,
+    secret: str = "",
+    max_attempts: int = _DINGTALK_MAX_ATTEMPTS,
+) -> bool:
+    """发送钉钉 webhook 请求并判定成败。
+
+    成功响应: HTTP 200 且 errcode=0。瞬时失败(网络/超时/5xx)带退避重试;
+    永久失败(4xx / 业务 errcode≠0, 如签名错、URL 失效)不重试。最终失败记 WARNING。
+    """
+    import httpx
+
+    last_err = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            url = webhook_url
+            # 启用加签时, 请求 URL 须带 timestamp + sign (每次重试都重算, 防时间戳过期)
+            if secret:
+                timestamp = str(int(time.time() * 1000))
+                sign = _gen_dingtalk_sign(timestamp, secret)
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}timestamp={timestamp}&sign={sign}"
+
+            resp = httpx.post(url, json=payload, timeout=5.0)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    return True  # 非 JSON 的 200, 视为成功
+                if isinstance(data, dict):
+                    if data.get("errcode") == 0:
+                        return True
+                    logger.warning("钉钉推送业务失败(不重试): %s", data)
+                    return False
+                return True  # 200 且 JSON 非 dict, 视为成功
+            last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            if resp.status_code < 500:
+                logger.warning("钉钉推送失败(不重试, 客户端错误): %s", last_err)
+                return False
+        except Exception as e:  # noqa: BLE001 — 网络/超时, 可重试
+            last_err = str(e)
+
+        if attempt < max_attempts:
+            time.sleep(min(2 ** (attempt - 1), 3))  # 退避: 1s, 2s
+
+    logger.warning("钉钉 Webhook 推送最终失败(已重试 %d 次): %s", max_attempts, last_err)
+    return False
+
+
+def send_dingtalk(webhook_url: str, title: str, body: str, secret: str = "") -> bool:
+    """推送一条文本消息到钉钉群推送 Webhook。
+
+    Args:
+        webhook_url: 钉钉自定义机器人 Webhook 地址 (或纯 access_token, 会自动补全)
+        title:       消息标题 (与正文拼接为一条文本)
+        body:        消息正文
+        secret:      加签密钥 (机器人启用了「加签」时必填; 留空则不带签名)
+
+    Returns:
+        True=成功送达, False=失败或 URL 非法。
+        失败静默, 不抛异常 (与 send_feishu / send_wecom 一致)。
+    """
+    webhook_url = normalize_dingtalk_url(webhook_url)
+    if not is_valid_dingtalk_url(webhook_url):
+        return False
+
+    text = _truncate(f"{title}\n{body}".strip())
+    if not text:
+        return False
+
+    payload: dict = {"msgtype": "text", "text": {"content": text}}
+    return _post_dingtalk(webhook_url, payload, secret)
+
+
+def send_dingtalk_markdown(webhook_url: str, title: str, body_md: str, secret: str = "") -> bool:
+    """推送一条 Markdown 消息到钉钉群推送 Webhook —— 承载完整复盘报告。
+
+    钉钉群推送 Webhook 原生支持 markdown 类型, 支持 # ## **粗体** >引用 - 列表 等
+    基础语法, 单条上限 20000 字符 (按字符计, 非字节)。
+
+    Args:
+        webhook_url: 钉钉自定义机器人 Webhook 地址 (或纯 access_token)
+        title:       标题 (作为一级标题 # 拼到正文前)
+        body_md:     markdown 正文
+        secret:      加签密钥 (启用加签时必填)
+
+    Returns:
+        True=成功送达, False=失败或 URL 非法。
+    """
+    webhook_url = normalize_dingtalk_url(webhook_url)
+    if not is_valid_dingtalk_url(webhook_url):
+        return False
+
+    raw = f"# {title}\n\n{body_md}".strip()
+    content = raw[:_DINGTALK_MD_MAX_CHARS] + ("…" if len(raw) > _DINGTALK_MD_MAX_CHARS else "")
+    if not content.strip():
+        return False
+
+    payload: dict = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
+    return _post_dingtalk(webhook_url, payload, secret)
 
 
 # ================================================================

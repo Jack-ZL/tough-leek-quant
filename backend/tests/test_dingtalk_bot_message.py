@@ -1,0 +1,155 @@
+"""钉钉智能机器人消息解析 / 回复组装 / 处理路径测试。
+
+覆盖不依赖真实 LLM 与 SDK 网络的纯逻辑: 消息解析、按字符截断、报告组装、
+标的解析、msgId 去重, 以及消息处理的 help / 未找到 / 非文本分支。
+"""
+import asyncio
+from types import SimpleNamespace
+
+import polars as pl
+
+from app.services import dingtalk_bot_service as d
+
+# ===== 消息解析 =====
+
+def test_parse_stock_name_strips_mention():
+    assert d._parse_stock_analysis_msg("@机器人 贵州茅台") == "贵州茅台"
+    assert d._parse_stock_analysis_msg("  @某bot   宁德时代") == "宁德时代"
+    assert d._parse_stock_analysis_msg("贵州茅台 帮我看下") == "贵州茅台"
+
+
+def test_parse_stock_name_empty():
+    assert d._parse_stock_analysis_msg("@机器人") is None
+    assert d._parse_stock_analysis_msg("") is None
+    assert d._parse_stock_analysis_msg("   ") is None
+
+
+# ===== 按字符截断 =====
+
+def test_truncate_reply_short_passthrough():
+    assert d._truncate_reply_by_chars("短文本") == "短文本"
+
+
+def test_truncate_reply_by_chars():
+    out = d._truncate_reply_by_chars("汉" * 10000)
+    assert len(out) <= d._REPLY_MAX_CHARS
+    assert d._REPLY_TRUNCATE_SUFFIX in out
+
+
+# ===== 报告组装 =====
+
+def test_build_analysis_report():
+    rpt = d._build_analysis_report("正文内容", "贵州茅台", "600519.SH", 12.3)
+    assert "贵州茅台" in rpt
+    assert "600519.SH" in rpt
+    assert "正文内容" in rpt
+    assert "入市需谨慎" in rpt  # 免责声明兜底
+
+
+def test_build_report_dedups_disclaimer():
+    """正文已含免责声明时不再追加, 避免出现两条重复免责。"""
+    body = "分析正文。\n\n> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,不构成任何投资建议。"
+    rpt = d._build_analysis_report(body, "贵州茅台", "600519.SH", 1.0)
+    assert rpt.count("不构成任何投资建议") == 1
+
+
+def test_build_report_includes_model():
+    rpt = d._build_analysis_report("正文", "贵州茅台", "600519.SH", 1.0, model="deepseek-chat")
+    assert "🤖 **分析模型**" in rpt
+    assert "deepseek-chat" in rpt
+
+
+def test_build_report_omits_empty_model():
+    rpt = d._build_analysis_report("正文", "贵州茅台", "600519.SH", 1.0, model="")
+    assert "分析模型" not in rpt
+
+
+# ===== 标的解析 =====
+
+class _Repo:
+    def __init__(self, stocks=None, etfs=None, index=None):
+        self._stocks = stocks if stocks is not None else pl.DataFrame()
+        self._etfs = etfs if etfs is not None else pl.DataFrame()
+        self._index = index if index is not None else pl.DataFrame()
+
+    def get_instruments(self):
+        return self._stocks
+
+    def get_etf_instruments(self):
+        return self._etfs
+
+    def get_instruments_asset(self, _asset_type):
+        return self._index
+
+
+def _repo_with_stock():
+    return _Repo(stocks=pl.DataFrame({"symbol": ["600519.SH"], "name": ["贵州茅台"]}))
+
+
+def test_resolve_symbol_exact_and_fuzzy():
+    assert d._resolve_symbol(_repo_with_stock(), "贵州茅台") == "600519.SH"
+    assert d._resolve_symbol(_repo_with_stock(), "茅台") == "600519.SH"
+
+
+def test_resolve_symbol_not_found():
+    assert d._resolve_symbol(_repo_with_stock(), "不存在") is None
+
+
+def test_resolve_symbol_falls_back_to_etf_and_index():
+    repo = _Repo(
+        etfs=pl.DataFrame({"symbol": ["510300.SH"], "name": ["沪深300ETF"]}),
+        index=pl.DataFrame({"symbol": ["000001.SH"], "name": ["上证指数"]}),
+    )
+    assert d._resolve_symbol(repo, "沪深300ETF") == "510300.SH"
+    assert d._resolve_symbol(repo, "上证指数") == "000001.SH"
+
+
+# ===== msgId 去重 =====
+
+def test_is_duplicate_msg_ttl():
+    svc = d.DingtalkBotService()
+    assert svc.is_duplicate_msg("m1") is False
+    assert svc.is_duplicate_msg("m1") is True
+    assert svc.is_duplicate_msg("m2") is False
+    assert svc.is_duplicate_msg("") is False  # 空 msgId 不去重
+
+
+# ===== 消息处理路径 (不触发真实 LLM / SDK 网络) =====
+
+def _incoming(content="", msgtype="text", msgid="m1"):
+    return SimpleNamespace(
+        message_type=msgtype,
+        message_id=msgid,
+        sender_nick="测试用户",
+        text=SimpleNamespace(content=content),
+        session_webhook="https://example.invalid/webhook",
+    )
+
+
+def _handler(repo=None):
+    svc = d.DingtalkBotService()
+    svc.set_app_state(SimpleNamespace(repo=repo))
+    handler = d._ChatbotHandler(svc)
+    replies = []
+    async def fake_reply(title, content, _incoming):
+        replies.append((title, content))
+    handler._reply_markdown = fake_reply
+    return handler, replies
+
+
+def test_handle_message_help_on_unparseable():
+    handler, replies = _handler(repo=_repo_with_stock())
+    asyncio.run(handler._handle_message(_incoming("@机器人")))
+    assert "AI 个股分析机器人" in replies[-1][1]
+
+
+def test_handle_message_symbol_not_found():
+    handler, replies = _handler(repo=_repo_with_stock())
+    asyncio.run(handler._handle_message(_incoming("@机器人 不存在股")))
+    assert "未找到股票" in replies[-1][1]
+
+
+def test_handle_message_ignores_non_text():
+    handler, replies = _handler(repo=_repo_with_stock())
+    asyncio.run(handler._handle_message(_incoming(msgtype="image")))
+    assert not replies

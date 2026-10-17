@@ -320,6 +320,7 @@ async def analyze_stock_stream(
     data_dir: Path,
     symbol: str,
     focus: str = "",
+    length_hint: str = "",
 ) -> AsyncIterator[str]:
     """流式个股分析:yield 出每个 NDJSON 事件。
 
@@ -328,6 +329,9 @@ async def analyze_stock_stream(
       {"type":"delta","content":"..."}             逐 chunk 文本
       {"type":"error","message":"..."}
       {"type":"done"}
+
+    length_hint: 追加到用户提示词末尾的附加要求 (如企业微信机器人回复的
+    平台长度限制), 默认空字符串表示不追加 (前端调用不受影响)。
     """
     # 1. 加载 K 线
     df = _load_kline(repo, symbol)
@@ -377,11 +381,13 @@ async def analyze_stock_stream(
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
                                          raw_close=raw_close)
+        # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
+        user_content = user_prompt + length_hint
         got_content = False
         async for delta in stream_ai_text(
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.5,
             # 不限制输出: 推理模型(deepseek reasoner 系)思考 token 计入 max_tokens
@@ -403,3 +409,31 @@ async def analyze_stock_stream(
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
     yield json.dumps({"type": "done"}, ensure_ascii=False)
+
+
+async def analyze_stock_text(
+    repo,
+    data_dir: Path,
+    symbol: str,
+    focus: str = "",
+    length_hint: str = "",
+) -> str:
+    """非流式个股分析:复用 analyze_stock_stream 的完整流程, 拼接出纯正文文本。
+
+    供企业微信智能机器人等无 NDJSON 消费方的场景使用: 机器人拿到的是完整
+    Markdown 正文 (不含报告头 / 免责声明, 由调用方自行组装)。
+
+    length_hint: 追加到用户提示词末尾的附加要求 (平台长度限制提示)。
+    返回正文文本; 分析失败或 K 线缺失时返回错误描述文本 (非空)。
+    """
+    full = ""
+    async for event in analyze_stock_stream(repo, data_dir, symbol, focus, length_hint=length_hint):
+        try:
+            data = json.loads(event)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if data.get("type") == "delta":
+            full += data.get("content", "")
+        elif data.get("type") == "error":
+            return data.get("message", "AI 分析失败")
+    return full if full else "AI 未返回正文, 请重试"

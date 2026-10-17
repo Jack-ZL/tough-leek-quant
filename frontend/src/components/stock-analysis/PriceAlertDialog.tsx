@@ -106,6 +106,7 @@ export function PriceAlertDialog({
     const configured = new Set<string>()
     if (prefs.feishu_webhook_url) configured.add('feishu')
     if (prefs.wecom_webhook_url) configured.add('wecom')
+    if (prefs.dingtalk_webhook_url) configured.add('dingtalk')
     if (prefs.custom_webhook_url) configured.add('custom')
     if (prefs.email_smtp_config?.host && prefs.email_smtp_config.from_address && prefs.email_smtp_config.to_addresses.length && (!prefs.email_smtp_config.username || prefs.email_smtp_password_set)) configured.add('email')
     setChannels((prefs.webhook_default_channels ?? []).filter(channel => configured.has(channel)))
@@ -332,6 +333,7 @@ export function PriceAlertDialog({
                 {([
                   { key: 'feishu', label: '飞书', configured: !!prefs?.feishu_webhook_url },
                   { key: 'wecom', label: '企业微信', configured: !!prefs?.wecom_webhook_url },
+                  { key: 'dingtalk', label: '钉钉', configured: !!prefs?.dingtalk_webhook_url },
                   { key: 'custom', label: '第三方系统', configured: !!prefs?.custom_webhook_url },
                   { key: 'email', label: '邮件', configured: !!(prefs?.email_smtp_config?.host && prefs.email_smtp_config.from_address && prefs.email_smtp_config.to_addresses.length && (!prefs.email_smtp_config.username || prefs.email_smtp_password_set)) },
                 ]).map(channel => (

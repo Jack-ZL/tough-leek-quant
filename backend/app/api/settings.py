@@ -662,6 +662,11 @@ def get_preferences() -> dict:
         "wecom_bot_id": preferences.get_wecom_bot_id(),
         "wecom_bot_secret": preferences.get_wecom_bot_secret(),
         "wecom_bot_enabled": preferences.get_wecom_bot_enabled(),
+        "dingtalk_webhook_url": preferences.get_dingtalk_webhook_url(),
+        "dingtalk_webhook_secret": preferences.get_dingtalk_webhook_secret(),
+        "dingtalk_bot_id": preferences.get_dingtalk_bot_id(),
+        "dingtalk_bot_secret": preferences.get_dingtalk_bot_secret(),
+        "dingtalk_bot_enabled": preferences.get_dingtalk_bot_enabled(),
         "webhook_enabled_default": preferences.get_webhook_enabled_default(),
         "webhook_default_channels": preferences.get_webhook_default_channels(),
         "minute_intraday_refresh": preferences.get_minute_intraday_refresh(),
@@ -1427,6 +1432,39 @@ def update_wecom_webhook(req: WecomWebhookPrefsIn) -> dict:
     return {"wecom_webhook_url": saved_url}
 
 
+class DingtalkWebhookPrefsIn(BaseModel):
+    url: str
+    # None preserves the stored secret; an explicit empty string clears it.
+    secret: str | None = None
+
+
+@router.put("/preferences/dingtalk-webhook")
+def update_dingtalk_webhook(req: DingtalkWebhookPrefsIn) -> dict:
+    """钉钉群推送 Webhook 地址 + 加签密钥 — 与飞书/企业微信并列的推送通道。
+
+    - url: 传入空串表示清空配置; 非空需为合法钉钉自定义机器人 Webhook 地址, 或纯 access_token。
+    - secret: 机器人启用「加签」时必填; 未启用加签留空即可。
+    """
+    from app.services import preferences, webhook_adapter
+
+    url = (req.url or "").strip()
+    if url and not webhook_adapter.is_valid_dingtalk_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook 地址非法, 需为钉钉自定义机器人 Webhook 地址 "
+                   "(https://oapi.dingtalk.com/robot/send?access_token=... 或纯 access_token)",
+        )
+    saved_url = preferences.set_dingtalk_webhook_url(url)
+    if not saved_url:
+        preferences.set_dingtalk_webhook_secret("")
+    elif req.secret is not None:
+        preferences.set_dingtalk_webhook_secret(req.secret)
+    return {
+        "dingtalk_webhook_url": saved_url,
+        "dingtalk_webhook_secret": preferences.get_dingtalk_webhook_secret(),
+    }
+
+
 class CustomWebhookPrefsIn(BaseModel):
     url: str
     # None preserves the stored secret; an explicit empty string clears it.
@@ -1508,7 +1546,7 @@ def update_email_smtp(req: EmailSmtpPrefsIn) -> dict:
 
 
 class WebhookTestIn(BaseModel):
-    channel: Literal["feishu", "wecom", "custom", "email"]
+    channel: Literal["feishu", "wecom", "dingtalk", "custom", "email"]
 
 
 @router.post("/preferences/webhook-test")
@@ -1540,6 +1578,15 @@ def test_webhook(req: WebhookTestIn) -> dict:
         if not webhook_adapter.is_valid_wecom_url(url):
             return {"ok": False, "detail": "已保存的企业微信 Webhook 地址非法，请重新保存"}
         ok = webhook_adapter.send_wecom(url, title, body)
+    elif req.channel == "dingtalk":
+        url = preferences.get_dingtalk_webhook_url()
+        if not url:
+            return {"ok": False, "detail": "尚未配置钉钉 Webhook，请先保存"}
+        if not webhook_adapter.is_valid_dingtalk_url(url):
+            return {"ok": False, "detail": "已保存的钉钉 Webhook 地址非法，请重新保存"}
+        ok = webhook_adapter.send_dingtalk(
+            url, title, body, preferences.get_dingtalk_webhook_secret()
+        )
     elif req.channel == "custom":
         url = preferences.get_custom_webhook_url()
         if not url:
@@ -1634,6 +1681,70 @@ def toggle_wecom_bot(req: WecomBotToggleIn, request: Request) -> dict:
         bot_svc.apply_credential_change()
         status = bot_svc.status()
     return {"wecom_bot_enabled": enabled, "wecom_bot_status": status}
+
+
+class DingtalkBotPrefsIn(BaseModel):
+    bot_id: str
+    secret: str
+    enabled: bool = True
+
+
+@router.put("/preferences/dingtalk-bot")
+def update_dingtalk_bot(req: DingtalkBotPrefsIn, request: Request) -> dict:
+    """钉钉智能机器人(ClientId + ClientSecret)配置 — Stream 长连接通道。
+
+    保存凭证后立即重建连接(stop→start), 因 SDK 的 start_forever 无 close 接口,
+    只能停止旧线程后起新线程重读凭证。
+    - bot_id/secret 均传空串表示清空配置并断开连接。
+    - enabled 控制是否启用长连接(凭证齐全时生效)。
+    """
+    from app.services import preferences
+
+    bot_id = (req.bot_id or "").strip()
+    secret = (req.secret or "").strip()
+    preferences.set_dingtalk_bot_id(bot_id)
+    preferences.set_dingtalk_bot_secret(secret)
+    # 凭证不齐时强制关闭(避免 enabled=True 但连不上)
+    enabled = req.enabled and bool(bot_id) and bool(secret)
+    preferences.set_dingtalk_bot_enabled(enabled)
+
+    # 立即应用: 重建连接
+    bot_svc = getattr(request.app.state, "dingtalk_bot_service", None)
+    status: dict = {}
+    if bot_svc:
+        bot_svc.apply_credential_change()
+        status = bot_svc.status()
+    return {
+        "dingtalk_bot_id": preferences.get_dingtalk_bot_id(),
+        "dingtalk_bot_secret": preferences.get_dingtalk_bot_secret(),
+        "dingtalk_bot_enabled": preferences.get_dingtalk_bot_enabled(),
+        "dingtalk_bot_status": status,
+    }
+
+
+class DingtalkBotToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/dingtalk-bot-toggle")
+def toggle_dingtalk_bot(req: DingtalkBotToggleIn, request: Request) -> dict:
+    """独立开关: 启用/禁用钉钉智能机器人长连接(不改动凭证)。
+
+    凭证不齐时强制返回未启用(无法连接)。
+    """
+    from app.services import preferences
+
+    bot_id = preferences.get_dingtalk_bot_id()
+    secret = preferences.get_dingtalk_bot_secret()
+    enabled = req.enabled and bool(bot_id) and bool(secret)
+    preferences.set_dingtalk_bot_enabled(enabled)
+
+    bot_svc = getattr(request.app.state, "dingtalk_bot_service", None)
+    status: dict = {}
+    if bot_svc:
+        bot_svc.apply_credential_change()
+        status = bot_svc.status()
+    return {"dingtalk_bot_enabled": enabled, "dingtalk_bot_status": status}
 
 
 class WebhookEnabledDefaultIn(BaseModel):

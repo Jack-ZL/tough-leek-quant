@@ -621,7 +621,7 @@ def set_depth_finalize_time(hour: int, minute: int) -> dict:
 
 # 监控与复盘共用的外部推送渠道白名单。
 # 多选: 不推送 = 空数组, 而非 'none'
-PUSH_CHANNELS = {"feishu", "wecom", "custom", "email"}
+PUSH_CHANNELS = {"feishu", "wecom", "custom", "email", "dingtalk"}
 
 
 def get_review_schedule() -> dict:
@@ -858,6 +858,36 @@ def set_wecom_webhook_url(url: str) -> str:
     return get_wecom_webhook_url()
 
 
+def get_dingtalk_webhook_url() -> str:
+    """钉钉群推送 Webhook 地址 — 与飞书/企业微信并列的推送通道。
+
+    存储完整 URL (https://oapi.dingtalk.com/robot/send?access_token=xxx);
+    用户也可只填 access_token, 由 webhook_adapter.normalize_dingtalk_url 自动补全。
+    """
+    return load().get("dingtalk_webhook_url", "")
+
+
+def get_dingtalk_webhook_secret() -> str:
+    """钉钉群推送 Webhook 加签密钥 — 机器人启用「加签」时必填, 留空表示不加签。"""
+    return load().get("dingtalk_webhook_secret", "")
+
+
+def set_dingtalk_webhook_url(url: str) -> str:
+    """保存钉钉 Webhook 地址。传入空串表示清空配置。
+
+    存储时统一补全为完整 URL, 避免后续每次推送都要再判一次。
+    """
+    from app.services.webhook_adapter import normalize_dingtalk_url
+    save({"dingtalk_webhook_url": normalize_dingtalk_url(url)})
+    return get_dingtalk_webhook_url()
+
+
+def set_dingtalk_webhook_secret(secret: str) -> str:
+    """保存钉钉加签密钥。传入空串表示不加签。"""
+    save({"dingtalk_webhook_secret": str(secret or "").strip()})
+    return get_dingtalk_webhook_secret()
+
+
 def get_custom_webhook_url() -> str:
     """Generic third-party JSON Webhook URL shared by enabled rules and reviews."""
     return str(load().get("custom_webhook_url") or "")
@@ -958,6 +988,41 @@ def set_wecom_bot_enabled(enabled: bool) -> bool:
     save({"wecom_bot_enabled": bool(enabled)})
     return get_wecom_bot_enabled()
 
+
+# ===== 钉钉智能机器人 (Stream 模式 / 长连接) =====
+
+
+def get_dingtalk_bot_id() -> str:
+    """钉钉智能机器人 ClientId (AppKey) — 机器人的唯一标识。"""
+    return load().get("dingtalk_bot_id", "")
+
+
+def set_dingtalk_bot_id(bot_id: str) -> str:
+    """保存钉钉智能机器人 ClientId。传入空串表示清空。"""
+    save({"dingtalk_bot_id": (bot_id or "").strip()})
+    return get_dingtalk_bot_id()
+
+
+def get_dingtalk_bot_secret() -> str:
+    """钉钉智能机器人 ClientSecret (AppSecret) — Stream 模式专用密钥。"""
+    return load().get("dingtalk_bot_secret", "")
+
+
+def set_dingtalk_bot_secret(secret: str) -> str:
+    """保存钉钉智能机器人 ClientSecret。传入空串表示清空。"""
+    save({"dingtalk_bot_secret": (secret or "").strip()})
+    return get_dingtalk_bot_secret()
+
+
+def get_dingtalk_bot_enabled() -> bool:
+    """钉钉智能机器人长连接是否启用。默认 False(需用户配置凭证后手动开启)。"""
+    return load().get("dingtalk_bot_enabled", False)
+
+
+def set_dingtalk_bot_enabled(enabled: bool) -> bool:
+    """保存钉钉智能机器人启用状态。"""
+    save({"dingtalk_bot_enabled": bool(enabled)})
+    return get_dingtalk_bot_enabled()
 
 
 def get_webhook_enabled_default() -> bool:

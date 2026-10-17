@@ -1,9 +1,9 @@
-"""企业微信智能机器人长连接服务 — WebSocket 保活。
+"""企业微信智能机器人长连接服务 — WebSocket 保活 + 个股分析交互。
 
 与「群推送 Webhook」(webhook_adapter, 单向 POST) 并存的第二条企业微信通道:
 智能机器人开「API 模式 / 长连接」后, 通过 WebSocket 双向通信, 支持 @机器人
-交互、流式回复、模板卡片。本服务只负责连接保活(连接/鉴权/心跳/重连),
-暂不处理消息收发 — 后续可在此基础上扩展。
+交互、个股分析回复。消息处理复用 stock_analyzer.analyze_stock_text 的完整
+分析流程(与前端个股分析一致), 并按企业微信回复字节上限截断。
 
 架构(对齐 depth_service):
   - daemon 线程内跑 asyncio 事件循环, 用已安装的 websockets(v16) 库
@@ -20,11 +20,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
+from datetime import datetime
+
+import polars as pl
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,126 @@ _HEARTBEAT_INTERVAL = 30.0
 _RECONNECT_BASE_DELAY = 5.0
 _RECONNECT_CAP = 60.0
 _RECONNECT_MAX_ATTEMPTS = 10  # 连续失败到此次数后仍继续重连, 仅放慢节奏
+# 服务端超时未收到响应可能按同一 msgid 重推消息, 按 msgid 去重的 TTL
+_MSG_DEDUP_TTL = 600.0
+
+# 企业微信智能机器人回复上限: 最长 20480 字节 (UTF-8, 中文约 3 字节/字), 不能按字符数截取
+_REPLY_MAX_BYTES = 20480
+_REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
+# AI 正文字数预算: 与群推送不同, 智能机器人单条上限更大, 但报告头+免责也占字节,
+# 给正文留 6000 字预算 (全中文约 18000 字节), 为头部与混合编码留余量。
+_AI_BODY_CHAR_BUDGET = 6000
+_LENGTH_HINT = (
+    f"\n\n【输出要求】本报告将通过企业微信智能机器人发送, 平台消息上限 {_REPLY_MAX_BYTES} 字节(UTF-8 编码), "
+    f"请将分析正文全文控制在 {_AI_BODY_CHAR_BUDGET} 字以内。"
+    "注意: 正文末尾请勿输出任何免责声明或风险提示, 免责声明由系统统一追加, 不计入正文字数。"
+    "以上要求优先于系统提示中的字数范围与免责声明要求; 宁可压缩内容, 也不要被平台截断。"
+)
+
+# 报告末尾免责声明 (由机器人统一追加, 与 stock_analyzer 系统提示词措辞一致)
+_REPORT_DISCLAIMER = (
+    "> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,仅客观陈述技术状态,"
+    "不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。"
+)
+
+_HELP_TEXT = (
+    "📊 **AI 个股分析机器人**\n\n"
+    "请使用以下格式发送分析请求:\n"
+    "```\n@机器人 股票名称\n```\n\n"
+    "示例:\n"
+    "```\n@机器人 贵州茅台\n```"
+)
+
+
+def _truncate_reply_by_bytes(content: str, max_bytes: int = _REPLY_MAX_BYTES) -> str:
+    """按 UTF-8 字节数安全截断回复正文, 不切断多字节字符, 为后缀预留字节。"""
+    encoded = content.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return content
+    suffix_bytes = len(_REPLY_TRUNCATE_SUFFIX.encode("utf-8"))
+    cut = encoded[: max_bytes - suffix_bytes]
+    return cut.decode("utf-8", errors="ignore") + _REPLY_TRUNCATE_SUFFIX
+
+
+def _parse_stock_analysis_msg(content: str) -> str | None:
+    """解析个股分析消息: "@机器人 股票名称"。
+
+    去掉开头的 @提及 后, 取第一个词作为股票名称 (A 股简称不含空格)。
+    返回股票名称; 无法解析返回 None。
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^@\S+\s*", "", text).strip()
+    if not text:
+        return None
+    return text.split()[0]
+
+
+def _resolve_symbol(repo, stock_name: str) -> str | None:
+    """根据股票名称查找 symbol (代码.交易所), 支持精确 + 模糊匹配。"""
+    try:
+        for df_name in ("get_instruments", "get_etf_instruments"):
+            df = getattr(repo, df_name)()
+            if df.is_empty() or "symbol" not in df.columns or "name" not in df.columns:
+                continue
+            hit = df.filter(pl.col("name") == stock_name).head(1)
+            if not hit.is_empty():
+                return hit["symbol"][0]
+            hit = df.filter(pl.col("name").str.contains(stock_name)).head(1)
+            if not hit.is_empty():
+                return hit["symbol"][0]
+
+        df = repo.get_instruments_asset("index")
+        if not df.is_empty() and "symbol" in df.columns and "name" in df.columns:
+            hit = df.filter(pl.col("name") == stock_name).head(1)
+            if not hit.is_empty():
+                return hit["symbol"][0]
+            hit = df.filter(pl.col("name").str.contains(stock_name)).head(1)
+            if not hit.is_empty():
+                return hit["symbol"][0]
+    except Exception:  # noqa: BLE001 — 标的查询失败走"未找到"提示
+        pass
+    return None
+
+
+def _current_model_label() -> str:
+    """返回报告头部标注用的模型名; 模型缺失时回退到 provider, 均空返回空串。"""
+    from app.services import ai_provider
+
+    model = ai_provider.current_ai_model()
+    if not model:
+        model = ai_provider.current_ai_provider()
+    return str(model or "").strip()
+
+
+def _build_analysis_report(
+    content: str, stock_name: str, symbol: str, elapsed: float, model: str = ""
+) -> str:
+    """组装个股分析报告 Markdown 文本。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elapsed_str = f"{elapsed:.1f}" if elapsed < 60 else f"{int(elapsed // 60)}分{int(elapsed % 60)}秒"
+
+    lines = [
+        "📊 **AI 个股分析报告**",
+        "",
+        f"📌 **标的**: {stock_name} ({symbol})",
+        f"⏰ **分析时间**: {now}",
+        f"⏱️ **分析用时**: {elapsed_str}",
+    ]
+    if model:
+        lines.append(f"🤖 **分析模型**: {model}")
+    lines += [
+        "",
+        "---",
+        "",
+        content,
+    ]
+    # 机器人 length_hint 已要求模型不要输出免责声明(由系统统一追加); 此处兜底追加,
+    # 若模型仍输出则去重, 保证报告末尾有且仅有一条免责声明。
+    if "不构成任何投资建议" not in content:
+        lines += ["", _REPORT_DISCLAIMER]
+    return "\n".join(lines)
 
 
 class WecomBotService:
@@ -49,14 +174,42 @@ class WecomBotService:
         self._connected = False        # WebSocket 是否已连接并通过鉴权
         self._last_error: str = ""
         self._app_state = None         # 延迟注入, 避免循环导入
+        self._ws: object | None = None  # 当前 WebSocket 连接 (消息回复用)
+        self._seen_msgids: dict[str, float] = {}  # msgid 去重 (TTL 见 _MSG_DEDUP_TTL)
+        self._bg_tasks: set[asyncio.Task] = set()  # 后台分析任务强引用
 
     # ================================================================
     # 生命周期
     # ================================================================
 
     def set_app_state(self, app_state) -> None:
-        """注入 FastAPI app.state (目前未使用, 预留消息处理时访问 monitor/repo)。"""
+        """注入 FastAPI app.state (供消息处理时访问 repo / datastore)。"""
         self._app_state = app_state
+
+    def _is_duplicate_msg(self, msgid: str) -> bool:
+        """msgid 去重 (带 TTL): 首次出现返回 False 并登记, 重复重推返回 True。"""
+        if not msgid:
+            return False
+        now = time.time()
+        with self._lock:
+            expired = [k for k, ts in self._seen_msgids.items() if now - ts > _MSG_DEDUP_TTL]
+            for key in expired:
+                del self._seen_msgids[key]
+            if msgid in self._seen_msgids:
+                return True
+            self._seen_msgids[msgid] = now
+            return False
+
+    def _spawn_bg(self, coro) -> None:
+        """在长连接事件循环上提交后台任务, 持强引用防止被 GC 提前回收。"""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("智能机器人后台任务失败: %s", task.exception())
 
     def start(self) -> bool:
         """启动长连接线程。凭证不齐或已运行则跳过。返回是否真正启动。"""
@@ -88,8 +241,10 @@ class WecomBotService:
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
-        self._ws_loop = None
-        self._connected = False
+        with self._lock:
+            self._ws_loop = None
+            self._connected = False
+            self._ws = None
         logger.info("智能机器人长连接服务已停止")
 
     def boot_check(self) -> None:
@@ -151,14 +306,14 @@ class WecomBotService:
             with self._lock:
                 self._connected = False
                 self._ws_loop = None
-            try:
+                self._ws = None
+            with contextlib.suppress(Exception):
                 loop.close()
-            except Exception:  # noqa: BLE001
-                pass
 
     async def _connect_loop(self) -> None:
         """主连接循环: 连接 → 鉴权 → 心跳保活 → 断开 → 退避重连。"""
         import websockets
+
         from app.services import preferences
 
         attempt = 0
@@ -201,6 +356,7 @@ class WecomBotService:
                     # 连接成功
                     with self._lock:
                         self._connected = True
+                        self._ws = ws
                     self._last_error = ""
                     attempt = 0
                     logger.info("智能机器人已连接 (bot_id=%s)", bot_id)
@@ -208,7 +364,7 @@ class WecomBotService:
                     # 3. 心跳保活 + 接收循环
                     await self._maintain_connection(ws)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._last_error = "鉴权响应超时"
                 logger.warning("智能机器人鉴权超时")
             except Exception as e:  # noqa: BLE001 — 网络/断开, 可重连
@@ -217,6 +373,7 @@ class WecomBotService:
             finally:
                 with self._lock:
                     self._connected = False
+                    self._ws = None
 
             # 4. 指数退避重连
             if not self._running:
@@ -227,48 +384,123 @@ class WecomBotService:
             await self._sleep_interruptible(delay)
 
     async def _maintain_connection(self, ws) -> None:
-        """连接保持阶段: 每 30s 发 ping, 同时接收服务端推送。
-
-        本阶段收到消息解析并记 INFO 日志(验证接收能力), 后续消息处理在此扩展。
-        """
+        """连接保持阶段: 每 30s 发 ping, 同时接收服务端推送并分发处理。"""
         while self._running:
             try:
                 # 用 wait_for 同时实现"心跳定时"和"接收消息", 哪个先到都行
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=_HEARTBEAT_INTERVAL)
-                    self._log_incoming(raw)
+                    await self._handle_incoming(ws, raw)
                     continue
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # 接收超时 → 到了心跳时间
                 # 发送业务层 ping 保活
                 await ws.send(json.dumps({"cmd": "ping"}))
-            except Exception as e:  # noqa: BLE001 — 连接断开, 抛给上层重连
+            except Exception:
                 raise
 
-    def _log_incoming(self, raw) -> None:
-        """解析并记录收到的消息帧(供测试接收能力)。"""
+    async def _handle_incoming(self, ws, raw) -> None:
+        """解析收到的消息帧并处理。"""
         try:
             frame = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             logger.info("智能机器人收到非 JSON 消息: %s", str(raw)[:200])
             return
+
         cmd = frame.get("cmd", "?")
         body = frame.get("body", {})
+
         # 用户消息: aibot_msg_callback (用户 @机器人 / 单聊发消息)
         if cmd == "aibot_msg_callback":
-            userid = body.get("from", {}).get("userid", "?")
-            chattype = body.get("chattype", "?")
-            msgtype = body.get("msgtype", "?")
-            # 文本消息内容在 body.text.content 或 body.content
-            content = body.get("text", {}).get("content") or body.get("content", "")
-            logger.info("智能机器人收到用户消息 [%s/%s] %s: %s",
-                        chattype, msgtype, userid, str(content)[:100])
+            # 不能阻塞收帧循环: 心跳 ping 依赖本循环, 慢分析会导致掉线重连
+            self._spawn_bg(self._handle_user_message(ws, frame, body))
         # 事件回调: 进入会话 / 卡片点击 / 连接被踢等
         elif cmd == "aibot_event_callback":
             eventtype = body.get("event", {}).get("eventtype", "?")
             logger.info("智能机器人收到事件回调: %s", eventtype)
         else:
             logger.info("智能机器人收到帧 cmd=%s: %s", cmd, str(raw)[:200])
+
+    async def _handle_user_message(self, ws, frame, body) -> None:
+        """处理用户消息: 解析 → 个股分析 → 回复。"""
+        userid = body.get("from", {}).get("userid", "?")
+        chattype = body.get("chattype", "?")
+        msgtype = body.get("msgtype", "?")
+        content = body.get("text", {}).get("content") or body.get("content", "")
+
+        msgid = body.get("msgid", "")
+        if self._is_duplicate_msg(msgid):
+            logger.info("智能机器人忽略重复重推消息 msgid=%s", msgid)
+            return
+
+        logger.info("智能机器人收到用户消息 [%s/%s] %s: %s",
+                    chattype, msgtype, userid, str(content)[:100])
+
+        if msgtype != "text":
+            return
+
+        stock_name = _parse_stock_analysis_msg(content)
+        if not stock_name:
+            await self._reply_markdown(ws, frame, _HELP_TEXT)
+            return
+
+        repo = self._app_state.repo if self._app_state else None
+        if not repo:
+            await self._reply_markdown(ws, frame, "⚠️ 系统未就绪, 请稍后重试")
+            return
+
+        symbol = _resolve_symbol(repo, stock_name)
+        if not symbol:
+            await self._reply_markdown(ws, frame, f"未找到股票「{stock_name}」, 请检查名称是否正确")
+            return
+
+        start_time = time.time()
+        try:
+            await self._reply_markdown(
+                ws, frame, f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候..."
+            )
+            analysis_content = await self._run_analysis(repo, symbol)
+            elapsed = time.time() - start_time
+            model = _current_model_label()
+            report = _build_analysis_report(analysis_content, stock_name, symbol, elapsed, model)
+            await self._reply_markdown(ws, frame, report)
+        except Exception as e:
+            logger.exception("智能机器人个股分析失败: %s", e)
+            await self._reply_markdown(ws, frame, f"⚠️ 分析失败: {e}")
+
+    async def _run_analysis(self, repo, symbol: str) -> str:
+        """执行个股分析, 复用 stock_analyzer.analyze_stock_text 的完整流程。"""
+        from app.services.stock_analyzer import analyze_stock_text
+
+        return await analyze_stock_text(
+            repo,
+            repo.store.data_dir,
+            symbol,
+            focus="",
+            length_hint=_LENGTH_HINT,
+        )
+
+    async def _reply_markdown(self, ws, frame, content: str) -> None:
+        """通过 WebSocket 回复 Markdown 消息 (aibot_respond_msg 帧)。"""
+        req_id = frame.get("headers", {}).get("req_id", str(uuid.uuid4()))
+        body = frame.get("body", {})
+        msgid = body.get("msgid", "")
+
+        content = _truncate_reply_by_bytes(content)
+
+        respond_frame = {
+            "cmd": "aibot_respond_msg",
+            "headers": {"req_id": req_id},
+            "body": {
+                "msgid": msgid,
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": content,
+                },
+            },
+        }
+        await ws.send(json.dumps(respond_frame, ensure_ascii=False))
+        logger.info("智能机器人已回复 Markdown 消息 (msgid=%s, 长度=%d)", msgid, len(content))
 
     async def _sleep_interruptible(self, seconds: float) -> None:
         """可被 stop() 中断的 sleep(通过检查 _running)。"""
