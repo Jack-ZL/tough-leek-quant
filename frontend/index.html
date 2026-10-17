@@ -3,13 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <script>
-      // 预渲染主题脚本: 首屏前设置 html.dark, 避免亮暗闪烁 (FOUC)。
-      // 默认暗色; 用户切过亮色后 (localStorage tf-theme=light) 保持亮色。
+      // 预渲染主题脚本: 首屏前解析生效主题, 避免亮暗闪烁 (FOUC)。
+      // 优先级: 24h 内的手动覆盖 (dark/light) > 系统偏好 (auto)。
       (function () {
         try {
-          if (localStorage.getItem('tf-theme') !== 'light') {
-            document.documentElement.classList.add('dark')
-          }
+          var mode = localStorage.getItem('tf-theme') || 'auto'
+          var at = Number(localStorage.getItem('tf-theme-manual-at')) || 0
+          var manual = mode === 'dark' || mode === 'light'
+          var expired = !manual || !at || Date.now() - at >= 86400000
+          var dark
+          if (mode === 'dark' && !expired) dark = true
+          else if (mode === 'light' && !expired) dark = false
+          else dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          document.documentElement.classList.toggle('dark', dark)
         } catch (e) {
           document.documentElement.classList.add('dark')
         }

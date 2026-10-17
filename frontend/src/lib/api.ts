@@ -2322,6 +2322,14 @@ export interface UpgradeGuardStatus {
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
+  /** 侧栏日期/时间 + 交易日状态 (is_trading_day: true/false/null) */
+  marketTradingStatus: () =>
+    request<{
+      today: string
+      is_trading_day: boolean | null
+      next_trading_day: string | null
+    }>('/api/market/trading-status'),
+
   // ===== Auth (访问认证) =====
   authStatus: () =>
     request<{ configured: boolean; authenticated: boolean }>('/api/auth/status'),
