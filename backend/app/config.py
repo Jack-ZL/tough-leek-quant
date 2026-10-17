@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     ai_context_window: int = 128000
     # AI 助手工具轮次检查点: 连续 N 轮工具调用未完成时弹「继续/停止」卡; 0=不检查。
     ai_round_checkpoint: int = 100
+    # 联网搜索开关: 聊天请求附带 enable_search (千问/百炼系支持)。
+    # DeepSeek 等不支持的模型自动不传, 见 ai_provider.web_search_supported()。
+    ai_web_search: bool = False
 
     # Server
     host: str = "0.0.0.0"

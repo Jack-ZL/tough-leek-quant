@@ -138,6 +138,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
   const [maxOutputTokens, setMaxOutputTokens] = useState('')
   const [contextWindow, setContextWindow] = useState('')
   const [roundCheckpoint, setRoundCheckpoint] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const [saved, setSaved] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -228,6 +229,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     setMaxOutputTokens(String(st.ai_max_output_tokens ?? 16384))
     setContextWindow(String(st.ai_context_window ?? 128000))
     setRoundCheckpoint(String(st.ai_round_checkpoint ?? 100))
+    setWebSearch(Boolean(st.ai_web_search))
     setApiKey('')
   }
 
@@ -276,6 +278,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
     max_output_tokens: toPositiveInt(maxOutputTokens),
     context_window: toPositiveInt(contextWindow),
     round_checkpoint: toIntAllowZero(roundCheckpoint),
+    web_search: webSearch,
   })
 
   const save = useMutation({
@@ -298,6 +301,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         ai_max_output_tokens: result.ai_max_output_tokens ?? toPositiveInt(maxOutputTokens),
         ai_context_window: result.ai_context_window ?? toPositiveInt(contextWindow),
         ai_round_checkpoint: result.ai_round_checkpoint ?? toIntAllowZero(roundCheckpoint),
+        ai_web_search: result.ai_web_search ?? webSearch,
         ...(apiKey ? {
           has_ai_key: true,
           ai_api_key_masked: `${apiKey.slice(0, 4)}......${apiKey.slice(-4)}`,
@@ -330,6 +334,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
       setMaxOutputTokens('16384')
       setContextWindow('128000')
       setRoundCheckpoint('100')
+      setWebSearch(false)
       setTestResult(null)
       qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
         ...prev,
@@ -344,6 +349,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
         ai_codex_reasoning_effort: '',
         ai_max_output_tokens: 16384,
         ai_context_window: 128000,
+        ai_web_search: false,
         has_ai_key: false,
         ai_configured: false,
         ai_api_key_masked: '',
@@ -714,6 +720,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                   </button>
                 </div>
               )}
+
+              <div className="flex items-center gap-2 border-t border-border/30 pt-3.5">
+                <span className="text-xs font-medium text-secondary">联网搜索</span>
+                <span className="text-[10px] text-muted">请求附带 enable_search, 个股分析消息面可引用最新新闻; 仅千问/百炼等支持的模型生效, DeepSeek 自动回退无联网模式</span>
+                <div className="ml-auto"><Toggle checked={webSearch} onChange={() => setWebSearch(v => !v)} /></div>
+              </div>
             </>
           )}
           </div>

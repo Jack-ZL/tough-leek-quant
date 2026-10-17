@@ -89,3 +89,53 @@ def test_paper_position_part_prefers_raw_close():
     part = _paper_position_part([{"qty": 100, "avg_cost": 20.0}], close=11.0, raw_close=21.0)
     assert "+5.00%" in part
     assert "-45" not in part
+
+
+# ===== 联网搜索: 系统提示词第 5 节双变体 =====
+
+def test_system_prompt_search_variant():
+    from app.services.stock_analyzer import _build_system_prompt
+
+    online = _build_system_prompt(True)
+    assert "消息面(联网搜索)" in online
+    # 检索类别引导 (公司4类+行业相关)
+    assert "检索范围" in online
+    assert "经营/订单" in online and "风险事件" in online
+    assert "股东行为" in online and "资本运作" in online
+    # 防幻觉/客观性关键约束
+    assert "未检索到相关消息" in online
+    assert "[消息]" in online and "[推断]" in online
+    assert "交叉验证" in online
+    # 头尾结构完整 (第 6 节与免责仍在)
+    assert "综合研判与风险提示" in online
+    assert "本内容由 AI" in online
+    # 不得残留无联网变体文案
+    assert "价量异动推断)" not in online
+
+
+def test_system_prompt_offline_variant():
+    from app.services.stock_analyzer import _SYSTEM_PROMPT, _build_system_prompt
+
+    offline = _build_system_prompt(False)
+    assert offline == _SYSTEM_PROMPT  # 兼容旧引用: 默认无联网
+    assert "消息面(价量异动推断)" in offline
+    assert "当前模型未启用联网搜索" in offline
+    assert "综合研判与风险提示" in offline
+    # 不得声称有搜索能力
+    assert "你已启用联网搜索" not in offline
+
+
+def test_user_prompt_news_hint_follows_web_search():
+    """指数/ETF 无财务文案里的消息面指引须与联网状态一致。"""
+    common = dict(
+        kline_tail=[{"date": "2026-07-24", "close": 3000.0}],
+        fins={"metrics": [], "income": []},
+        levels={}, close=3000.0, symbol="000001.SH", focus="",
+        asset_type="index",
+    )
+    offline = _build_user_prompt(**common)
+    assert "消息面维度基于价量异动推断即可" in offline
+
+    online = _build_user_prompt(**common, web_search=True)
+    assert "联网检索" in online
+    assert "价量异动推断即可" not in online

@@ -116,7 +116,7 @@ def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
 # 本报告定位为客观行情分析,不提供任何买卖建议、仓位建议或交易指令。
 # ================================================================
 
-_SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
+_SYSTEM_PROMPT_HEAD = """你是一位拥有 15 年 A 股一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
 
 ## 核心红线(务必遵守)
 
@@ -163,14 +163,33 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 
 **绝对不要**在无数据时编造 ROE / 增速等数字。
 
-### 5. 📰 消息面(价量异动推断)
-**注意:本期无直接新闻数据输入。** 请基于 K 线的**异动信号**进行客观推断(如:
+"""
+
+# 第 5 节双变体: 联网可用时要求「来源+日期+[消息]/[推断] 双标签+价量交叉验证」,
+# 不可用时维持价量异动推断。由 ai_provider.web_search_supported() 在调用时选择,
+# 避免模型拿到与实际能力矛盾的指令 (如声称有搜索却检索不到)。
+_NEWS_SECTION_SEARCH = """### 5. 📰 消息面(联网搜索)
+你已启用联网搜索,可检索该股相关新闻/公告。规则:
+- **检索范围**:围绕该股搜索以下类别——①经营/订单(业绩预告、中标大单、并购重组、扩产投产) ②风险事件(诉讼仲裁、处罚/问询函/立案、业绩暴雷) ③股东行为(增减持、股权质押、回购、股权激励) ④资本运作(定增、可转债、分拆) ⑤与公司主营直接相关的行业动态(产业政策、产品涨价/竞品停产、上下游价格传导)。宏观消息仅在直接影响该股时才写,不泛泛而谈
+- **只陈述事实**:写明消息内容、来源与日期(如"据 9/12 公司公告…");未检索到相关消息时直说"未检索到相关消息",绝不编造
+- **区分标注**:确证消息标 [消息],价量异动推断标 [推断],两者不得混写
+- **交叉验证**:将消息与近期 K 线对照(如某日放量涨停与某利好互相印证);消息偏正面但股价走弱时,客观指出背离,不站队
+- **时效性**:优先采用近 30 天内消息;更早的注明时间,提示影响可能已消化
+- 若无明显异动且未检索到相关消息,直说"近期价量平稳,无明显异动信号;未检索到相关消息"
+- 核心红线不变:只陈述消息及其客观含义,不输出"利好兑现/逢低吸纳"等定性
+
+"""
+
+_NEWS_SECTION_OFFLINE = """### 5. 📰 消息面(价量异动推断)
+**注意:当前模型未启用联网搜索,无直接新闻数据输入。** 请基于 K 线的**异动信号**进行客观推断(如:
 - 涨停/连板/炸板 → 可能存在利好或资金关注
 - 放量暴跌 → 可能存在未公开扰动
 - 突破放量 → 可能存在催化剂
-明确标注"[推断]",告诉读者这是基于价量的客观推测,真实消息面数据待接入。若无明显异动,直说"近期价量平稳,无明显异动信号"。
+明确标注"[推断]",告诉读者这是基于价量的客观推测。若无明显异动,直说"近期价量平稳,无明显异动信号"。
 
-### 6. ⚖️ 综合研判与风险提示
+"""
+
+_SYSTEM_PROMPT_TAIL = """### 6. ⚖️ 综合研判与风险提示
 2-3 段,只做客观描述,不下操作结论:
 - 客观描述该股当前所处的技术阶段(底部企稳 / 上升途中 / 高位震荡 / 下跌趋势)
 - 客观评估当前价位的"空间不对称性"(距上方压力位与下方支撑位的距离),不评价好坏
@@ -189,6 +208,20 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 报告末尾附一行:"> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,仅客观陈述技术状态,不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。"
 
 现在请基于下方数据进行分析。"""
+
+
+def _build_system_prompt(web_search: bool) -> str:
+    """按是否启用联网搜索拼装系统提示词(第 5 节双变体)。
+
+    web_search 取值须与实际请求参数一致(ai_provider.web_search_supported),
+    否则提示词声称的能力与模型真实能力矛盾, 会诱发编造"搜索结果"。
+    """
+    section = _NEWS_SECTION_SEARCH if web_search else _NEWS_SECTION_OFFLINE
+    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL
+
+
+# 兼容旧引用/测试: 默认无联网变体
+_SYSTEM_PROMPT = _build_system_prompt(False)
 
 
 # ================================================================
@@ -234,11 +267,18 @@ def _build_user_prompt(
     asset_type: str = "stock",
     paper_positions: list[dict] | None = None,
     raw_close: float | None = None,
+    web_search: bool = False,
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
     asset_type 用于区分无财务数据时的文案:指数/ETF 无财务是常态,不走 Free 文案。
+    web_search 与系统提示词第 5 节变体保持一致(联网时消息面提示改为结合搜索结果)。
     """
+    news_hint = (
+        "消息面维度可结合联网检索到的相关新闻/公告与价量异动交叉验证。"
+        if web_search
+        else "消息面维度基于价量异动推断即可。"
+    )
     parts: list[str] = [
         f"标的标准代码: {symbol}",
         f"关键价位概览: {summarize_levels(levels, close)}",
@@ -264,7 +304,7 @@ def _build_user_prompt(
             "",
             "(该标的为指数: 无财务、股本与涨跌停数据。请按系统提示词第 4 节的说明,"
             "在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据;"
-            "消息面维度基于价量异动推断即可。)",
+            f"{news_hint})",
         ])
     elif asset_type == "etf":
         parts.extend([
@@ -272,7 +312,7 @@ def _build_user_prompt(
             "(该标的为 ETF: 场内基金无上市公司财务报表、股本与涨跌停口径。"
             "请按系统提示词第 4 节的说明,在基本面/财务面维度明确这是 ETF 常态,"
             "不要编造公司财务数字,也不要写成「财务接入中」;"
-            "消息面维度基于价量异动推断即可。)",
+            f"{news_hint})",
         ])
     else:
         parts.extend([
@@ -361,7 +401,10 @@ async def analyze_stock_stream(
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)
     try:
-        from app.services.ai_provider import stream_ai_text
+        from app.services.ai_provider import stream_ai_text, web_search_supported
+
+        # 联网搜索判定须与请求参数同源: 提示词第 5 节变体与 enable_search 保持一致
+        search_on = web_search_supported()
 
         # 虚拟持仓上下文 (V3): 逐账户 (V2 多账户) 收集持有该标的的持仓注入
         # (任何异常静默跳过, 不影响分析)。
@@ -380,13 +423,13 @@ async def analyze_stock_stream(
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
-                                         raw_close=raw_close)
+                                         raw_close=raw_close, web_search=search_on)
         # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
         user_content = user_prompt + length_hint
         got_content = False
         async for delta in stream_ai_text(
             [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _build_system_prompt(search_on)},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.5,
@@ -394,6 +437,9 @@ async def analyze_stock_stream(
             # 预算, 固定上限会把正文挤光(实测 4500 全被推理吃掉 → 正文 0 字)。
             max_tokens=None,
             prefer_final_answer=True,
+            # 联网搜索实测可达 200s+ (冷门个股检索慢), 启用时放宽超时,
+            # 否则模型在默认 180s 预算内放弃搜索 → "未检索到相关消息"。
+            timeout=420.0 if search_on else 180.0,
         ):
             got_content = True
             yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
