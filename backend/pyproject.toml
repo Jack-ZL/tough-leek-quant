@@ -42,6 +42,8 @@ dependencies = [
     # Watchlist screenshot OCR (Tesseract)
     "pytesseract>=0.3.10",
     "Pillow>=10.0",
+    # 钉钉智能机器人 Stream 模式官方 SDK (长连接通道, 与群推送 Webhook 并列)
+    "dingtalk-stream>=0.10.0",
 ]
 
 [project.optional-dependencies]

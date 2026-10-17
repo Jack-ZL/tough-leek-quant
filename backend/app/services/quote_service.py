@@ -1680,11 +1680,13 @@ class QuoteService:
             feishu_url = preferences.get_feishu_webhook_url()
             feishu_secret = preferences.get_feishu_webhook_secret()
             wecom_url = preferences.get_wecom_webhook_url()
+            dingtalk_url = preferences.get_dingtalk_webhook_url()
+            dingtalk_secret = preferences.get_dingtalk_webhook_secret()
             custom_url = preferences.get_custom_webhook_url()
             custom_secret = secrets_store.get_custom_webhook_secret()
             email_config = preferences.get_email_smtp_config()
             email_password = secrets_store.get_email_smtp_password()
-            if not any((feishu_url, wecom_url, custom_url, email_adapter.is_configured(email_config))):
+            if not any((feishu_url, wecom_url, dingtalk_url, custom_url, email_adapter.is_configured(email_config))):
                 return
 
             # 反查规则, 过滤出启用推送的事件
@@ -1715,6 +1717,10 @@ class QuoteService:
                     enqueued += 1
                 if wecom_url and "wecom" in channels:
                     _WEBHOOK_EXECUTOR.submit(webhook_adapter.send_wecom, wecom_url, title, body)
+                    enqueued += 1
+                if dingtalk_url and "dingtalk" in channels:
+                    _WEBHOOK_EXECUTOR.submit(
+                        webhook_adapter.send_dingtalk, dingtalk_url, title, body, dingtalk_secret)
                     enqueued += 1
                 if custom_url and "custom" in channels:
                     _WEBHOOK_EXECUTOR.submit(
@@ -1754,9 +1760,11 @@ class QuoteService:
             feishu_url = preferences.get_feishu_webhook_url()
             feishu_secret = preferences.get_feishu_webhook_secret()
             wecom_url = preferences.get_wecom_webhook_url()
+            dingtalk_url = preferences.get_dingtalk_webhook_url()
+            dingtalk_secret = preferences.get_dingtalk_webhook_secret()
             custom_url = preferences.get_custom_webhook_url()
             custom_secret = secrets_store.get_custom_webhook_secret()
-            if not any((feishu_url, wecom_url, custom_url)):
+            if not any((feishu_url, wecom_url, dingtalk_url, custom_url)):
                 return
 
             enqueued = 0
@@ -1768,6 +1776,10 @@ class QuoteService:
                     enqueued += 1
                 if wecom_url:
                     _WEBHOOK_EXECUTOR.submit(webhook_adapter.send_wecom, wecom_url, "模拟盘成交", body)
+                    enqueued += 1
+                if dingtalk_url:
+                    _WEBHOOK_EXECUTOR.submit(
+                        webhook_adapter.send_dingtalk, dingtalk_url, "模拟盘成交", body, dingtalk_secret)
                     enqueued += 1
                 if custom_url:
                     _WEBHOOK_EXECUTOR.submit(

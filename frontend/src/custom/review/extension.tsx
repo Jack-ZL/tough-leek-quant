@@ -109,6 +109,7 @@ export function ReviewPage() {
   const reviewSched = prefs.data?.review_schedule ?? { enabled: false, hour: 15, minute: 10 }
   const feishuConfigured = !!(prefs.data?.feishu_webhook_url)
   const wecomConfigured = !!(prefs.data?.wecom_webhook_url)
+  const dingtalkConfigured = !!(prefs.data?.dingtalk_webhook_url)
   const customConfigured = !!(prefs.data?.custom_webhook_url)
   const emailConfigured = !!(
     prefs.data?.email_smtp_config?.host
@@ -494,6 +495,27 @@ export function ReviewPage() {
                       {wecomConfigured ? '已配置' : '未配置'}
                     </span>
                   </button>
+                  {/* 钉钉(可用, 多选) */}
+                  <button
+                    type="button"
+                    disabled={pushMut.isPending}
+                    onClick={() => togglePushChannel('dingtalk')}
+                    className={cn(
+                      'flex w-full items-center gap-2 rounded-btn border px-2.5 py-1.5 text-left transition-colors disabled:opacity-50',
+                      reviewPushChannels.includes('dingtalk')
+                        ? 'border-accent/40 bg-accent/10'
+                        : 'border-border/60 bg-base/40 hover:bg-base/60',
+                    )}
+                  >
+                    <span className={cn('flex h-3 w-3 shrink-0 items-center justify-center rounded border', reviewPushChannels.includes('dingtalk') ? 'border-accent bg-accent text-white' : 'border-border')}>
+                      {reviewPushChannels.includes('dingtalk') && <Check className="h-2.5 w-2.5" />}
+                    </span>
+                    <span className="text-[11px] text-foreground">钉钉</span>
+                    <span className="text-[9px] text-muted">群推送 Webhook</span>
+                    <span className={cn('ml-auto text-[9px]', dingtalkConfigured ? 'text-emerald-500' : 'text-warning')}>
+                      {dingtalkConfigured ? '已配置' : '未配置'}
+                    </span>
+                  </button>
                   <button
                     type="button"
                     disabled={pushMut.isPending}
@@ -573,6 +595,7 @@ export function ReviewPage() {
                   {(
                     (reviewPushChannels.includes('feishu') && !feishuConfigured)
                     || (reviewPushChannels.includes('wecom') && !wecomConfigured)
+                    || (reviewPushChannels.includes('dingtalk') && !dingtalkConfigured)
                     || (reviewPushChannels.includes('custom') && !customConfigured)
                     || (reviewPushChannels.includes('email') && !emailConfigured)
                   ) && (

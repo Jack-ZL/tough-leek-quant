@@ -1058,7 +1058,7 @@ export interface MonitorRule {
   message: string
   webhook_url?: string
   webhook_enabled?: boolean  // 兼容老规则, 已由 webhook_channels 取代
-  webhook_channels?: string[]  // 合法值: feishu | wecom | custom | email
+  webhook_channels?: string[]  // 合法值: feishu | wecom | dingtalk | custom | email
   created_at?: string
   runtime_warning?: string
   // ladder 专属: 封单监控; volume_delta 复用 metric 表示阈值口径 (volume=手数, amount=金额)
@@ -2086,6 +2086,15 @@ export interface WecomBotStatus {
   last_error: string
 }
 
+export interface DingtalkBotStatus {
+  enabled: boolean
+  running: boolean
+  connected: boolean
+  bot_id_configured: boolean
+  secret_configured: boolean
+  last_error: string
+}
+
 /** API Token 记录 (管理视图, 不含哈希) */
 export interface ApiTokenRecord {
   id: string
@@ -2151,6 +2160,11 @@ export interface Preferences {
   wecom_bot_id?: string
   wecom_bot_secret?: string
   wecom_bot_enabled?: boolean
+  dingtalk_webhook_url?: string
+  dingtalk_webhook_secret?: string
+  dingtalk_bot_id?: string
+  dingtalk_bot_secret?: string
+  dingtalk_bot_enabled?: boolean
   webhook_enabled_default?: boolean
   webhook_default_channels?: string[]
   nav_order: string[]
@@ -2634,6 +2648,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ url }),
     }),
+  updateDingtalkWebhook: (url: string, secret?: string) =>
+    request<{ dingtalk_webhook_url: string; dingtalk_webhook_secret: string }>('/api/settings/preferences/dingtalk-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
+    }),
   updateCustomWebhook: (url: string, secret?: string) =>
     request<{ custom_webhook_url: string; custom_webhook_secret_set: boolean }>('/api/settings/preferences/custom-webhook', {
       method: 'PUT',
@@ -2644,7 +2663,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
     }),
-  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'custom' | 'email') =>
+  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
     request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
       method: 'POST',
       body: JSON.stringify({ channel }),
@@ -2661,6 +2680,21 @@ export const api = {
     }),
   toggleWecomBot: (enabled: boolean) =>
     request<{ wecom_bot_enabled: boolean; wecom_bot_status: WecomBotStatus }>('/api/settings/preferences/wecom-bot-toggle', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
+    request<{
+      dingtalk_bot_id: string
+      dingtalk_bot_secret: string
+      dingtalk_bot_enabled: boolean
+      dingtalk_bot_status: DingtalkBotStatus
+    }>('/api/settings/preferences/dingtalk-bot', {
+      method: 'PUT',
+      body: JSON.stringify({ bot_id: botId, secret, enabled }),
+    }),
+  toggleDingtalkBot: (enabled: boolean) =>
+    request<{ dingtalk_bot_enabled: boolean; dingtalk_bot_status: DingtalkBotStatus }>('/api/settings/preferences/dingtalk-bot-toggle', {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
