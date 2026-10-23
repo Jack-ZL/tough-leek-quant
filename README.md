@@ -427,6 +427,7 @@ docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/t
 本项目每次推送都由 GitHub Actions 自动构建多架构镜像并发布到 GHCR,拿来即用:
 
 - 需要配置时:从 [.env.example](./.env.example) 复制出 `.env`,命令里加 `--env-file .env`。
+- Linux `docker run` 部署:容器内要通过 `host.docker.internal` 访问宿主机服务(如自定义数据源)时,命令需加 `--add-host=host.docker.internal:host-gateway`;升级重建容器时务必保留 `-v ${PWD}/data:/app/data` 挂载并提前备份 `data/`,否则容器层数据会随旧容器静默丢失(详见 [docs/deployment.md](./docs/deployment.md))。
 - 跑自己改过的代码:fork 后到仓库 **Actions** 页启用 workflow(fork 默认禁用),构建出的 `ghcr.io/<你的用户名>/tick-stock-panel` 用法相同。
 - 想用 compose 编排(挂载 `.env` / `tiers.yaml`):参考 [docker-compose.yml](./docker-compose.yml),把 `build:` 段换成 `image: ghcr.io/shy3130/tick-stock-panel:latest`。
 - 现成镜像默认不含老 CPU 兼容内核(体积考虑),有此需求请用方式 B 自构建,详见 [docs/deployment.md](./docs/deployment.md)。
@@ -494,7 +495,7 @@ Windows 启动器的可用参数:
 ```
 
 - **停止请用 Ctrl-C**,不要点窗口右上角的 X —— 只有 Ctrl-C 会走到清理逻辑,结束整棵进程树。
-- 子进程输出重定向到 `data/logs/{backend,frontend}.{out,err}.log`,启动器本身只做有界 tail,内存占用恒定。排查问题优先看这几个文件,后端的 `data/backend.log` 仍会单独轮转。
+- 子进程输出重定向到 `data/logs/{backend,frontend}.{out,err}.log`,启动器本身只做有界 tail,内存占用恒定。排查问题优先看这几个文件,后端自身的 `data/logs/backend.log` 会单独按大小轮转 (10MB×3)。
 - 启动前会检测同端口是否已有本项目后端:有则直接拒绝启动并打印 PID,避免多开叠加内存(每个实例常驻 1GB 以上)。换端口调试的实例不会被误杀。
 
 ### 方式 E:桌面客户端(Windows / macOS)
@@ -550,7 +551,7 @@ POLARS_MAX_THREADS=2        # 主要收益项: 用约 40% 的构建耗时换 500
     Select-Object ProcessId, ParentProcessId, CommandLine
   ```
 
-- **确认预热规模**:`data/backend.log` 中的 `enriched 历史缓存: N rows` 表示本次预热实际载入的行数,N 越大占用越高。历史数据较少时(例如首次只同步了几十天)内存会明显低于上表。
+- **确认预热规模**:`data/logs/backend.log` 中的 `enriched 历史缓存: N rows` 表示本次预热实际载入的行数,N 越大占用越高。历史数据较少时(例如首次只同步了几十天)内存会明显低于上表。
 
 ### 跑起来后的第一次使用
 

@@ -104,61 +104,61 @@ function RouteFallback() {
 }
 
 export const router = createBrowserRouter([
-	{
-		path: '/onboarding',
-		element: (
-			<Suspense fallback={<RouteFallback />}>
-				<Onboarding />
-			</Suspense>
-		),
-	},
-	{
-		path: '/login',
-		element: (
-			<Suspense fallback={<RouteFallback />}>
-				<Auth />
-			</Suspense>
-		),
-	},
-	{
-		path: '/',
-		element: (
-			<OnboardingGuard>
-				<Layout />
-			</OnboardingGuard>
-		),
-		children: [
-			{ index: true, element: <Dashboard /> },
-			{ path: 'overview', element: <Navigate to="/" replace /> },
-			{ path: 'analysis', element: <Navigate to="/settings?tab=ext-pages" replace /> },
-			{ path: 'analysis/:menuId', element: <AnalysisDetail /> },
-			{ path: 'watchlist', element: <Watchlist /> },
-			{ path: 'screener', element: <Screener /> },
-			{ path: 'backtest', element: <Backtest /> },
-			{ path: 'factors', element: <Factors /> },
-			{ path: 'mining', element: <MiningRedirect /> },
-			{ path: 'data', element: <Data /> },
-			{ path: 'indices', element: <Indices /> },
-			{ path: 'regime', element: <Regime /> },
-			{ path: 'branding', element: <Branding /> },
-			{ path: 'settings', element: <Settings /> },
-			// 隐藏路由：开发者工具（不暴露在菜单，仅供调试）
-			{ path: 'dev', element: <Dev /> },
-			// 旧路由兼容重定向
-			{ path: 'settings/keys', element: <Navigate to="/settings?tab=data-sources" replace /> },
-			{ path: 'settings/ai', element: <Navigate to="/settings?tab=ai" replace /> },
-			{ path: 'settings/queries', element: <Navigate to="/settings?tab=queries" replace /> },
-			...frontendExtensionRoutes.map(route => {
-				const ExtensionPage = route.component
-				return {
-					path: route.path.slice(1),
-					element: (
-						<ExtensionBoundary extensionId={route.extensionId}>
-							<ExtensionPage />
-						</ExtensionBoundary>
-					),
-				}
-			}),
-		],
-	},
+  {
+    path: '/onboarding',
+    element: (
+      <Suspense fallback={<RouteFallback />}>
+        <Onboarding />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/login',
+    element: (
+      <Suspense fallback={<RouteFallback />}>
+        <Auth />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/',
+    element: (
+      <OnboardingGuard>
+        <Layout />
+      </OnboardingGuard>
+    ),
+    children: [
+      { index: true, element: <Dashboard /> },
+      { path: 'overview', element: <Navigate to="/" replace /> },
+      { path: 'analysis', element: <Navigate to="/settings?tab=pages&section=ext-pages" replace /> },
+      { path: 'analysis/:menuId', element: <AnalysisDetail /> },
+      { path: 'watchlist', element: <Watchlist /> },
+      { path: 'screener', element: <Screener /> },
+      { path: 'backtest', element: <Backtest /> },
+      { path: 'factors', element: <Factors /> },
+      { path: 'mining', element: <MiningRedirect /> },
+      { path: 'data', element: <Data /> },
+      { path: 'indices', element: <Indices /> },
+    { path: 'regime', element: <Regime /> },
+      { path: 'branding', element: <Branding /> },
+      { path: 'settings', element: <Settings /> },
+      // 隐藏路由：开发者工具（不暴露在菜单，仅供调试）
+      { path: 'dev', element: <Dev /> },
+      // 旧路由兼容重定向
+      { path: 'settings/keys', element: <Navigate to="/settings?tab=data-sources" replace /> },
+      { path: 'settings/ai', element: <Navigate to="/settings?tab=ai" replace /> },
+      { path: 'settings/queries', element: <Navigate to="/settings?tab=queries" replace /> },
+      ...frontendExtensionRoutes.map(route => {
+        const ExtensionPage = route.component
+        return {
+          path: route.path.slice(1),
+          element: (
+            <ExtensionBoundary extensionId={route.extensionId}>
+              <ExtensionPage />
+            </ExtensionBoundary>
+          ),
+        }
+      }),
+    ],
+  },
 ])
