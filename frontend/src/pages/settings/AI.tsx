@@ -1154,8 +1154,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 								</div>
 							</section>
 
-							{/* 操作卡: 安全说明 + 保存/清空 + 配置文件入口。
-		       独立成卡让「保存」始终在视觉收尾处, 不必滚过长表单才找到。 */}
+							{/* 操作卡: 安全说明 + 保存/清空 + 配置文件入口。独立成卡让「保存」始终在视觉收尾处, 不必滚过长表单才找到。 */}
 							<section className="overflow-hidden rounded-card border border-border bg-surface">
 								<div className="flex flex-col gap-3 px-5 py-4">
 									{isCodexProvider && (
