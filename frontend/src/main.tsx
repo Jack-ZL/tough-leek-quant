@@ -28,62 +28,62 @@ import './index.css'
 // api.ts 的 request() 已对 401 静默 (不弹 toast), 这里统一负责跳转。
 // 排除 /login 自身的请求, 避免登录页请求失败又跳登录形成死循环。
 const _redirectToLogin = (() => {
-  let redirecting = false
-  return (err: unknown) => {
-    if (redirecting) return
-    if (!(err instanceof Error)) return
-    const msg = err.message || ''
-    // 401 (未登录/会话过期) → 跳登录页
-    // 403 未初始化 (面板未设密码, 公网访问) → 也跳登录页(显示设密码提示)
-    const is401 = msg.includes('未登录') || msg.includes('会话已过期') || msg.includes('401')
-    const isNotInit = msg.includes('尚未初始化访问密码') || msg.includes('NOT_INITIALIZED')
-    if (!is401 && !isNotInit) return
-    // 已在登录页则不跳(避免死循环)
-    if (window.location.pathname === '/login') return
-    redirecting = true
-    const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-    window.location.href = `/login?redirect=${redirect}`
-  }
+	let redirecting = false
+	return (err: unknown) => {
+		if (redirecting) return
+		if (!(err instanceof Error)) return
+		const msg = err.message || ''
+		// 401 (未登录/会话过期) → 跳登录页
+		// 403 未初始化 (面板未设密码, 公网访问) → 也跳登录页(显示设密码提示)
+		const is401 = msg.includes('未登录') || msg.includes('会话已过期') || msg.includes('401')
+		const isNotInit = msg.includes('尚未初始化访问密码') || msg.includes('NOT_INITIALIZED')
+		if (!is401 && !isNotInit) return
+		// 已在登录页则不跳(避免死循环)
+		if (window.location.pathname === '/login') return
+		redirecting = true
+		const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+		window.location.href = `/login?redirect=${redirect}`
+	}
 })()
 
 const queryClient = new QueryClient({
-  queryCache: new QueryCache({
-    onError: (err) => _redirectToLogin(err),
-  }),
-  defaultOptions: {
-    queries: {
-      staleTime: 5_000,           // 5s 内复用,与 §4.2 Repository 不变量一致
-      refetchOnWindowFocus: false,
-    },
-    mutations: {
-      onError: (err) => _redirectToLogin(err),
-    },
-  },
+	queryCache: new QueryCache({
+		onError: (err) => _redirectToLogin(err),
+	}),
+	defaultOptions: {
+		queries: {
+			staleTime: 5_000,           // 5s 内复用,与 §4.2 Repository 不变量一致
+			refetchOnWindowFocus: false,
+		},
+		mutations: {
+			onError: (err) => _redirectToLogin(err),
+		},
+	},
 })
 
 async function bootstrap() {
-  await initializeFrontendExtensions()
-  // 页面插件能力桥: 运行时页面插件经 shim 读取宿主 api/QK/cn/format
-  installTspExtBridge({ api, QK, cn, format })
-  // 运行时页面插件: 必须在 router 模块求值(finalize + 建路由表)之前挂载
-  await loadRuntimePageExtensions()
-  const { router } = await import('./router')
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <PersistQueryClientProvider
-        client={queryClient}
-        persistOptions={{
-          persister: createAppPersister(),
-          buster: PERSIST_BUSTER,
-          // 恢复超过 1 天的缓存直接丢弃 (慢变族一天内必然后台刷新过)
-          maxAge: 24 * 60 * 60 * 1000,
-          dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
-        }}
-      >
-        <RouterProvider router={router} />
-      </PersistQueryClientProvider>
-    </React.StrictMode>,
-  )
+	await initializeFrontendExtensions()
+	// 页面插件能力桥: 运行时页面插件经 shim 读取宿主 api/QK/cn/format
+	installTspExtBridge({ api, QK, cn, format })
+	// 运行时页面插件: 必须在 router 模块求值(finalize + 建路由表)之前挂载
+	await loadRuntimePageExtensions()
+	const { router } = await import('./router')
+	ReactDOM.createRoot(document.getElementById('root')!).render(
+		<React.StrictMode>
+			<PersistQueryClientProvider
+				client={queryClient}
+				persistOptions={{
+					persister: createAppPersister(),
+					buster: PERSIST_BUSTER,
+					// 恢复超过 1 天的缓存直接丢弃 (慢变族一天内必然后台刷新过)
+					maxAge: 24 * 60 * 60 * 1000,
+					dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+				}}
+			>
+				<RouterProvider router={router} />
+			</PersistQueryClientProvider>
+		</React.StrictMode>,
+	)
 }
 
 void bootstrap()
