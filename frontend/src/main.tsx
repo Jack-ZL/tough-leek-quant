@@ -64,33 +64,35 @@ const queryClient = new QueryClient({
 })
 
 async function bootstrap() {
-  // 界面偏好回填: 桌面版启动端口从 3018 起递增, 端口一变 origin 就变, 只存
-  // localStorage 的设置 (通知/声效/语音/外链模板/缩放) 会读不到。后端保存权威
-  // 副本, 这里异步回填并重放一次缩放 (首帧缩放已由 index.html 内联脚本应用)。
-  // 不 await: 网络慢时不能拖住首屏, 回填完成后的缩放重放会自行生效。
-  void hydrateUiPrefs().then(() => { applyPageZoom(getPageZoom()) })
-  await initializeFrontendExtensions()
-  // 页面插件能力桥: 运行时页面插件经 shim 读取宿主 api/QK/cn/format
-  installTspExtBridge({ api, QK, cn, format })
-  // 运行时页面插件: 必须在 router 模块求值(finalize + 建路由表)之前挂载
-  await loadRuntimePageExtensions()
-  const { router } = await import('./router')
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <PersistQueryClientProvider
-        client={queryClient}
-        persistOptions={{
-          persister: createAppPersister(),
-          buster: PERSIST_BUSTER,
-          // 恢复超过 1 天的缓存直接丢弃 (慢变族一天内必然后台刷新过)
-          maxAge: 24 * 60 * 60 * 1000,
-          dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
-        }}
-      >
-        <RouterProvider router={router} />
-      </PersistQueryClientProvider>
-    </React.StrictMode>,
-  )
+	// 界面偏好回填: 桌面版启动端口从 3018 起递增, 端口一变 origin 就变, 只存
+	// localStorage 的设置 (通知/声效/语音/外链模板/缩放) 会读不到。后端保存权威
+	// 副本, 这里异步回填并重放一次缩放 (首帧缩放已由 index.html 内联脚本应用)。
+	// 不 await: 网络慢时不能拖住首屏, 回填完成后的缩放重放会自行生效。
+	void hydrateUiPrefs().then(() => {
+		applyPageZoom(getPageZoom())
+	})
+	await initializeFrontendExtensions()
+	// 页面插件能力桥: 运行时页面插件经 shim 读取宿主 api/QK/cn/format
+	installTspExtBridge({ api, QK, cn, format })
+	// 运行时页面插件: 必须在 router 模块求值(finalize + 建路由表)之前挂载
+	await loadRuntimePageExtensions()
+	const { router } = await import('./router')
+	ReactDOM.createRoot(document.getElementById('root')!).render(
+		<React.StrictMode>
+			<PersistQueryClientProvider
+				client={queryClient}
+				persistOptions={{
+					persister: createAppPersister(),
+					buster: PERSIST_BUSTER,
+					// 恢复超过 1 天的缓存直接丢弃 (慢变族一天内必然后台刷新过)
+					maxAge: 24 * 60 * 60 * 1000,
+					dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
+				}}
+			>
+				<RouterProvider router={router} />
+			</PersistQueryClientProvider>
+		</React.StrictMode>,
+	)
 }
 
 void bootstrap()
