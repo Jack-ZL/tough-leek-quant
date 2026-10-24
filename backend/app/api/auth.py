@@ -2,14 +2,15 @@
 
 端点:
   GET  /api/auth/status        — 是否已设密码、当前会话是否有效
-  POST /api/auth/setup         — 首次设置密码(仅限本机/内网, 防公网抢占)
+  POST /api/auth/setup         — 首次设置密码(仅限本机回环, 防公网/内网抢占)
   POST /api/auth/login         — 登录(密码 → 会话 token, 含限流)
   POST /api/auth/logout        — 注销当前会话
   POST /api/auth/change-password — 改密码(需已登录)
 
 安全:
-  - setup 端点只接受本机/内网请求(request.client.host), 公网请求 403。
-    否则黑客可比用户更早扫到域名, 抢先设密码, 反客为主。
+  - setup 端点只接受本机回环请求(直连 peer 与 XFF 解析结果都须为回环),
+    内网/公网请求 403。否则同一 Wi-Fi 的设备(或抢先扫到域名的黑客)可
+    抢先设密码, 反客为主。
   - login 限流: 同一来源 IP 连续失败 5 次, 锁 5 分钟(内存计数)。
   - 会话 token 通过 HttpOnly cookie 下发, 前端无需手动管理。
 """
@@ -25,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from app.services import auth
 from app.services.api_gateway import is_local_network as _is_local_network
+from app.services.api_gateway import is_loopback as _is_loopback
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,19 @@ def _client_ip(request: Request) -> str:
     if xff and direct and _is_local_network(direct):
         return xff.split(",")[0].strip()
     return direct or "unknown"
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """请求是否来自本机回环 — 「未设密码」闸门与 /setup 的判据。
+
+    要求直连 peer 与 XFF 解析结果**都**是回环:
+    - 只看解析结果不行: 内网设备的直连 peer 是私网地址, _client_ip 会采信
+      其伪造的 `X-Forwarded-For: 127.0.0.1`, 从而冒充本机绕过闸门。
+    - 只看直连 peer 也不行: 经同机反向代理转发的公网请求, 直连 peer 是
+      127.0.0.1(代理本身), 真实客户端在公网。
+    """
+    direct = request.client.host if request.client else ""
+    return _is_loopback(direct) and _is_loopback(_client_ip(request))
 
 
 def _check_login_rate_limit(ip: str) -> None:
@@ -122,17 +137,18 @@ def auth_status(request: Request) -> dict:
 
 @router.post("/setup")
 def setup_password(req: PasswordIn, request: Request) -> dict:
-    """首次设置访问密码。仅限本机/内网请求(防公网抢占)。
+    """首次设置访问密码。仅限本机回环请求(防公网/内网抢占)。
 
     若已设置过密码, 返回 409(改密码走 /change-password)。
     """
-    # 关键: 限制只有服务器主人(本机/内网)能设密码
+    # 关键: 限制只有服务器主人(本机回环)能设密码。内网设备不放行 —
+    # 否则同一 Wi-Fi 的攻击者可抢先设密码接管面板, 或伪造 XFF 冒充本机。
     client_ip = _client_ip(request)
-    if not _is_local_network(client_ip):
-        logger.warning("setup rejected from non-local ip: %s", client_ip)
+    if not _is_loopback_request(request):
+        logger.warning("setup rejected from non-loopback ip: %s", client_ip)
         raise HTTPException(
             status_code=403,
-            detail="首次设置密码仅允许本机或内网访问,请通过 SSH/本地浏览器操作",
+            detail="首次设置密码仅允许本机(回环地址)访问,请通过 SSH 隧道或服务器本地浏览器操作",
         )
 
     if auth.is_configured():

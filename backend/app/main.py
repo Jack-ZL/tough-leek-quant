@@ -515,12 +515,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: 允许局域网访问 (自托管场景, 放开所有来源)
-# 注: allow_credentials=True 与 allow_origins=['*'] 不能共存 (浏览器规范),
-# 本项目认证走 header (API Key), 不依赖 cookie, 故关闭 credentials 换取通配来源。
+# CORS: 仅允许本机来源 (前端与 API 同源部署, 跨域只发生在本地开发场景,
+# 如 Vite dev server)。此前的 allow_origins=["*"] 会让用户浏览的任意网页
+# 都能跨域读取 API 响应 — 在未设密码状态下可直接窃取明文密钥。
+# 注: allow_credentials=True 与通配来源不能共存 (浏览器规范), 会话走
+# SameSite=Lax cookie, 跨站请求本就不携带, 关闭 credentials 不影响同源前端。
+_LOCAL_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=_LOCAL_ORIGIN_RE,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -531,8 +534,10 @@ app.add_middleware(
 # 访问认证中间件
 # ================================================================
 # 拦截所有 /api/ 请求, 三种状态:
-#   1. 未设密码 + 本机/内网 → 放行(让本机用户访问面板 + 调 /api/auth/setup 设密码)
-#   2. 未设密码 + 公网       → 拒绝(403, 防裸奔也防抢占; 引导本机设密码)
+#   1. 未设密码 + 本机回环 → 放行(让服务器主人访问面板 + 调 /api/auth/setup 设密码)
+#   2. 未设密码 + 内网/公网 → 拒绝(403, 防裸奔也防抢占; 引导本机设密码)
+#      内网不放行: 0.0.0.0 监听时同一 Wi-Fi 的任意设备都能到达, 而 API 含
+#      明文密钥回显、SSRF、策略代码执行等端点, 不能以"私网 IP"为可信依据。
 #   3. 已设密码              → 检查 session, 无效则 401(前端跳登录)
 # 白名单: /api/auth/* (设密码/登录本身)、/health 等探活。
 _AUTH_WHITELIST_PREFIX = ("/api/auth/",)
@@ -590,14 +595,16 @@ async def auth_middleware(request: Request, call_next):
     from app.services import auth as auth_service
     # 情况 1+2: 未设密码
     if not auth_service.is_configured():
-        # 本机/内网 → 放行(服务器主人可访问, 并去 /login 设密码)
-        if auth_api._is_local_network(auth_api._client_ip(request)):
+        # 本机回环 → 放行(服务器主人可访问, 并去 /login 设密码)
+        if auth_api._is_loopback_request(request):
             return await call_next(request)
-        # 公网 → 拒绝。不裸奔, 也不给公网设密码的机会(防抢占)
+        # 内网/公网 → 拒绝。不裸奔, 也不给外部设密码的机会(防抢占)。
+        # 内网不放行: 同一 Wi-Fi 的任意设备都能到达 0.0.0.0 监听, 且
+        # _client_ip 对私网直连采信 XFF, 伪造 X-Forwarded-For 即可冒充本机。
         return JSONResponse(
             status_code=403,
             content={
-                "detail": "面板尚未初始化访问密码,请通过 SSH/本机浏览器访问以设置密码",
+                "detail": "面板尚未初始化访问密码,请通过 SSH 隧道/本机浏览器访问以设置密码",
                 "code": "NOT_INITIALIZED",
             },
         )
