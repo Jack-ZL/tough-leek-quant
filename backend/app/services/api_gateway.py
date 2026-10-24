@@ -109,6 +109,25 @@ def is_local_network(host: str | None) -> bool:
     return False
 
 
+def is_loopback(host: str | None) -> bool:
+    """是否回环地址: 127.0.0.0/8、::1、localhost。
+
+    比 is_local_network 严格 — 不含 RFC1918 内网段。用于「未设密码」闸门:
+    内网设备不应等同于本机可信 (同一 Wi-Fi 的任意设备都能到达 0.0.0.0 监听)。
+    """
+    if not host:
+        return False
+    if host in ("::1", "localhost"):
+        return True
+    if host.startswith("127."):
+        try:
+            octets = [int(p) for p in host.split(".")]
+            return len(octets) == 4 and all(0 <= o <= 255 for o in octets)
+        except ValueError:
+            return False
+    return False
+
+
 def token_channel_local_only() -> bool:
     """Token 通道是否仅限本机/内网调用 (env API_TOKEN_LOCAL_ONLY, 默认开)。
 
