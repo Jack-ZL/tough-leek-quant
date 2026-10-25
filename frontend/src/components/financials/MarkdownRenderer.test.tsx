@@ -73,3 +73,23 @@ it('narrow tables (<=4 cols) keep fixed layout with breakable cells', async () =
   expect(html).toContain('break-words')
   expect(html).not.toContain('overflow-x-auto')
 })
+
+it('renders number-gate mark 〖…〗 as amber badge with number still visible', async () => {
+  const html = await renderToHtml('目标价 〖88.8元※〗，涨幅 +2.35%。')
+  // 问题数字保留可见 → 警示色徽章 + 悬停说明, 括号标记本身不渲染
+  expect(html).toContain('88.8元')
+  expect(html).toContain('text-amber-500')
+  expect(html).toContain('数字忠实度闸门')
+  expect(html).not.toContain('〖')
+  // 正常有出处的涨跌幅仍照常着色, 不受影响
+  expect(html).toContain('text-bull')
+})
+
+it('merges consecutive quote lines (disclaimer + gate footer) into one blockquote', async () => {
+  const html = await renderToHtml(
+    '> ⚠️ 本内容由 AI 生成，入市需谨慎。\n' +
+    '> ※ 另有 1 处数字在本轮提供的数据里找不到出处。',
+  )
+  expect(html.match(/<blockquote/g)?.length).toBe(1)
+  expect(html).toContain('另有 1 处')
+})

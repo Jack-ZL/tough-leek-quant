@@ -859,6 +859,7 @@ def get_preferences() -> dict:
         "strategy_monitor_enabled": preferences.get_strategy_monitor_enabled(),
         "strategy_monitor_ids": preferences.get_strategy_monitor_ids(),
         "system_notify_enabled": preferences.get_system_notify_enabled(),
+        "ai_number_gate_enabled": preferences.get_ai_number_gate_enabled(),
         "feishu_webhook_url": preferences.get_feishu_webhook_url(),
         "feishu_webhook_secret": preferences.get_feishu_webhook_secret(),
         "wecom_webhook_url": preferences.get_wecom_webhook_url(),
@@ -1600,6 +1601,22 @@ class QuoteIntervalIn(BaseModel):
 
 class SystemNotifyPrefsIn(BaseModel):
     enabled: bool
+
+
+class AiNumberGatePrefsIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/ai-number-gate")
+def update_ai_number_gate(req: AiNumberGatePrefsIn) -> dict:
+    """AI 输出数字忠实度闸门开关 (docs/ai-number-fidelity-plan.md)。
+
+    开启后 AI 回答中无出处的数字被标为「〖…〗」高亮提示 (数字保留可见)。
+    纯偏好无副作用; ai_number_gate 在每次流式生成时读取, 即时生效。
+    """
+    from app.services import preferences
+    saved = preferences.set_ai_number_gate_enabled(req.enabled)
+    return {"ai_number_gate_enabled": saved}
 
 
 @router.put("/preferences/system-notify")

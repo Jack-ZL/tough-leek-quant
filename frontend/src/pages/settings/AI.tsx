@@ -6,7 +6,7 @@ import {
 	Terminal, ChevronDown, Sparkles, Atom, Waves, Cloud, Gem, Moon,
 	Plus, CheckCircle2, Zap,
 } from 'lucide-react'
-import { useSettings } from '@/lib/useSharedQueries'
+import { useSettings, usePreferences } from '@/lib/useSharedQueries'
 import { api, type AiProfile, type SettingsState, type SponsorModelItem } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { AnchorWrap } from '@/lib/useCardFlash'
@@ -266,6 +266,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 	const qc = useQueryClient()
 	const settings = useSettings()
 	const s = settings.data
+	// 数字忠实度闸门开关存在 preferences (与 system_notify 同族), 不在 SettingsState
+	const prefs = usePreferences()
 
 	const [provider, setProvider] = useState(OPENAI_COMPAT_PROVIDER)
 	const [protocol, setProtocol] = useState('chat_completions')
@@ -393,6 +395,16 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		if (userEditedRef.current) return
 		syncFormFromSettings(s)
 	}, [s])
+
+	// 数字忠实度闸门: 独立偏好, 切换即保存 (不走下方 AI 表单的「保存」按钮),
+	// 成功后失效 preferences 查询回显; 失败静默 — 开关保持服务端真实状态。
+	const toggleNumberGate = () => {
+		const next = !prefs.data?.ai_number_gate_enabled
+		api.updateAiNumberGate(next)
+			.then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
+			.catch(() => {
+			})
+	}
 
 	// 「从文件重新加载」: 用户外部编辑 secrets.json 后, 显式重读磁盘并覆盖表单。
 	// 后端按 mtime 签名缓存失效, refetch 即取到最新文件内容, 无需重启服务。
@@ -782,12 +794,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		<div className="max-w-5xl">
 			<AnchorWrap highlight={highlight} anchor="ai-connection">
 				{/* 拆成多张卡 (与 数据源 页同构): 原先 7 个区块挤在一张卡里, 只靠细分割线
-       区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
+				 区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
 				<div className="space-y-4">
 					{/* 面板页眉 (非卡片): 标题 / 当前状态 / 连接测试。
-       这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
-       套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
-       的请求方式开关顶到了页面最上方。 */}
+					这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
+					套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
+					 的请求方式开关顶到了页面最上方。 */}
 					<div className="flex items-start gap-4">
 						<div className="min-w-0 flex-1">
 							<div className="flex items-center gap-2.5">
@@ -821,7 +833,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 								<button onClick={handleTest} disabled={testing}
 									title="测试当前表单的连接, 不保存配置"
 									className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98] disabled:opacity-50">
-									{testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
+									{testing ? <Loader2 className="h-3 w-3 animate-spin" /> :
+										<Wifi className="h-3 w-3" />}
 									{testing ? '测试中' : '测试'}
 								</button>
 							)}
@@ -877,7 +890,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 															<button type="button" onClick={() => void handleActivateProfile(p.id)} disabled={busy}
 																className="rounded-md p-1 text-muted transition-colors hover:bg-accent/10 hover:text-accent disabled:opacity-50"
 																title="激活此档案 (立即全局生效)">
-																{busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+																{busy ? <Loader2 className="h-3 w-3 animate-spin" /> :
+																	<Zap className="h-3 w-3" />}
 															</button>
 														)}
 														{!isActive && (
@@ -1012,7 +1026,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 															{selectedPreset?.sponsor && (
 																<button type="button" onClick={fetchModelOptions} aria-label="获取模型列表"
 																	className="absolute right-1.5 top-1/2 flex h-6 w-7 -translate-y-1/2 items-center justify-center rounded-md border border-border/40 bg-base text-muted transition-colors hover:border-accent/40 hover:text-accent">
-																	{modelsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+																	{modelsLoading ?
+																		<Loader2 className="h-3.5 w-3.5 animate-spin" /> :
 																		<ChevronDown className="h-3.5 w-3.5" />}
 																</button>
 															)}
@@ -1095,7 +1110,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 													<div className="relative">
 														<input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={configured ? `${s?.ai_api_key_masked} · 留空不修改` : 'sk-...'} className={`${INPUT_CLS} pr-9`} />
 														<button onClick={() => setShowKey(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted/40 hover:text-muted" tabIndex={-1} aria-label={showKey ? '隐藏' : '显示'}>
-															{showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+															{showKey ? <EyeOff className="h-3.5 w-3.5" /> :
+																<Eye className="h-3.5 w-3.5" />}
 														</button>
 													</div>
 												</Field>
@@ -1114,6 +1130,13 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 															<p className="mt-0.5 text-[10px] leading-relaxed text-muted">让模型可以联网搜索实时信息</p>
 														</div>
 														<div className="shrink-0"><Toggle checked={webSearch} onChange={() => setWebSearch(v => !v)} /></div>
+													</div>
+													<div className="flex items-start gap-2">
+														<div className="min-w-0 flex-1">
+															<span className="text-xs font-medium text-secondary">数字忠实度闸门</span>
+															<p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI 回答中无出处的数字标为「⚠」高亮提示, 防编造</p>
+														</div>
+														<div className="shrink-0"><Toggle checked={!!prefs.data?.ai_number_gate_enabled} onChange={toggleNumberGate} /></div>
 													</div>
 												</div>
 												{customUa && (
@@ -1174,12 +1197,14 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 											</span>
 										)}
 										<button onClick={() => save.mutate()} disabled={save.isPending || !canSave} className="h-9 px-5 rounded-lg bg-accent text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]">
-											{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> :
+											{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ?
+												<Check className="h-4 w-4" /> :
 												<Save className="h-4 w-4" />}
 											{save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
 										</button>
 										<button onClick={handleTest} disabled={testing || !canTest} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-elevated hover:text-foreground text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="测试当前表单的连接, 不保存配置">
-											{testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+											{testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+												<Wifi className="h-3.5 w-3.5" />}
 											{testing ? '测试中' : '测试连接'}
 										</button>
 										{configured && (

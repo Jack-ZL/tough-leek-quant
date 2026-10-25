@@ -125,6 +125,12 @@ def _build_analysis_report(
     content: str, stock_name: str, symbol: str, elapsed: float, model: str = ""
 ) -> str:
     """组装个股分析报告 Markdown 文本。"""
+    from app.services.ai_number_gate import emphasize_marked_dingtalk, pop_gate_footer
+
+    # 数字忠实度闸门: 页脚从正文末尾摘下, 挪到免责声明之后 (同为 "> " 引用行,
+    # 钉钉渲染时合并进同一引用块); 〖…〗标记换成钉钉支持的加粗+⚠️ 醒目形式。
+    content, gate_footer = pop_gate_footer(content)
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     elapsed_str = f"{elapsed:.1f}" if elapsed < 60 else f"{int(elapsed // 60)}分{int(elapsed % 60)}秒"
 
@@ -147,7 +153,9 @@ def _build_analysis_report(
     # 若模型仍输出则去重, 保证报告末尾有且仅有一条免责声明。
     if "不构成任何投资建议" not in content:
         lines += ["", _REPORT_DISCLAIMER]
-    return "\n".join(lines)
+    if gate_footer:
+        lines.append(gate_footer)
+    return emphasize_marked_dingtalk("\n".join(lines))
 
 
 class _ChatbotHandler(dingtalk_stream.ChatbotHandler):

@@ -217,7 +217,9 @@ def _build_system_prompt(web_search: bool) -> str:
     否则提示词声称的能力与模型真实能力矛盾, 会诱发编造"搜索结果"。
     """
     section = _NEWS_SECTION_SEARCH if web_search else _NEWS_SECTION_OFFLINE
-    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL
+    # 数字出处纪律 (ai_number_gate 配套提示词): 让模型主动写出算式, 显著降低打码率
+    from app.services.ai_number_gate import NUMBER_RULE_PROMPT
+    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL + NUMBER_RULE_PROMPT
 
 
 # 兼容旧引用/测试: 默认无联网变体
@@ -421,28 +423,45 @@ async def analyze_stock_stream(
         raw_close = float(df.tail(1)["raw_close"][0]) if "raw_close" in df.columns else None
 
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
+        system_prompt = _build_system_prompt(search_on)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
                                          raw_close=raw_close, web_search=search_on)
         # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
         user_content = user_prompt + length_hint
+
+        # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 拼 prompt 前的
+        # 结构化数据 (形态族双口径) + prompt 成品文本 (展示形态)。闸门包在 service
+        # 层 delta 出口 — IM 机器人 (analyze_stock_text) 直接消费本流, 一并覆盖。
+        from app.services.ai_number_gate import gate_ndjson_stream
+        from app.services.ai_number_whitelist import collect_whitelist
+
+        pool = collect_whitelist(
+            (kline_tail, fins, levels, close, raw_close, paper_positions),
+            texts=(system_prompt, user_content),
+        )
+
+        async def _delta_lines() -> AsyncIterator[str]:
+            async for delta in stream_ai_text(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.5,
+                # 不限制输出: 推理模型(deepseek reasoner 系)思考 token 计入 max_tokens
+                # 预算, 固定上限会把正文挤光(实测 4500 全被推理吃掉 → 正文 0 字)。
+                max_tokens=None,
+                prefer_final_answer=True,
+                # 联网搜索实测可达 200s+ (冷门个股检索慢), 启用时放宽超时,
+                # 否则模型在默认 180s 预算内放弃搜索 → "未检索到相关消息"。
+                timeout=420.0 if search_on else 180.0,
+            ):
+                yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+
         got_content = False
-        async for delta in stream_ai_text(
-            [
-                {"role": "system", "content": _build_system_prompt(search_on)},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.5,
-            # 不限制输出: 推理模型(deepseek reasoner 系)思考 token 计入 max_tokens
-            # 预算, 固定上限会把正文挤光(实测 4500 全被推理吃掉 → 正文 0 字)。
-            max_tokens=None,
-            prefer_final_answer=True,
-            # 联网搜索实测可达 200s+ (冷门个股检索慢), 启用时放宽超时,
-            # 否则模型在默认 180s 预算内放弃搜索 → "未检索到相关消息"。
-            timeout=420.0 if search_on else 180.0,
-        ):
+        async for line in gate_ndjson_stream(_delta_lines(), pool):
             got_content = True
-            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+            yield line
 
     except Exception as e:
         logger.exception("AI stock analysis failed for %s: %s", symbol, e)
