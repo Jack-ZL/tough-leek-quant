@@ -218,8 +218,10 @@ def _build_system_prompt(web_search: bool) -> str:
     """
     section = _NEWS_SECTION_SEARCH if web_search else _NEWS_SECTION_OFFLINE
     # 数字出处纪律 (ai_number_gate 配套提示词): 让模型主动写出算式, 显著降低打码率
+    # 研判答题卡 (ai_verdict 配套提示词): 结论以机读标记输出, 程序直接读、不靠猜
     from app.services.ai_number_gate import NUMBER_RULE_PROMPT
-    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL + NUMBER_RULE_PROMPT
+    from app.services.ai_verdict import VERDICT_PROMPT
+    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL + NUMBER_RULE_PROMPT + VERDICT_PROMPT
 
 
 # 兼容旧引用/测试: 默认无联网变体
@@ -459,8 +461,16 @@ async def analyze_stock_stream(
                 yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
         got_content = False
-        async for line in gate_ndjson_stream(_delta_lines(), pool):
-            got_content = True
+        # 研判卡剥离在闸门内侧 (先剥标记再核对数字): VERDICT JSON 里的数字
+        # 若先过闸门会被包进〖〗破坏 JSON; verdict 事件作为非 delta 事件由闸门透传。
+        from app.services.ai_verdict import verdict_ndjson_stream
+        async for line in gate_ndjson_stream(verdict_ndjson_stream(_delta_lines()), pool):
+            # 只有 delta 才算"有正文" — verdict/页脚事件不计, 避免空输出误判成功
+            try:
+                if json.loads(line).get("type") == "delta":
+                    got_content = True
+            except (json.JSONDecodeError, TypeError):
+                pass
             yield line
 
     except Exception as e:
@@ -490,8 +500,13 @@ async def analyze_stock_text(
 
     length_hint: 追加到用户提示词末尾的附加要求 (平台长度限制提示)。
     返回正文文本; 分析失败或 K 线缺失时返回错误描述文本 (非空)。
+
+    研判卡 (ai_verdict): 流里的 verdict 事件转成一行可读文本插到正文末尾
+    (闸门页脚之前 — IM 组装时 pop_gate_footer 依赖页脚是最后一行);
+    解析失败也明说"未解析出研判结论", 绝不从正文猜 (fail-honest)。
     """
     full = ""
+    verdict: dict | None = None
     async for event in analyze_stock_stream(repo, data_dir, symbol, focus, length_hint=length_hint):
         try:
             data = json.loads(event)
@@ -499,6 +514,19 @@ async def analyze_stock_text(
             continue
         if data.get("type") == "delta":
             full += data.get("content", "")
+        elif data.get("type") == "verdict":
+            verdict = data
         elif data.get("type") == "error":
             return data.get("message", "AI 分析失败")
-    return full if full else "AI 未返回正文, 请重试"
+    if not full:
+        return "AI 未返回正文, 请重试"
+    if verdict is not None:
+        if verdict.get("ok"):
+            vline = f"🧭 AI 研判: {verdict.get('direction', '')} —— {verdict.get('reason', '')}".rstrip(" —")
+        else:
+            vline = "🧭 AI 研判: 本次未解析出研判结论"
+        # 插到闸门页脚之前, 保持页脚仍是最后一行 (机器人 pop_gate_footer 依赖)
+        from app.services.ai_number_gate import pop_gate_footer
+        body, footer = pop_gate_footer(full)
+        full = body + "\n\n" + vline + ("\n" + footer if footer else "")
+    return full

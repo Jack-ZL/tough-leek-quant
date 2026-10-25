@@ -135,6 +135,25 @@ body {
 	}
 }
 
+/* AI 分析弹窗(个股/财务)入场: 只用 transform/opacity — 合成器线程驱动,
+ * 主线程忙(整篇报告首帧渲染/行情重渲染)也不掉帧。
+ * 替代原 framer-motion 弹簧(主线程 JS 驱动), 修「打开历史报告闪一下」。 */
+@keyframes dialog-pop {
+	from {
+		opacity: 0;
+		transform: translateY(12px) scale(0.96);
+	}
+
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
+.dialog-pop {
+	animation: dialog-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 ::selection {
 	background: hsl(var(--accent) / 0.3);
 }

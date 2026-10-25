@@ -258,7 +258,16 @@ export interface AiStockReport {
 	summary?: string
 	close?: number | null
 	levels?: Record<LevelType, PriceLevel[]>
+	/** 研判卡 (ai_verdict): ok=false 表示 AI 未按格式交卡, 程序不猜 */
+	verdict?: AiVerdict | null
 	created_at: string
+}
+
+/** AI 研判卡 — 机器可读的研判倾向 (看多/偏多/中性/偏空/看空) + 一句话理由 */
+export interface AiVerdict {
+	ok: boolean
+	direction?: string
+	reason?: string
 }
 
 // ===== Kline =====
@@ -4215,6 +4224,7 @@ export const api = {
 		symbol: string; name?: string; focus?: string; content: string
 		summary?: string; close?: number | null
 		levels?: Record<LevelType, PriceLevel[]>
+		verdict?: AiVerdict | null
 	}) =>
 		request<{ ok: boolean; report: AiStockReport }>('/api/stock-analysis/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -4228,13 +4238,17 @@ export const api = {
 	 * meta 里额外带 levels(关键价位)供图表回放。
 	 */
 	async* stockAnalyzeStream(symbol: string, focus?: string): AsyncGenerator<{
-		type: 'meta' | 'delta' | 'error' | 'done' | 'ping'
+		type: 'meta' | 'delta' | 'error' | 'done' | 'ping' | 'verdict'
 		symbol?: string
 		summary?: string
 		levels?: Record<LevelType, PriceLevel[]>
 		close?: number | null
 		content?: string
 		message?: string
+		/** verdict 事件: 研判卡 (done 前下发; ok=false 表示 AI 未按格式交卡) */
+		ok?: boolean
+		direction?: string
+		reason?: string
 	}> {
 		const res = await fetch('/api/stock-analysis/analyze', {
 			method: 'POST',
