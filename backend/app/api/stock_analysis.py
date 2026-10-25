@@ -190,6 +190,9 @@ class SaveReportRequest(BaseModel):
     summary: str = ""
     close: float | None = None
     levels: dict | None = None
+    # 研判卡 (ai_verdict): {"ok": true, "direction": "看多", "reason": "…"}
+    # 或 {"ok": false}; 随报告落库, 供历史回看与后续命中率统计 (P0-7) 使用
+    verdict: dict | None = None
 
 
 @router.get("/reports")
@@ -209,6 +212,7 @@ def save_report(request: Request, req: SaveReportRequest):
         "summary": req.summary,
         "close": req.close,
         "levels": req.levels,
+        "verdict": req.verdict,
     })
     return {"ok": True, "report": report}
 
