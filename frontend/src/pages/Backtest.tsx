@@ -10,16 +10,16 @@ import { type ResearchCandidate } from '@/lib/api'
 type Tab = 'strategy' | 'robustness'
 
 const MODES: Record<Tab, { title: string; subtitle: string; icon: typeof FlaskConical }> = {
-	strategy: {
-		title: '策略',
-		subtitle: '现有策略评估与候选沉淀',
-		icon: FlaskConical,
-	},
-	robustness: {
-		title: '验证',
-		subtitle: '参数敏感性与滚动样本外',
-		icon: ShieldCheck,
-	},
+  strategy: {
+    title: '策略',
+    subtitle: '现有策略评估与候选沉淀',
+    icon: FlaskConical,
+  },
+  robustness: {
+    title: '验证',
+    subtitle: '稳健参数筛选与滚动样本外检验',
+    icon: ShieldCheck,
+  },
 }
 
 export function Backtest() {
