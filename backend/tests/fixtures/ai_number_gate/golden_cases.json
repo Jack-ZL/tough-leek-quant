@@ -1,0 +1,152 @@
+[
+  {
+    "name": "magnitude_swap",
+    "objs": [],
+    "texts": [
+      "营收 2 万元"
+    ],
+    "input": "公司营收 2 亿元, 同比大增。",
+    "expected_text": "公司营收 〖2 亿元※〗, 同比大增。",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "no_source"
+    ]
+  },
+  {
+    "name": "clean_report",
+    "objs": [],
+    "texts": [
+      "收盘 10.50 元, 涨幅 5.2%, 成交 1234.5 万元"
+    ],
+    "input": "收盘 10.5 元, 涨幅 5.2%, 成交 1234.5 万元。",
+    "expected_text": "收盘 10.5 元, 涨幅 5.2%, 成交 1234.5 万元。",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "arith_ok",
+    "objs": [],
+    "texts": [
+      "总量 300 吨, 共 8 批"
+    ],
+    "input": "均值 = 300 ÷ 8 = 37.5 吨",
+    "expected_text": "均值 = 300 ÷ 8 = 37.5 吨",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "date_exempt",
+    "objs": [],
+    "texts": [
+      "涨幅 5%"
+    ],
+    "input": "2024-10-08 至 10月9日 累计上涨 5%",
+    "expected_text": "2024-10-08 至 10月9日 累计上涨 5%",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "direction_ok",
+    "objs": [
+      {
+        "pct_chg": -5.2
+      }
+    ],
+    "texts": [],
+    "input": "今日下降 5.2%",
+    "expected_text": "今日下降 5.2%",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "direction_conflict",
+    "objs": [
+      {
+        "pct_chg": -1.92
+      }
+    ],
+    "texts": [],
+    "input": "同比上升 1.92%",
+    "expected_text": "同比上升 〖1.92%※〗",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "direction_conflict"
+    ]
+  },
+  {
+    "name": "range_dash",
+    "objs": [],
+    "texts": [
+      "下沿 2.5 倍"
+    ],
+    "input": "区间 2.5-3.75 倍",
+    "expected_text": "区间 2.5-〖3.75 倍※〗",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "no_source"
+    ]
+  },
+  {
+    "name": "fullwidth",
+    "objs": [],
+    "texts": [
+      "股价 10.5 元"
+    ],
+    "input": "股价１５６.３元",
+    "expected_text": "股价〖１５６.３元※〗",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "no_source"
+    ]
+  },
+  {
+    "name": "empty_pool",
+    "objs": [],
+    "texts": [],
+    "input": "收盘 10.5 元, 2024-10-08",
+    "expected_text": "收盘 〖10.5 元※〗, 2024-10-08",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "no_whitelist"
+    ]
+  },
+  {
+    "name": "pct_dual",
+    "objs": [
+      {
+        "pct_chg": 0.052
+      }
+    ],
+    "texts": [],
+    "input": "涨幅 5.2%",
+    "expected_text": "涨幅 5.2%",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "amount_yi",
+    "objs": [
+      {
+        "revenue": 250000000.0
+      }
+    ],
+    "texts": [],
+    "input": "营收 2.5 亿元",
+    "expected_text": "营收 2.5 亿元",
+    "expected_masked": 0,
+    "expected_reasons": []
+  },
+  {
+    "name": "json_fence",
+    "objs": [],
+    "texts": [
+      "营收 1234.5 万元"
+    ],
+    "input": "```json\n{\"revenue\": 9876.5}\n```",
+    "expected_text": "```json\n{\"revenue\": 〖9876.5※〗}\n```",
+    "expected_masked": 1,
+    "expected_reasons": [
+      "no_source"
+    ]
+  }
+]

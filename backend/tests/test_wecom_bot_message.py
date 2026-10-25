@@ -60,6 +60,21 @@ def test_build_report_includes_model():
     assert "deepseek-chat" in rpt
 
 
+def test_build_report_gate_footer_and_mark():
+    """数字忠实度闸门: 问题数字保留可见并换企微 warning 字体色; 页脚挪到免责声明后合并引用块。"""
+    from app.services.ai_number_gate import MARKED_RE, wrap_marked
+
+    body = (
+        f"目标价 {wrap_marked('88.8 元')}。\n"
+        "> ※ 另有 1 处数字在本轮提供的数据里找不到出处, 也不是回答中算式算出来的, 已标为「〖…〗」。"
+    )
+    rpt = w._build_analysis_report(body, "贵州茅台", "600519.SH", 1.0)
+    assert '<font color="warning">⚠️88.8 元</font>' in rpt
+    assert not MARKED_RE.search(rpt)  # 未转换的 〖…※〗 标记不残留 (页脚文案里的「〖…〗」字样除外)
+    # 页脚被摘出并挪到系统追加的免责声明之后, 紧邻无空行 → 同一引用块
+    assert "入市需谨慎。\n> ※ 另有 1 处" in rpt
+
+
 def test_build_report_omits_empty_model():
     rpt = w._build_analysis_report("正文", "贵州茅台", "600519.SH", 1.0, model="")
     assert "分析模型" not in rpt

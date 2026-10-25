@@ -102,7 +102,11 @@ def effective_system_prompt() -> str:
     """
     from app.services import preferences
 
-    return preferences.get_market_recap_system_prompt() or _SYSTEM_PROMPT
+    # 数字出处纪律 (ai_number_gate 配套): 用户自定义提示词也追加, 规则与数据无关
+    from app.services.ai_number_gate import NUMBER_RULE_PROMPT
+
+    base = preferences.get_market_recap_system_prompt() or _SYSTEM_PROMPT
+    return base + NUMBER_RULE_PROMPT
 
 
 # ================================================================
@@ -339,19 +343,36 @@ async def recap_market_stream(
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
         user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+
+        # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化数据
+        # (overview/news, 形态族双口径) + prompt 成品文本 (含龙虎榜/风向标上下文)。
+        # 包在 service 层 delta 出口 — 定时复盘 SSE (daily_pipeline) 直接消费本流。
+        from app.services.ai_number_gate import gate_ndjson_stream
+        from app.services.ai_number_whitelist import collect_whitelist
+
+        system_prompt = effective_system_prompt()
+        pool = collect_whitelist(
+            (overview, news or []),
+            texts=(system_prompt, user_prompt),
+        )
+
+        async def _delta_lines() -> AsyncIterator[str]:
+            async for delta in stream_ai_text(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.5,
+                # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
+                max_tokens=None,
+                prefer_final_answer=True,
+            ):
+                yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+
         got_content = False
-        async for delta in stream_ai_text(
-            [
-                {"role": "system", "content": effective_system_prompt()},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.5,
-            # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
-            max_tokens=None,
-            prefer_final_answer=True,
-        ):
+        async for line in gate_ndjson_stream(_delta_lines(), pool):
             got_content = True
-            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+            yield line
 
     except Exception as e:  # noqa: BLE001
         logger.exception("AI market recap failed for %s: %s", as_of_str, e)

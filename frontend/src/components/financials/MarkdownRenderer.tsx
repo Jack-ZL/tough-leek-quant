@@ -16,6 +16,8 @@ import { Fragment, type ReactNode } from 'react'
  * - 涨跌语义 token: 带符号百分比(+2.35% / -1.20%)按 A 股口径红涨绿跌着色;
  *   「涨停/跌停」徽章化, 「上涨/下跌/高开/低开/走强/走弱」方向词着色,
  *   金额数字等宽(对齐 format.priceColorClass 与设计语言"数字等宽")
+ * - 闸门高亮标记 〖数字※〗: 无出处数字原样保留 + 警示色徽章突出显示
+ *   (对应后端 services/ai_number_gate.py 的 MARK_OPEN/MARK_CLOSE)
  *
  * 不追求完整 GFM,只覆盖 AI 报告会产出的结构。
  */
@@ -27,7 +29,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   // 涨跌语义 token: 带符号百分比/涨跌停词/方向词/金额数字。词表有意收窄 —
   // 只染有明确方向或语义的片段, 避免整段文字变成圣诞树; 无符号百分比
   // (换手率等)数值本身无方向, 不着色。语义色对齐 A 股口径(红涨绿跌)。
-  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|([+-]\d+(?:\.\d+)?%)|(涨停|跌停)|(上涨|下跌|高开|低开|走强|走弱)|(\d[\d,]*(?:\.\d+)?)(?=[元亿万])/g
+  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|([+-]\d+(?:\.\d+)?%)|(涨停|跌停)|(上涨|下跌|高开|低开|走强|走弱)|(〖([^〗]*)※〗)|(\d[\d,]*(?:\.\d+)?)(?=[元亿万])/g
   let last = 0
   let m: RegExpExecArray | null
   let i = 0
@@ -70,11 +72,23 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
           {m[7]}
         </span>,
       )
+    } else if (m[8]) {
+      // 闸门高亮标记 〖数字※〗: 该数字在本轮数据里找不到出处 —
+      // 数字原样显示 (不隐藏), 警示色徽章 + 悬停说明
+      nodes.push(
+        <span
+          key={`${keyBase}-m-${i}`}
+          className="rounded px-1 font-semibold bg-amber-500/15 text-amber-500 cursor-help"
+          title="该数字在本轮提供的数据里找不到出处, 已被数字忠实度闸门标出, 请谨慎采信"
+        >
+          ⚠ {m[9]}
+        </span>,
+      )
     } else {
       // 金额数字: 等宽(设计语言: 数字等宽); 单位留在 span 外
       nodes.push(
         <span key={`${keyBase}-n-${i}`} className="font-mono">
-          {m[8]}
+          {m[10]}
         </span>,
       )
     }

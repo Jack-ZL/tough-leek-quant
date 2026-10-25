@@ -958,6 +958,22 @@ def set_system_notify_enabled(enabled: bool) -> bool:
     return bool(enabled)
 
 
+def get_ai_number_gate_enabled() -> bool:
+    """AI 输出数字忠实度闸门开关 (docs/ai-number-fidelity-plan.md)。
+
+    开启后 AI 回答中无出处的数字被标为「〖…〗」高亮提示 (数字保留可见)。
+    默认关 — Phase 1 灰度期, 跑稳后再翻默认值。ai_number_gate.is_enabled()
+    每次流式生成时读取, 改开关即时生效, 无需重启。
+    """
+    return load().get("ai_number_gate_enabled", False)
+
+
+def set_ai_number_gate_enabled(enabled: bool) -> bool:
+    """保存数字忠实度闸门开关。"""
+    save({"ai_number_gate_enabled": bool(enabled)})
+    return bool(enabled)
+
+
 def get_feishu_webhook_url() -> str:
     """飞书自定义机器人 Webhook 地址 — 全局共用一处, 所有启用推送的规则都推到这一个群。"""
     return load().get("feishu_webhook_url", "")

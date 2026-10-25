@@ -20,6 +20,19 @@ from app.custom.assistant import tools as assistant_tools
 from app.extensions.loader import configure_backend_extensions
 
 
+@pytest.fixture(autouse=True)
+def _ai_number_gate_off(monkeypatch):
+    """钉死数字忠实度闸门为关。
+
+    本文件断言逐字 delta 的事件序列; 闸门开启时行缓冲会把无换行的碎 delta
+    合并成整行再下发 (设计如此, 数字绝不未经核对流出)。开关存在开发者真实
+    preferences.json 里, 测试不能依赖其状态 → 统一强制关闭。
+    """
+    from app.services import preferences
+
+    monkeypatch.setattr(preferences, "get_ai_number_gate_enabled", lambda: False)
+
+
 async def _collect(lines: list[str]) -> list[dict[str, Any]]:
     return [json.loads(line) for line in lines]
 
