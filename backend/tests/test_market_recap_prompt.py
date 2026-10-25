@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.services import preferences
+from app.services.ai_number_gate import NUMBER_RULE_PROMPT
 from app.services.market_recap import _SYSTEM_PROMPT, effective_system_prompt
 
 
@@ -56,14 +57,15 @@ def test_prompt_dirty_non_string_value_falls_back_to_empty():
 
 # ---------------------------------------------------------------- 生效链路
 def test_effective_prompt_falls_back_to_builtin_default():
-    assert effective_system_prompt() == _SYSTEM_PROMPT
+    # 数字出处纪律 (ai_number_gate) 固定追加在提示词尾部
+    assert effective_system_prompt() == _SYSTEM_PROMPT + NUMBER_RULE_PROMPT
 
 
 def test_effective_prompt_uses_custom_and_reverts_after_clear():
     preferences.set_market_recap_system_prompt("我的自定义复盘提示词")
-    assert effective_system_prompt() == "我的自定义复盘提示词"
+    assert effective_system_prompt() == "我的自定义复盘提示词" + NUMBER_RULE_PROMPT
     preferences.set_market_recap_system_prompt("")
-    assert effective_system_prompt() == _SYSTEM_PROMPT
+    assert effective_system_prompt() == _SYSTEM_PROMPT + NUMBER_RULE_PROMPT
 
 
 async def test_stream_passes_custom_prompt_to_llm(monkeypatch, tmp_path):
@@ -98,12 +100,12 @@ async def test_stream_passes_custom_prompt_to_llm(monkeypatch, tmp_path):
     preferences.set_market_recap_system_prompt("自定义系统提示词A")
     events = [e async for e in market_recap.recap_market_stream(repo)]
     assert "done" in [json.loads(e).get("type") for e in events]
-    assert captured[-1][0] == {"role": "system", "content": "自定义系统提示词A"}
+    assert captured[-1][0] == {"role": "system", "content": "自定义系统提示词A" + NUMBER_RULE_PROMPT}
 
     preferences.set_market_recap_system_prompt("")
     events = [e async for e in market_recap.recap_market_stream(repo)]
     assert "done" in [json.loads(e).get("type") for e in events]
-    assert captured[-1][0] == {"role": "system", "content": _SYSTEM_PROMPT}
+    assert captured[-1][0] == {"role": "system", "content": _SYSTEM_PROMPT + NUMBER_RULE_PROMPT}
 
 
 # ---------------------------------------------------------------- API 端点

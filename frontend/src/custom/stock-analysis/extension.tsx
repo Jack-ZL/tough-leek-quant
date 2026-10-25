@@ -14,7 +14,7 @@ import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
 import {
   startAnalysis, findTodayReport, useHistoryReports,
-  deleteReport, openHistoryReport, loadHistory,
+  deleteReport, openHistoryReport, loadHistory, verdictTone,
 } from '@/lib/stockAnalysisStore'
 import type { FrontendExtension } from '@/extensions/types'
 import { IconStockFocus } from '@/components/BrandIcons'
@@ -293,6 +293,14 @@ function HistorySidebar() {
                     <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted">
                       <span>{fmtRelative(r.created_at)}</span>
                       {r.close != null && <span className="font-mono">价 {r.close.toFixed(2)}</span>}
+                      {/* 研判卡方向标签 (红多绿空); ok=false 不显示, 详情在报告里看 */}
+                      {r.verdict?.ok && (
+                        <span className={
+                          verdictTone(r.verdict.direction) === 'bull' ? 'text-bull shrink-0'
+                            : verdictTone(r.verdict.direction) === 'bear' ? 'text-bear shrink-0'
+                              : 'shrink-0'
+                        }>🧭 {r.verdict.direction}</span>
+                      )}
                       {r.focus && <span className="text-sky-300/70 truncate">关注: {r.focus}</span>}
                     </div>
                     {r.summary && (

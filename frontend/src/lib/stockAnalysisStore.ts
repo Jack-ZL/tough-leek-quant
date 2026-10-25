@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { api, friendlyStreamError, type PriceLevel, type LevelType } from './api'
+import { api, friendlyStreamError, type AiVerdict, type PriceLevel, type LevelType } from './api'
 
 /**
  * AI 个股分析 —— 全局任务/报告 store(与 aiReportStore 解耦、并行存在)。
@@ -27,6 +27,8 @@ export interface ActiveTask {
     levels?: Record<LevelType, PriceLevel[]>
     close?: number | null
   } | null
+  /** 研判卡 (ai_verdict): done 前由后端 verdict 事件下发; 未收到则为 null */
+  verdict?: AiVerdict | null
   createdAt: number
   savedReportId?: string
   doneAt?: number
@@ -42,7 +44,15 @@ export interface HistoryReport {
   summary?: string
   close?: number | null
   levels?: Record<LevelType, PriceLevel[]>
+  verdict?: AiVerdict | null
   created_at: string
+}
+
+/** 研判方向的展示色调 (A 股习惯: 红多绿空; 中性用弱色) */
+export function verdictTone(direction?: string): 'bull' | 'bear' | 'neutral' {
+  if (direction === '看多' || direction === '偏多') return 'bull'
+  if (direction === '看空' || direction === '偏空') return 'bear'
+  return 'neutral'
 }
 
 const MAX_ACTIVE = 3
@@ -201,6 +211,10 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }
           patchTask(id, { content: cur.content + (chunk.content ?? '') })
           break
+        case 'verdict':
+          // 研判卡: ok=false 也存 — 展示层明确告知"未解析出", 绝不从正文猜
+          patchTask(id, { verdict: { ok: chunk.ok ?? false, direction: chunk.direction, reason: chunk.reason } })
+          break
         case 'error':
           patchTask(id, { phase: 'error', error: chunk.message ?? '分析失败' })
           return
@@ -221,6 +235,7 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
           symbol: final.symbol, name: final.name, focus: final.focus,
           content: final.content, summary: final.meta?.summary ?? '',
           close: final.meta?.close ?? null, levels: final.meta?.levels,
+          verdict: final.verdict ?? null,
         })
         if (res.report) {
           patchTask(id, { savedReportId: res.report.id })

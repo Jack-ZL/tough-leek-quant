@@ -88,4 +88,8 @@ def build_system_prompt(context: dict | None) -> str:
         if symbol:
             lines.append(f"- 用户正在关注的标的: {symbol}。")
     context_block = "\n".join(lines) if lines else "- 用户未提供页面上下文。"
-    return _SYSTEM_TEMPLATE.format(today=cn_today().isoformat(), context=context_block)
+    # 数字出处纪律 (ai_number_gate 配套): 在 format 之后追加, 规则文本含花括号
+    # 占位符也不会被误 format; 规则本身不含任何数字, 不污染白名单。
+    from app.services.ai_number_gate import NUMBER_RULE_PROMPT
+
+    return _SYSTEM_TEMPLATE.format(today=cn_today().isoformat(), context=context_block) + NUMBER_RULE_PROMPT
