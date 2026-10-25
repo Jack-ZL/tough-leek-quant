@@ -30,6 +30,8 @@ def _dim_label(kind: str) -> str:
 def _build_system_prompt(kind: str = "concept") -> str:
     """构建 system prompt(按维度动态替换"概念/行业"措辞)。"""
     dim = _dim_label(kind)
+    # 数字出处纪律 (ai_number_gate 配套提示词): 让模型主动写算式, 降低打码率
+    from app.services.ai_number_gate import NUMBER_RULE_PROMPT
     return f"""你是一位专注 A 股题材轮动的研究分析师,拥有 12 年一线研究经验,擅长从{dim}板块的**涨幅排名矩阵**中客观识别主力资金脉络,区分机构主导的持续性主线与游资驱动的脉冲式轮动,产出一份**客观、中立、不包含任何买卖或操作建议**的轮动分析报告。
 
 ## 核心红线(务必遵守)
@@ -89,7 +91,7 @@ def _build_system_prompt(kind: str = "concept") -> str:
 5. **不输出操作指令**:不写"跟踪/规避/追高/低吸/观望"等任何交易指令;客观陈述轮动特征即可。
 6. **客观推断**:若无明确消息,从量价异动客观推断可能逻辑并给结论,不要标注"[推断]"或编造具体新闻。
 
-现在请基于下方{dim}轮动数据进行分析。"""
+现在请基于下方{dim}轮动数据进行分析。""" + NUMBER_RULE_PROMPT
 
 
 # ================================================================
@@ -376,19 +378,35 @@ async def analyze_rotation_stream(
             return
 
         user_prompt = _build_user_prompt(signals, overview, days, dates, focus, kind)
+
+        # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化轮动信号
+        # (rank==999 缺数据哨兵在采集端跳过) + 大盘背景 + prompt 成品文本。
+        from app.services.ai_number_gate import gate_ndjson_stream
+        from app.services.ai_number_whitelist import collect_whitelist
+
+        system_prompt = _build_system_prompt(kind)
+        pool = collect_whitelist(
+            (signals, overview, {"days": days}, dates),
+            texts=(system_prompt, user_prompt),
+        )
+
+        async def _delta_lines() -> AsyncIterator[str]:
+            async for delta in stream_ai_text(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.5,
+                # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
+                max_tokens=None,
+                prefer_final_answer=True,
+            ):
+                yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+
         got_content = False
-        async for delta in stream_ai_text(
-            [
-                {"role": "system", "content": _build_system_prompt(kind)},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.5,
-            # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
-            max_tokens=None,
-            prefer_final_answer=True,
-        ):
+        async for line in gate_ndjson_stream(_delta_lines(), pool):
             got_content = True
-            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+            yield line
 
     except Exception as e:  # noqa: BLE001
         logger.exception("AI %s rotation analyze failed: %s", kind, e)

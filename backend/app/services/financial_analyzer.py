@@ -175,19 +175,32 @@ async def analyze_financials_stream(
         from app.services.ai_provider import stream_ai_text
 
         user_prompt = _build_user_prompt(fins, symbol, focus)
+
+        # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化财务数据
+        # (revenue/profit 等金额字段自动补"亿"展示形态) + prompt 成品文本。
+        from app.services.ai_number_gate import NUMBER_RULE_PROMPT, gate_ndjson_stream
+        from app.services.ai_number_whitelist import collect_whitelist
+
+        system_prompt = _SYSTEM_PROMPT + NUMBER_RULE_PROMPT
+        pool = collect_whitelist((fins,), texts=(system_prompt, user_prompt))
+
+        async def _delta_lines() -> AsyncIterator[str]:
+            async for delta in stream_ai_text(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.4,
+                # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
+                max_tokens=None,
+                prefer_final_answer=True,
+            ):
+                yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+
         got_content = False
-        async for delta in stream_ai_text(
-            [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.4,
-            # 不限制输出(推理模型思考 token 计入预算, 见 ai_provider.stream_ai_text)
-            max_tokens=None,
-            prefer_final_answer=True,
-        ):
+        async for line in gate_ndjson_stream(_delta_lines(), pool):
             got_content = True
-            yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
+            yield line
 
     except Exception as e:  # noqa: BLE001
         logger.exception("AI financial analysis failed for %s: %s", symbol, e)

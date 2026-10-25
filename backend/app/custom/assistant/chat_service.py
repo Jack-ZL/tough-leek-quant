@@ -139,6 +139,47 @@ def _assistant_tool_call(call: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _make_pool_factory(req_messages: list[dict[str, Any]]):
+    """构建数字闸门白名单工厂 (docs/ai-number-fidelity-plan.md)。
+
+    返回可调用对象, 每次流式生成取白名单时调用:
+    - 只收 system/user/tool 消息 — assistant 历史不进白名单, 防止上一轮编造
+      的数字被下一轮"洗白" (反洗白原则);
+    - tool 消息 content 是 json.dumps 的工具结果 → 解析回结构化对象走双口径
+      采集, 解析失败退回纯文本扫描;
+    - 按 len(req_messages) 缓存 — 工具轮次会让消息列表中途增长, 长度变化即
+      重算, 否则复用 (列表只 append 不原地改, 长度是可靠代理)。
+    """
+    from app.services.ai_number_whitelist import collect_whitelist
+
+    cache: tuple[int, Any] | None = None
+
+    def factory():
+        nonlocal cache
+        n = len(req_messages)
+        if cache is not None and cache[0] == n:
+            return cache[1]
+        objs: list[Any] = []
+        texts: list[str] = []
+        for m in req_messages:
+            role = m.get("role")
+            if role == "assistant":
+                continue
+            content = m.get("content")
+            if role == "tool" and isinstance(content, str):
+                try:
+                    objs.append(json.loads(content))
+                except ValueError:
+                    texts.append(content)
+            elif isinstance(content, str):
+                texts.append(content)
+        pool = collect_whitelist(objs, texts=texts)
+        cache = (n, pool)
+        return pool
+
+    return factory
+
+
 async def chat_stream(
     *,
     history: list[dict[str, str]],
@@ -335,11 +376,20 @@ async def chat_stream(
 
     task = asyncio.create_task(run())
     try:
-        while True:
-            item = await queue.get()
-            if item is sentinel:
-                break
-            yield _line(item)
+        # 数字忠实度闸门: 包在队列消费出口 (NDJSON 行级), delta 事件按行缓冲
+        # 校验后才下发, 其余事件 (notice/tool/done...) 原样透传。白名单工厂随
+        # req_messages 增长重算 — 工具刚取回的数据立即可被回答引用。
+        from app.services.ai_number_gate import gate_ndjson_stream
+
+        async def _queue_lines() -> AsyncIterator[str]:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    return
+                yield _line(item)
+
+        async for line in gate_ndjson_stream(_queue_lines(), _make_pool_factory(req_messages)):
+            yield line
     finally:
         # 客户端断连/消费方停止时终止生成任务, 不遗留挂起协程。
         task.cancel()

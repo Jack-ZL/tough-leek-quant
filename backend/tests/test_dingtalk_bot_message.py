@@ -59,6 +59,25 @@ def test_build_report_includes_model():
     assert "deepseek-chat" in rpt
 
 
+def test_build_report_gate_footer_and_mark():
+    """数字忠实度闸门: 问题数字保留可见并加粗+⚠️ 突出; 页脚挪到免责声明后合并引用块。"""
+    from app.services.ai_number_gate import MARKED_RE, wrap_marked
+
+    body = (
+        f"目标价 {wrap_marked('88.8 元')}。\n\n"
+        "> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。\n"
+        "> ※ 另有 1 处数字在本轮提供的数据里找不到出处, 也不是回答中算式算出来的, 已标为「〖…〗」。"
+    )
+    rpt = d._build_analysis_report(body, "贵州茅台", "600519.SH", 1.0)
+    # 问题数字原样可见, 换成钉钉支持的醒目形式 (加粗+⚠️), 〖〗 括号不残留
+    assert "**⚠️88.8 元**" in rpt
+    assert not MARKED_RE.search(rpt)  # 未转换的 〖…※〗 标记不残留 (页脚文案里的「〖…〗」字样除外)
+    # 页脚紧跟免责声明 (同为 "> " 行, 中间无空行 → 合并同一引用块)
+    assert "入市需谨慎。\n> ※ 另有 1 处" in rpt
+    # 正文里的免责声明被识别 → 不再重复追加系统免责
+    assert rpt.count("不构成任何投资建议") == 1
+
+
 def test_build_report_omits_empty_model():
     rpt = d._build_analysis_report("正文", "贵州茅台", "600519.SH", 1.0, model="")
     assert "分析模型" not in rpt
