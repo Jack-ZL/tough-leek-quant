@@ -2989,6 +2989,13 @@ export const api = {
 			body: JSON.stringify({ minute_batch_compress: enabled }),
 		}),
 
+	/** AI 数字忠实度闸门开关 — 纯偏好, 流式生成侧逐请求读取, 即时生效 */
+	updateAiNumberGate: (enabled: boolean) =>
+		request<Pick<Preferences, 'ai_number_gate_enabled'>>('/api/settings/preferences/ai-number-gate', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+
 	/** 日K批量响应 gzip 压缩开关 (与分时独立) — 逐请求即时生效 */
 	updateDailyBatchCompress: (enabled: boolean) =>
 		request<Pick<Preferences, 'daily_batch_compress'>>('/api/settings/preferences/daily-batch-compress', {
