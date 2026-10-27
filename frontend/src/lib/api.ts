@@ -876,6 +876,35 @@ export interface ParamVisibleIf {
 	any?: ParamVisibleIf[]
 }
 
+/** 仓位策略定义 (设置 → 定义 → 仓位策略 / 回测设置引用) */
+export interface PositionPolicyMeta {
+  id: string
+  label: string
+  description: string
+  params: StrategyParamDef[]
+}
+export interface PositionPolicyInfo {
+  id: string
+  label: string
+  description: string
+  params: StrategyParamDef[]
+  source_file: string
+}
+export interface PositionPolicyTemplate {
+  key: string
+  label: string
+  description: string
+  meta: { id: string; label: string; description: string; params: StrategyParamDef[] }
+  code: string
+}
+export interface PositionPolicySavePayload {
+  id?: string
+  label: string
+  description?: string
+  params?: StrategyParamDef[]
+  code: string
+}
+
 export interface StrategyParamDef {
 	id: string
 	label: string
@@ -2283,6 +2312,86 @@ export interface SoundPack {
   name: string
   size: number
   ext: string
+}
+
+/** 配置备份 — 预览 (inspect) 与导入结果 (apply), 对应后端 config_backup */
+export interface ConfigBackupCategoryCount {
+  key: string
+  label: string
+  count: number
+  conflicts: number
+}
+
+export interface ConfigBackupInspect {
+  created_at: string
+  app_version: string
+  has_secrets: boolean
+  categories: ConfigBackupCategoryCount[]
+  total_files: number
+  conflict_files: number
+  out_of_scope_files: number
+}
+
+export interface ConfigBackupApplyCategory {
+  key: string
+  label: string
+  imported: number
+  skipped_conflict: number
+  failed: { file: string; error: string }[]
+  /** 导入即冒烟 (仅 custom_signals/custom_factors): 逐条校验+编译+依赖检查结果 */
+  smoke?: (DefinitionSmokeResult & { file: string })[]
+}
+
+/** 统一定义目录项 (GET /api/definitions) — 信号+因子统一视图 */
+export interface DefinitionsCatalogItem {
+  kind: 'signal' | 'factor'
+  id: string
+  label: string
+  enabled?: boolean
+  timeframe?: string
+  lang: string
+  status?: string
+  group?: string
+  dependencies?: string[]
+  warmup_bars?: number | null
+  /** 目录不因单个坏定义失败 — 坏条目携带错误原因 (隔离要求) */
+  error?: string
+}
+
+/** 导入冒烟结果 (POST /api/definitions/smoke) */
+export interface DefinitionSmokeResult {
+  ok: boolean
+  issues: { code: string; message: string }[]
+  dependencies: string[]
+  warmup_bars: number | null
+}
+
+export interface ConfigBackupApplyResult {
+  categories: ConfigBackupApplyCategory[]
+  preferences_merged: boolean
+  secrets_merged: boolean
+  skipped_unselected: number
+  out_of_scope_files: number
+  reload_hints: Record<string, boolean>
+}
+
+/** 策略包条目预览 (POST /api/strategies/bundle/inspect) */
+export interface StrategyBundleEntry {
+  path: string
+  kind: 'strategies' | 'strategy_overrides' | 'custom_signals' | 'custom_factors'
+  id: string
+  action: 'create' | 'conflict'
+  bytes: number
+}
+
+export interface StrategyBundleInspect {
+  strategy_id: string
+  label: string
+  created_at?: string
+  counts: Record<string, number>
+  warnings: string[]
+  missing_deps: string[]
+  entries: StrategyBundleEntry[]
 }
 
 export interface Preferences {
@@ -3873,30 +3982,60 @@ updateDailyBatchSymbols: (size: number) =>
 			method: 'DELETE',
 		}),
 
-	strategyBacktestRun: (payload: {
-		strategy_id: string
-		symbols?: string[] | null
-		start?: string | null
-		end?: string | null
-		params?: Record<string, any> | null
-		overrides?: Record<string, any> | null
-		matching?: 'close_t' | 'open_t+1'
-		entry_fill?: 'close_t' | 'open_t+1' | null
-		exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
-		fees_pct?: number
-		commission_pct?: number
-		stamp_tax_pct?: number
-		slippage_bps?: number
-		max_positions?: number
-		initial_capital?: number
-		position_sizing?: 'equal' | 'score_weight'
-		asset_type?: 'stock' | 'etf' | 'index'
-		minute_fill?: boolean
-	}) =>
-		request<StrategyBacktestResult>('/api/backtest/strategy/run', {
-			method: 'POST',
-			body: JSON.stringify(payload),
-		}),
+  strategyBacktestRun: (payload: {
+    strategy_id: string
+    symbols?: string[] | null
+    start?: string | null
+    end?: string | null
+    params?: Record<string, any> | null
+    overrides?: Record<string, any> | null
+    matching?: 'close_t' | 'open_t+1'
+    entry_fill?: 'close_t' | 'open_t+1' | null
+    exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
+    fees_pct?: number
+    commission_pct?: number
+    stamp_tax_pct?: number
+    slippage_bps?: number
+    max_positions?: number
+    initial_capital?: number
+    position_sizing?: 'equal' | 'score_weight' | 'policy'
+    position_policy?: string | null
+    position_policy_params?: Record<string, number | boolean | string> | null
+    asset_type?: 'stock' | 'etf' | 'index'
+    minute_fill?: boolean
+  }) =>
+    request<StrategyBacktestResult>('/api/backtest/strategy/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  positionPolicyList: () => request<{
+    policies: PositionPolicyInfo[]
+    errors: Record<string, string>
+  }>('/api/backtest/position-policies'),
+  positionPolicyTemplates: () => request<{ templates: PositionPolicyTemplate[] }>(
+    '/api/backtest/position-policies/templates',
+  ),
+  positionPolicyGet: (id: string) => request<{ id: string; meta: PositionPolicyMeta; code: string }>(
+    `/api/backtest/position-policies/${id}`,
+  ),
+  positionPolicyValidate: (payload: PositionPolicySavePayload) => request<{
+    ok: boolean
+    issues: string[]
+    smoke: { weights: number[]; budget_scale: number } | null
+  }>('/api/backtest/position-policies/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  positionPolicySave: (payload: PositionPolicySavePayload) => request<{ ok: boolean; id: string; issues: string[] }>(
+    '/api/backtest/position-policies', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  ),
+  positionPolicyDelete: (id: string) => request<{ ok: boolean }>(
+    `/api/backtest/position-policies/${id}`, { method: 'DELETE' },
+  ),
 
 	pipelineRun: () => request<{ job_id: string; reused: boolean }>(
 		'/api/pipeline/run', { method: 'POST' },
@@ -4064,8 +4203,47 @@ updateDailyBatchSymbols: (size: number) =>
 	pageAdminBackupUrl: (filename: string) =>
 		`/api/pages-admin/backups/${encodeURIComponent(filename)}`,
 
-	analysisMenu: (id: string) =>
-		request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),
+  // 配置备份 (切换设备迁移配置; 导出直链下载, 导入先 inspect 预览再 apply)
+  // categories: 勾选的类别键 (后端 config_backup._CATEGORY_LABELS 的键);
+  // 含 'secrets' 才导出/导入密钥, 不含则该类别跳过。
+  configBackupExportUrl: (categoryKeys: readonly string[]) =>
+    `/api/config-backup/export?categories=${encodeURIComponent(categoryKeys.join(','))}`,
+
+  configBackupInspect: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<ConfigBackupInspect>('/api/config-backup/inspect', {
+      method: 'POST',
+      body: fd,
+    })
+  },
+
+  configBackupApply: (file: File, allowOverwrite: boolean, categoryKeys: readonly string[]) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
+    fd.append('categories', categoryKeys.join(','))
+    return request<ConfigBackupApplyResult>('/api/config-backup/apply', {
+      method: 'POST',
+      body: fd,
+      timeoutMs: 120_000,
+    })
+  },
+
+  // ── 统一定义目录 / 导入冒烟 (P4) ──
+
+  definitionsList: () =>
+    request<{ items: DefinitionsCatalogItem[] }>('/api/definitions'),
+
+  /** 逐条冒烟: 按 id 复检已存定义 (definition 与 id 二选一) */
+  definitionsSmoke: (kind: 'signal' | 'factor', id: string) =>
+    request<DefinitionSmokeResult & { file?: string }>('/api/definitions/smoke', {
+      method: 'POST',
+      body: JSON.stringify({ kind, id }),
+    }),
+
+  analysisMenu: (id: string) =>
+    request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),
 
 	analysisMenuSave: (id: string, body: Omit<AnalysisMenu, 'id' | 'created_at' | 'updated_at' | 'builtin'>) =>
 		request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`, {
@@ -4171,29 +4349,30 @@ updateDailyBatchSymbols: (size: number) =>
 			+ (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : ''),
 		),
 
-	extDataPullConfig: (id: string, body: {
-		url: string; method?: string; headers?: Record<string, string>; body?: string;
-		response_path?: string; field_map?: Record<string, string>;
-		schedule_minutes?: number; enabled?: boolean;
-		schedule_time?: string | null;
-		schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
-		schedule_day?: number | null;
-		schedule_trading_only?: boolean;
-		time_window_start?: string | null; time_window_end?: string | null;
-		date_param?: string | null;
-		time_field?: string | null;
-		auth?: ExtPullAuth;
-		timeout_seconds?: number;
-		page_param?: string | null;
-		page_size_param?: string | null;
-		page_size?: number;
-		page_start?: number;
-		max_pages?: number;
-	}) =>
-		request<{ status: string; pull: PullConfig }>(
-			`/api/ext-data/${id}/pull`,
-			{ method: 'PUT', body: JSON.stringify(body) },
-		),
+  extDataPullConfig: (id: string, body: {
+    url: string; method?: string; headers?: Record<string, string>; body?: string;
+    response_path?: string; field_map?: Record<string, string>;
+    schedule_minutes?: number; enabled?: boolean;
+    schedule_time?: string | null;
+    schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
+    schedule_day?: number | null;
+    schedule_trading_only?: boolean;
+    time_window_start?: string | null; time_window_end?: string | null;
+    date_param?: string | null;
+    time_field?: string | null;
+    since_param?: string | null;
+    auth?: ExtPullAuth;
+    timeout_seconds?: number;
+    page_param?: string | null;
+    page_size_param?: string | null;
+    page_size?: number;
+    page_start?: number;
+    max_pages?: number;
+  }) =>
+    request<{ status: string; pull: PullConfig }>(
+      `/api/ext-data/${id}/pull`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
 
 	/** 查询拉取接口 API Key 状态 (脱敏, 不返回明文) */
 	extDataApiKey: (id: string) =>
@@ -4978,14 +5157,40 @@ updateDailyBatchSymbols: (size: number) =>
 			{ method: 'POST' },
 		),
 
-	/** 获取策略源文件内容 */
-	strategyGetSource: (id: string) =>
-		request<{ code: string; source: string }>(`/api/strategies/${id}/source`),
-	strategyBuild: (step: number, payload: Record<string, any>) =>
-		request<StrategyBuildResult>(
-			'/api/strategies/build',
-			{ method: 'POST', body: JSON.stringify({ step, ...payload }) },
-		),
+  /** 获取策略源文件内容 */
+  strategyGetSource: (id: string) =>
+    request<{ code: string; source: string }>(`/api/strategies/${id}/source`),
+
+  // 策略包 (bundle): 依赖感知的导出/导入 — 策略 .py + 引用的信号/因子定义 + 用户调参。
+  // 导出走浏览器原生下载 (同配置备份直链模式)。
+  strategyBundleExportUrl: (strategyId: string) =>
+    `/api/strategies/${encodeURIComponent(strategyId)}/bundle`,
+
+  strategyBundleInspect: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<StrategyBundleInspect>('/api/strategies/bundle/inspect', {
+      method: 'POST',
+      body: fd,
+    })
+  },
+
+  strategyBundleApply: (file: File, allowOverwrite: boolean) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
+    return request<ConfigBackupApplyResult>('/api/strategies/bundle/apply', {
+      method: 'POST',
+      body: fd,
+      timeoutMs: 120_000,
+    })
+  },
+
+  strategyBuild: (step: number, payload: Record<string, any>) =>
+    request<StrategyBuildResult>(
+      '/api/strategies/build',
+      { method: 'POST', body: JSON.stringify({ step, ...payload }) },
+    ),
 
 	async* strategyBuildStream(step: number, payload: Record<string, any>): AsyncGenerator<StrategyBuildStreamEvent> {
 		const res = await fetch('/api/strategies/build/stream', {
@@ -5217,54 +5422,56 @@ export interface ExtPullAuth {
 }
 
 export interface PullConfig {
-	url: string
-	method: string
-	headers?: Record<string, string>
-	body?: string | null
-	response_path: string
-	field_map?: Record<string, string>
-	schedule_minutes: number
-	enabled: boolean
-	/** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
-	schedule_time?: string | null
-	/** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
-	schedule_period?: 'daily' | 'weekly' | 'monthly' | null
-	/** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
-	schedule_day?: number | null
-	/** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
-	schedule_trading_only?: boolean
-	last_run?: string | null
-	last_status?: string | null
-	last_message?: string | null
-	last_rows?: number | null
-	next_run?: string | null
-	time_window_start?: string | null
-	time_window_end?: string | null
-	/** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
-	date_param?: string | null
-	/** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
-	date_format?: string
-	/** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
-	time_field?: string | null
-	auth?: ExtPullAuth | null
-	/** 单次拉取请求超时 (秒), 默认 30 */
-	timeout_seconds?: number
-	/** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
-	page_param?: string | null
-	/** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
-	page_size_param?: string | null
-	/** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
-	page_size?: number
-	/** 起始页码 (有的接口从 0 计数), 默认 1 */
-	page_start?: number
-	/** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
-	max_pages?: number
-	/**
-	 * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
-	 * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
-	 * 自动走上这条路径, 无需任何按表硬编码。
-	 */
-	fanout?: PullFanout | null
+  url: string
+  method: string
+  headers?: Record<string, string>
+  body?: string | null
+  response_path: string
+  field_map?: Record<string, string>
+  schedule_minutes: number
+  enabled: boolean
+  /** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
+  schedule_time?: string | null
+  /** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
+  schedule_period?: 'daily' | 'weekly' | 'monthly' | null
+  /** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
+  schedule_day?: number | null
+  /** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
+  schedule_trading_only?: boolean
+  last_run?: string | null
+  last_status?: string | null
+  last_message?: string | null
+  last_rows?: number | null
+  next_run?: string | null
+  time_window_start?: string | null
+  time_window_end?: string | null
+  /** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
+  date_param?: string | null
+  /** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
+  date_format?: string
+  /** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
+  time_field?: string | null
+  /** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
+  since_param?: string | null
+  auth?: ExtPullAuth | null
+  /** 单次拉取请求超时 (秒), 默认 30 */
+  timeout_seconds?: number
+  /** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
+  page_param?: string | null
+  /** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
+  page_size_param?: string | null
+  /** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
+  page_size?: number
+  /** 起始页码 (有的接口从 0 计数), 默认 1 */
+  page_start?: number
+  /** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
+  max_pages?: number
+  /**
+   * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
+   * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
+   * 自动走上这条路径, 无需任何按表硬编码。
+   */
+  fanout?: PullFanout | null
 }
 
 export interface PullFanout {
@@ -5327,18 +5534,20 @@ export interface ExtDataDetectUrlResult {
 }
 
 export interface ExtDataConfig {
-	id: string
-	label: string
-	mode: 'snapshot' | 'timeseries'
-	fields: ExtDataField[]
-	description?: string
-	symbol_map?: Record<string, string>
-	code_map?: Record<string, string>
-	created_at: string
-	updated_at: string
-	latest_sync_date?: string | null
-	date_range?: string[] | null
-	pull?: PullConfig | null
+  id: string
+  label: string
+  mode: 'snapshot' | 'timeseries'
+  fields: ExtDataField[]
+  description?: string
+  symbol_map?: Record<string, string>
+  code_map?: Record<string, string>
+  created_at: string
+  updated_at: string
+  latest_sync_date?: string | null
+  date_range?: string[] | null
+  /** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
+  plate?: { date: string; plates: number; from: string; to: string } | null
+  pull?: PullConfig | null
 }
 
 export interface ExtDataRowsResult {

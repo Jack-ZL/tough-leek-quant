@@ -22,6 +22,7 @@ import {
 	useToggleRealtimeQuotes,
 } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
+import { setUiPref } from '@/lib/uiPrefs'
 import { getPageScale } from '@/lib/pageZoom'
 import { setKlineBatchLimits } from '@/lib/klineBatchLimits'
 import { compareByDefaultNav, defaultNavIndex, seedHiddenForNewUser } from '@/lib/navOrder'
@@ -450,7 +451,8 @@ export function Layout() {
 	const setNavStatePersist = (s: NavState) => {
 		setNavState(s)
 		try {
-			localStorage.setItem('tf-nav-state', s)
+			// localStorage.setItem('tf-nav-state', s)
+			setUiPref('tf-nav-state', s)
 		} catch {
 		}
 	}

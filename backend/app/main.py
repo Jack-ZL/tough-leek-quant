@@ -17,7 +17,9 @@ from app.api import (
     alerts,
     analysis,
     backtest,
+    config_backup,
     data,
+    definitions,
     events,
     ext_data,
     ext_pages,
@@ -36,6 +38,7 @@ from app.api import (
     pages_admin,
     paper,
     pipeline,
+    position_policies,
     regime,
     rps,
     screener,
@@ -455,6 +458,15 @@ async def _application_lifespan(app: FastAPI):
         logger.info("monitor engine loaded: %d rules", monitor_engine.rule_count)
     except Exception as e:  # noqa: BLE001
         logger.warning("monitor engine load failed: %s", e)
+    # 模拟盘「绑定即评估」: 把账户绑定但无监控规则的策略注入评估循环
+    # (set_rules 全量覆盖, 必须在其后注入; 失败不阻断启动)。
+    try:
+        from app.strategy import paper_watch
+
+        synced = paper_watch.sync(store.data_dir, monitor_engine, strategy_engine)
+        logger.info("paper watch synced at startup: %d strategies", len(synced["watching"]))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("paper watch sync failed (ignored): %s", e)
     app.state.monitor_engine = monitor_engine
     app.state.sector_monitor_service = sector_monitor_service
 
@@ -653,6 +665,7 @@ app.include_router(watchlist.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
 app.include_router(factors.router)
+app.include_router(definitions.router)
 app.include_router(mining.router)
 app.include_router(guardian.router)
 app.include_router(lab.router)
@@ -665,6 +678,7 @@ app.include_router(abnormal.router)
 app.include_router(regime.router)
 app.include_router(analysis.router)
 app.include_router(pipeline.router)
+app.include_router(position_policies.router)
 app.include_router(data.router)
 app.include_router(ext_data.router)
 app.include_router(ext_pages.router)
@@ -677,6 +691,7 @@ app.include_router(upgrade_guard_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
+app.include_router(config_backup.router)
 app.include_router(lots.router)
 app.include_router(alerts.router)
 app.include_router(events.router)
