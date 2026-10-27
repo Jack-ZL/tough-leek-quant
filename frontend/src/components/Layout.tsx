@@ -164,8 +164,8 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 						title={`${item.name} ${item.symbol}`}
 					>
 						{/* 名称不换行 + 涨跌幅不压缩: 两列布局下单卡内容区仅 85px,
-             「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
-             指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
+						 「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
+						 指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
 						<div className="flex items-center justify-between gap-1">
 							<span className="min-w-0 truncate text-[10px] text-secondary">{item.name}</span>
 							<span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
@@ -197,7 +197,8 @@ function QuickDataEntry({ syncing, justDone }: { syncing: boolean; justDone: boo
 		>
 			{syncing
 				? <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-				: <HardDriveDownload className="h-3 w-3 shrink-0 text-muted transition-colors group-hover:text-foreground" />}
+				:
+				<HardDriveDownload className="h-3 w-3 shrink-0 text-muted transition-colors group-hover:text-foreground" />}
 			<span className="text-[11px] leading-none">数据</span>
 			{!syncing && justDone && <CheckCircle2 className="h-3 w-3 shrink-0 text-bull" />}
 		</NavLink>
@@ -389,33 +390,33 @@ function AIConfigBadge({ configured, model, isOpen, onToggle, buttonRef }: {
 type NavState = 'expanded' | 'rail' | 'hidden'
 
 export function Layout() {
-  // ===== 共享 hooks (替代内联 useQuery) =====
-  const { data: settingsState } = useSettings()
-  const { data: matrix } = useCapabilityMatrix()
-  const { data: versionData } = useVersion()
-  // 更新检查 (单例 store): 启动静默查一次 GitHub Releases, 供左下角版本号徽标
-  const update = useUpdateCheck()
-  const hasUpdate = update.status === 'found'
-  const { data: prefs } = usePreferences()
-  // 批量端点单请求上限 = 前端分块大小 (与后端校验同源, 见 lib/klineBatchLimits)。
-  // 在渲染期写入而非 effect: 分块助手在子组件 queryFn 内调用, 而 queryFn 早于
-  // 父组件 effect 触发 —— 用 effect 会让首轮请求仍按默认值分块。幂等, 无状态更新。
-  setKlineBatchLimits({
-    daily: prefs?.daily_batch_symbols,
-    minute: prefs?.minute_batch_symbols,
-  })
-  // 数据源列表 (用于实时行情状态显示当前数据源名称)
-  const { data: dataSources } = useQuery({
-    queryKey: QK.dataSources,
-    queryFn: api.dataSources,
-    staleTime: 60_000,
-  })
-  // poll=true: 全局唯一开启条件轮询 (非交易时段 60s 兜底, 交易时段靠 SSE)
-  const { data: quoteStatus } = useQuoteStatus({ poll: true })
-  const { data: analysisMenus } = useQuery({
-    queryKey: QK.analysisMenus,
-    queryFn: api.analysisMenus,
-  })
+	// ===== 共享 hooks (替代内联 useQuery) =====
+	const { data: settingsState } = useSettings()
+	const { data: matrix } = useCapabilityMatrix()
+	const { data: versionData } = useVersion()
+	// 更新检查 (单例 store): 启动静默查一次 GitHub Releases, 供左下角版本号徽标
+	const update = useUpdateCheck()
+	const hasUpdate = update.status === 'found'
+	const { data: prefs } = usePreferences()
+	// 批量端点单请求上限 = 前端分块大小 (与后端校验同源, 见 lib/klineBatchLimits)。
+	// 在渲染期写入而非 effect: 分块助手在子组件 queryFn 内调用, 而 queryFn 早于
+	// 父组件 effect 触发 —— 用 effect 会让首轮请求仍按默认值分块。幂等, 无状态更新。
+	setKlineBatchLimits({
+		daily: prefs?.daily_batch_symbols,
+		minute: prefs?.minute_batch_symbols,
+	})
+	// 数据源列表 (用于实时行情状态显示当前数据源名称)
+	const { data: dataSources } = useQuery({
+		queryKey: QK.dataSources,
+		queryFn: api.dataSources,
+		staleTime: 60_000,
+	})
+	// poll=true: 全局唯一开启条件轮询 (非交易时段 60s 兜底, 交易时段靠 SSE)
+	const { data: quoteStatus } = useQuoteStatus({ poll: true })
+	const { data: analysisMenus } = useQuery({
+		queryKey: QK.analysisMenus,
+		queryFn: api.analysisMenus,
+	})
 
 	// 自选分组 — 仅当用户开启「显示在侧边栏」时拉取
 	const groupsInNav = prefs?.watchlist_groups_in_nav ?? false
@@ -1344,7 +1345,8 @@ export function Layout() {
 									<Sparkles className={cn('h-3 w-3 shrink-0', isActive ? 'text-purple-500' : 'text-muted')} />
 									<span className="truncate text-xs font-medium flex-1">{p.name || p.model || p.id}</span>
 									{isActive && <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />}
-									{aiActivating === p.id && <Loader2 className="h-3 w-3 animate-spin text-muted shrink-0" />}
+									{aiActivating === p.id &&
+										<Loader2 className="h-3 w-3 animate-spin text-muted shrink-0" />}
 								</button>
 							)
 						})}

@@ -878,31 +878,34 @@ export interface ParamVisibleIf {
 
 /** 仓位策略定义 (设置 → 定义 → 仓位策略 / 回测设置引用) */
 export interface PositionPolicyMeta {
-  id: string
-  label: string
-  description: string
-  params: StrategyParamDef[]
+	id: string
+	label: string
+	description: string
+	params: StrategyParamDef[]
 }
+
 export interface PositionPolicyInfo {
-  id: string
-  label: string
-  description: string
-  params: StrategyParamDef[]
-  source_file: string
+	id: string
+	label: string
+	description: string
+	params: StrategyParamDef[]
+	source_file: string
 }
+
 export interface PositionPolicyTemplate {
-  key: string
-  label: string
-  description: string
-  meta: { id: string; label: string; description: string; params: StrategyParamDef[] }
-  code: string
+	key: string
+	label: string
+	description: string
+	meta: { id: string; label: string; description: string; params: StrategyParamDef[] }
+	code: string
 }
+
 export interface PositionPolicySavePayload {
-  id?: string
-  label: string
-  description?: string
-  params?: StrategyParamDef[]
-  code: string
+	id?: string
+	label: string
+	description?: string
+	params?: StrategyParamDef[]
+	code: string
 }
 
 export interface StrategyParamDef {
@@ -1509,22 +1512,22 @@ export type FactorKind = 'base' | 'virtual' | 'composite' | 'custom'
 export type FactorStability = 'stable' | 'experimental' | 'deprecated'
 
 export interface FactorLibraryItem {
-  id: string
-  label: string
-  group: string
-  kind: FactorKind
-  version: number
-  formula: string
-  direction: 'high' | 'low' | 'none'
-  unit: string
-  warmup_bars: number
-  pit: boolean
-  asset_types: string[]
-  stability: FactorStability
-  /** 完整生命周期状态; 内置因子无盘上定义 → null (stability 是它的二元投影) */
-  status: 'draft' | 'active' | 'watch' | 'retired' | null
-  scale_free: boolean
-  dependencies: string[]
+	id: string
+	label: string
+	group: string
+	kind: FactorKind
+	version: number
+	formula: string
+	direction: 'high' | 'low' | 'none'
+	unit: string
+	warmup_bars: number
+	pit: boolean
+	asset_types: string[]
+	stability: FactorStability
+	/** 完整生命周期状态; 内置因子无盘上定义 → null (stability 是它的二元投影) */
+	status: 'draft' | 'active' | 'watch' | 'retired' | null
+	scale_free: boolean
+	dependencies: string[]
 }
 
 export interface FactorDslError {
@@ -1668,22 +1671,22 @@ export interface MiningAvailability {
 
 /** 挖掘锁诊断 (撞锁降级模式的持有者线索 + 强制释放判定)。 */
 export interface MiningLockStatus {
-  held: boolean
-  mine: boolean
-  holder: {
-    pid: number
-    started_at?: string
-    role?: string
-    host?: string
-    schema_version?: number
-  } | null
-  holder_alive: boolean
-  pid_consistent: boolean
-  active_runs: number
-  store_idle_seconds: number | null
-  stale_after_seconds: number
-  force_releasable: boolean
-  reason: string | null
+	held: boolean
+	mine: boolean
+	holder: {
+		pid: number
+		started_at?: string
+		role?: string
+		host?: string
+		schema_version?: number
+	} | null
+	holder_alive: boolean
+	pid_consistent: boolean
+	active_runs: number
+	store_idle_seconds: number | null
+	stale_after_seconds: number
+	force_releasable: boolean
+	reason: string | null
 }
 
 export interface MiningRequestV1 {
@@ -2309,176 +2312,176 @@ export interface ApiTokenRecord {
 
 /** 声效语音包 (用户上传的自定义提示音) */
 export interface SoundPack {
-  name: string
-  size: number
-  ext: string
+	name: string
+	size: number
+	ext: string
 }
 
 /** 配置备份 — 预览 (inspect) 与导入结果 (apply), 对应后端 config_backup */
 export interface ConfigBackupCategoryCount {
-  key: string
-  label: string
-  count: number
-  conflicts: number
+	key: string
+	label: string
+	count: number
+	conflicts: number
 }
 
 export interface ConfigBackupInspect {
-  created_at: string
-  app_version: string
-  has_secrets: boolean
-  categories: ConfigBackupCategoryCount[]
-  total_files: number
-  conflict_files: number
-  out_of_scope_files: number
+	created_at: string
+	app_version: string
+	has_secrets: boolean
+	categories: ConfigBackupCategoryCount[]
+	total_files: number
+	conflict_files: number
+	out_of_scope_files: number
 }
 
 export interface ConfigBackupApplyCategory {
-  key: string
-  label: string
-  imported: number
-  skipped_conflict: number
-  failed: { file: string; error: string }[]
-  /** 导入即冒烟 (仅 custom_signals/custom_factors): 逐条校验+编译+依赖检查结果 */
-  smoke?: (DefinitionSmokeResult & { file: string })[]
+	key: string
+	label: string
+	imported: number
+	skipped_conflict: number
+	failed: { file: string; error: string }[]
+	/** 导入即冒烟 (仅 custom_signals/custom_factors): 逐条校验+编译+依赖检查结果 */
+	smoke?: (DefinitionSmokeResult & { file: string })[]
 }
 
 /** 统一定义目录项 (GET /api/definitions) — 信号+因子统一视图 */
 export interface DefinitionsCatalogItem {
-  kind: 'signal' | 'factor'
-  id: string
-  label: string
-  enabled?: boolean
-  timeframe?: string
-  lang: string
-  status?: string
-  group?: string
-  dependencies?: string[]
-  warmup_bars?: number | null
-  /** 目录不因单个坏定义失败 — 坏条目携带错误原因 (隔离要求) */
-  error?: string
+	kind: 'signal' | 'factor'
+	id: string
+	label: string
+	enabled?: boolean
+	timeframe?: string
+	lang: string
+	status?: string
+	group?: string
+	dependencies?: string[]
+	warmup_bars?: number | null
+	/** 目录不因单个坏定义失败 — 坏条目携带错误原因 (隔离要求) */
+	error?: string
 }
 
 /** 导入冒烟结果 (POST /api/definitions/smoke) */
 export interface DefinitionSmokeResult {
-  ok: boolean
-  issues: { code: string; message: string }[]
-  dependencies: string[]
-  warmup_bars: number | null
+	ok: boolean
+	issues: { code: string; message: string }[]
+	dependencies: string[]
+	warmup_bars: number | null
 }
 
 export interface ConfigBackupApplyResult {
-  categories: ConfigBackupApplyCategory[]
-  preferences_merged: boolean
-  secrets_merged: boolean
-  skipped_unselected: number
-  out_of_scope_files: number
-  reload_hints: Record<string, boolean>
+	categories: ConfigBackupApplyCategory[]
+	preferences_merged: boolean
+	secrets_merged: boolean
+	skipped_unselected: number
+	out_of_scope_files: number
+	reload_hints: Record<string, boolean>
 }
 
 /** 策略包条目预览 (POST /api/strategies/bundle/inspect) */
 export interface StrategyBundleEntry {
-  path: string
-  kind: 'strategies' | 'strategy_overrides' | 'custom_signals' | 'custom_factors'
-  id: string
-  action: 'create' | 'conflict'
-  bytes: number
+	path: string
+	kind: 'strategies' | 'strategy_overrides' | 'custom_signals' | 'custom_factors'
+	id: string
+	action: 'create' | 'conflict'
+	bytes: number
 }
 
 export interface StrategyBundleInspect {
-  strategy_id: string
-  label: string
-  created_at?: string
-  counts: Record<string, number>
-  warnings: string[]
-  missing_deps: string[]
-  entries: StrategyBundleEntry[]
+	strategy_id: string
+	label: string
+	created_at?: string
+	counts: Record<string, number>
+	warnings: string[]
+	missing_deps: string[]
+	entries: StrategyBundleEntry[]
 }
 
 export interface Preferences {
-  realtime_quotes_enabled: boolean
-  watchlist_groups_in_nav: boolean
-  minute_sync_enabled: boolean
-  minute_sync_days: number
-  minute_sync_segment_days: number
-  minute_refresh_enabled: boolean
-  minute_refresh_interval: number
-  daily_data_provider?: string
-  adj_factor_provider?: string
-  minute_data_provider?: string
-  /** 全量分钟 (盘中全市场分钟落盘) 生效源; 默认 tickflow (需 Expert 档) */
-  full_minute_data_provider?: string
-  /** 分钟源 1 分钟历史深度(交易日); null/缺省 = 深历史 (如 tickflow)。分时档位据此收窄 */
-  minute_history_days?: number | null
-  depth5_data_provider?: string
-  realtime_data_provider?: string
-  financial_data_provider?: string
-  data_source_job_timeout_s: number
-  data_source_long_job_timeout_s: number
-  minute_batch_compress: boolean
-  daily_batch_compress: boolean
-  realtime_pull_stock?: boolean
-  realtime_pull_etf?: boolean
-  pipeline_pull_a_share: boolean
-  pipeline_pull_etf: boolean
-  pipeline_pull_index: boolean
-  pipeline_regime_enabled: boolean
-  regime_batch_days: number
-  regime_warmup_days: number
-  pipeline_index_symbols: string
-  pipeline_schedule: { hour: number; minute: number }
-  instruments_schedule: { hour: number; minute: number }
-  enriched_batch_size: number
-  index_daily_batch_size: number
-   /** daily-batch 单请求标的数上限, 同时是前端分块大小 (系统设置 → 批量请求) */
-  daily_batch_symbols: number
-  /** minute-batch 单请求标的数上限, 同时是前端分块大小 */
-  minute_batch_symbols: number
-  limit_ladder_monitor_enabled: boolean
-  depth_polling_interval: number
-  depth_finalize_time: { hour: number; minute: number }
-  review_schedule: { enabled: boolean; hour: number; minute: number }
-  review_push_channels: string[]
-  review_push_mode?: 'auto' | 'manual'
-  /** 用户自定义复盘系统提示词；空串 = 使用内置默认模板 */
-  market_recap_system_prompt?: string
-  sse_refresh_pages: Record<string, boolean>
-  strategy_monitor_enabled: boolean
-  strategy_monitor_ids: string[]
-  system_notify_enabled: boolean
- /** AI 输出数字忠实度闸门: 无出处数字标为「〖…〗」高亮提示 (默认关, 灰度) */
+	realtime_quotes_enabled: boolean
+	watchlist_groups_in_nav: boolean
+	minute_sync_enabled: boolean
+	minute_sync_days: number
+	minute_sync_segment_days: number
+	minute_refresh_enabled: boolean
+	minute_refresh_interval: number
+	daily_data_provider?: string
+	adj_factor_provider?: string
+	minute_data_provider?: string
+	/** 全量分钟 (盘中全市场分钟落盘) 生效源; 默认 tickflow (需 Expert 档) */
+	full_minute_data_provider?: string
+	/** 分钟源 1 分钟历史深度(交易日); null/缺省 = 深历史 (如 tickflow)。分时档位据此收窄 */
+	minute_history_days?: number | null
+	depth5_data_provider?: string
+	realtime_data_provider?: string
+	financial_data_provider?: string
+	data_source_job_timeout_s: number
+	data_source_long_job_timeout_s: number
+	minute_batch_compress: boolean
+	daily_batch_compress: boolean
+	realtime_pull_stock?: boolean
+	realtime_pull_etf?: boolean
+	pipeline_pull_a_share: boolean
+	pipeline_pull_etf: boolean
+	pipeline_pull_index: boolean
+	pipeline_regime_enabled: boolean
+	regime_batch_days: number
+	regime_warmup_days: number
+	pipeline_index_symbols: string
+	pipeline_schedule: { hour: number; minute: number }
+	instruments_schedule: { hour: number; minute: number }
+	enriched_batch_size: number
+	index_daily_batch_size: number
+	/** daily-batch 单请求标的数上限, 同时是前端分块大小 (系统设置 → 批量请求) */
+	daily_batch_symbols: number
+	/** minute-batch 单请求标的数上限, 同时是前端分块大小 */
+	minute_batch_symbols: number
+	limit_ladder_monitor_enabled: boolean
+	depth_polling_interval: number
+	depth_finalize_time: { hour: number; minute: number }
+	review_schedule: { enabled: boolean; hour: number; minute: number }
+	review_push_channels: string[]
+	review_push_mode?: 'auto' | 'manual'
+	/** 用户自定义复盘系统提示词；空串 = 使用内置默认模板 */
+	market_recap_system_prompt?: string
+	sse_refresh_pages: Record<string, boolean>
+	strategy_monitor_enabled: boolean
+	strategy_monitor_ids: string[]
+	system_notify_enabled: boolean
+	/** AI 输出数字忠实度闸门: 无出处数字标为「〖…〗」高亮提示 (默认关, 灰度) */
 	ai_number_gate_enabled: boolean
-  feishu_webhook_url?: string
-  feishu_webhook_secret?: string
-  wecom_webhook_url?: string
-  custom_webhook_url?: string
-  custom_webhook_secret_set?: boolean
-  email_smtp_config?: EmailSmtpConfig
-  email_smtp_password_set?: boolean
-  wecom_bot_id?: string
-  wecom_bot_secret?: string
-  wecom_bot_enabled?: boolean
-  dingtalk_webhook_url?: string
-  dingtalk_webhook_secret?: string
-  dingtalk_bot_id?: string
-  dingtalk_bot_secret?: string
-  dingtalk_bot_enabled?: boolean
-  webhook_enabled_default?: boolean
-  webhook_default_channels?: string[]
-  nav_order: string[]
-  nav_hidden: string[]
-    /** 看板自定义布局; null/缺省 = 未自定义(前端内置默认布局) */
-    dashboard_layout: {
+	feishu_webhook_url?: string
+	feishu_webhook_secret?: string
+	wecom_webhook_url?: string
+	custom_webhook_url?: string
+	custom_webhook_secret_set?: boolean
+	email_smtp_config?: EmailSmtpConfig
+	email_smtp_password_set?: boolean
+	wecom_bot_id?: string
+	wecom_bot_secret?: string
+	wecom_bot_enabled?: boolean
+	dingtalk_webhook_url?: string
+	dingtalk_webhook_secret?: string
+	dingtalk_bot_id?: string
+	dingtalk_bot_secret?: string
+	dingtalk_bot_enabled?: boolean
+	webhook_enabled_default?: boolean
+	webhook_default_channels?: string[]
+	nav_order: string[]
+	nav_hidden: string[]
+	/** 看板自定义布局; null/缺省 = 未自定义(前端内置默认布局) */
+	dashboard_layout: {
 		v: number;
 		items: Array<{ i: string; t: string; x: number; y: number; w: number; h: number; p?: Record<string, string> }>
 	} | null
-  screener_auto_run: boolean
-  /** AI 助手动作工具是否免确认直接执行 (默认 false) */
-  assistant_auto_approve_actions: boolean
-  /** AI 助手打开时是否显示毛玻璃遮罩, 点击遮罩关闭 (默认 true) */
-  assistant_mask_enabled: boolean
-  minute_intraday_refresh: boolean
-  minute_intraday_refresh_interval: number
-  monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
+	screener_auto_run: boolean
+	/** AI 助手动作工具是否免确认直接执行 (默认 false) */
+	assistant_auto_approve_actions: boolean
+	/** AI 助手打开时是否显示毛玻璃遮罩, 点击遮罩关闭 (默认 true) */
+	assistant_mask_enabled: boolean
+	minute_intraday_refresh: boolean
+	minute_intraday_refresh_interval: number
+	monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
 }
 
 export interface EmailSmtpConfig {
@@ -2640,110 +2643,110 @@ export interface UpgradeGuardStatus {
 
 // ===== 策略守护 (发布后持续复验) =====
 export interface GuardianConfig {
-  guardian_schedule_enabled: boolean
-  guardian_watch_pct: number
-  guardian_retire_pct: number
-  guardian_k_max: number
-  lab_mined_slot_limit: number
+	guardian_schedule_enabled: boolean
+	guardian_watch_pct: number
+	guardian_retire_pct: number
+	guardian_k_max: number
+	lab_mined_slot_limit: number
 }
 
 export interface GuardianRun {
-  run_id: string
-  status: string
-  request: Record<string, any>
-  created_at: string | null
-  updated_at: string | null
-  started_at: string | null
-  finished_at: string | null
-  error: string | null
-  progress: { done?: number; total?: number; strategy_id?: string; verdict?: string } | null
+	run_id: string
+	status: string
+	request: Record<string, any>
+	created_at: string | null
+	updated_at: string | null
+	started_at: string | null
+	finished_at: string | null
+	error: string | null
+	progress: { done?: number; total?: number; strategy_id?: string; verdict?: string } | null
 }
 
 export interface GuardianProfile {
-  strategy_id: string
-  name: string | null
-  status: 'pending' | 'healthy' | 'watch' | 'retired'
-  status_reason: string | null
-  status_since: string | null
-  baseline: {
-    kind: 'mining_gate' | 'trailing_reference' | null
-    data_as_of: string | null
-    objective: string | null
-    score: number | null
-    n_trades: number | null
-    max_drawdown: number | null
-  }
-  checks_count: number
-  consecutive_watch: number
-  alert: boolean
-  last_check: {
-    checked_at: string | null
-    verdict: 'healthy' | 'watch' | 'retired' | null
-    skipped: boolean
-    reason: string | null
-    error: string | null
-    degradation_pct: number | null
-    objective: string | null
-    window_start: string | null
-    window_end: string | null
-    k: number | null
-    reasons: string[]
-  } | null
-  updated_at: string | null
+	strategy_id: string
+	name: string | null
+	status: 'pending' | 'healthy' | 'watch' | 'retired'
+	status_reason: string | null
+	status_since: string | null
+	baseline: {
+		kind: 'mining_gate' | 'trailing_reference' | null
+		data_as_of: string | null
+		objective: string | null
+		score: number | null
+		n_trades: number | null
+		max_drawdown: number | null
+	}
+	checks_count: number
+	consecutive_watch: number
+	alert: boolean
+	last_check: {
+		checked_at: string | null
+		verdict: 'healthy' | 'watch' | 'retired' | null
+		skipped: boolean
+		reason: string | null
+		error: string | null
+		degradation_pct: number | null
+		objective: string | null
+		window_start: string | null
+		window_end: string | null
+		k: number | null
+		reasons: string[]
+	} | null
+	updated_at: string | null
 }
 
 export interface GuardianCombinationSuggestion {
-  a: string
-  b: string
-  corr: number
-  common_days: number
+	a: string
+	b: string
+	corr: number
+	common_days: number
 }
 
 export interface GuardianCombinations {
-  schema_version?: number
-  generated_at?: string
-  window_start?: string
-  window_end?: string
-  pairs_evaluated?: number
-  suggestions: GuardianCombinationSuggestion[]
+	schema_version?: number
+	generated_at?: string
+	window_start?: string
+	window_end?: string
+	pairs_evaluated?: number
+	suggestions: GuardianCombinationSuggestion[]
 }
 
 export interface GuardianOverview {
-  items: GuardianProfile[]
-  config: GuardianConfig
-  active_run: GuardianRun | null
-  combinations: GuardianCombinations | null
+	items: GuardianProfile[]
+	config: GuardianConfig
+	active_run: GuardianRun | null
+	combinations: GuardianCombinations | null
 }
 
 export interface LabReport {
-  generated_at: string
-  mining: {
-    last_run: {
-      run_id: string
-      status: string
-      created_at: string | null
-      finished_at: string | null
-      algorithm_version?: string | null
-      confidence?: string | null
-      candidate_count?: number | null
-      valid_fold_count?: number | null
-      refinement?: Record<string, any> | null
-      trials_used?: number | null
-    } | null
-  }
-  guardian: {
-    profiles: number
-    by_status: Record<string, number>
-    alerts: number
-    last_run: { run_id: string; status: string; created_at: string | null; finished_at: string | null } | null
-  }
-  combinations: { generated_at?: string | null; suggestions: GuardianCombinationSuggestion[] }
-  slots: {
-    active_mined: number
-    active_mined_ids: string[]
-    limit: number
-    full: boolean
-  }
+	generated_at: string
+	mining: {
+		last_run: {
+			run_id: string
+			status: string
+			created_at: string | null
+			finished_at: string | null
+			algorithm_version?: string | null
+			confidence?: string | null
+			candidate_count?: number | null
+			valid_fold_count?: number | null
+			refinement?: Record<string, any> | null
+			trials_used?: number | null
+		} | null
+	}
+	guardian: {
+		profiles: number
+		by_status: Record<string, number>
+		alerts: number
+		last_run: { run_id: string; status: string; created_at: string | null; finished_at: string | null } | null
+	}
+	combinations: { generated_at?: string | null; suggestions: GuardianCombinationSuggestion[] }
+	slots: {
+		active_mined: number
+		active_mined_ids: string[]
+		limit: number
+		full: boolean
+	}
 }
 
 // ===== API surface =====
@@ -3027,309 +3030,342 @@ export const api = {
 			last_error?: string | null
 		}>('/api/settings/minute-refresh/status'),
 
-  /** 分钟数据缺口体检: 列出本地分区中分钟 K 不完整的 (标的, 交易日)。
-   *  只发现不补齐 — 超出上游历史窗口的缺口补不回来, 前端据此标注。 */
-  minuteGaps: (params?: { symbols?: string[]; dates?: string[]; limit?: number }) => {
-    const q = new URLSearchParams()
-    if (params?.symbols?.length) q.set('symbols', params.symbols.join(','))
-    if (params?.dates?.length) q.set('dates', params.dates.join(','))
-    if (params?.limit) q.set('limit', String(params.limit))
-    const qs = q.toString()
-    return request<{
-      status: string
-      scanned_dates: number
-      scanned_symbols: number
-      complete_dates: string[]
-      gaps: MinuteGapRow[]
-      summary_by_date: { date: string; gap_symbols: number; missing_bars: number; expected_bars: number }[]
-      truncated: boolean
-      limit?: number
-    }>(`/api/kline/minute-gaps${qs ? `?${qs}` : ''}`)
-  },
-  updatePipelinePullTypes: (cfg: Partial<Pick<Preferences, 'pipeline_pull_a_share' | 'pipeline_pull_etf' | 'pipeline_pull_index'>>) =>
-    request<{
-      pipeline_pull_a_share: boolean
-      pipeline_pull_etf: boolean
-      pipeline_pull_index: boolean
-    }>('/api/settings/preferences/pipeline-pull-types', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
-  updatePipelineRegimeEnabled: (enabled: boolean) =>
-    request<{ pipeline_regime_enabled: boolean }>('/api/settings/preferences/pipeline-regime-enabled', {
-      method: 'PUT',
-      body: JSON.stringify({ pipeline_regime_enabled: enabled }),
-    }),
-  updateRegimeBatchParams: (params: { batch_days?: number; warmup_days?: number }) =>
-    request<{ regime_batch_days: number; regime_warmup_days: number }>('/api/settings/preferences/regime-batch-params', {
-      method: 'PUT',
-      body: JSON.stringify(params),
-    }),
-  updatePipelineIndexSymbols: (symbols: string) =>
-    request<{ pipeline_index_symbols: string }>('/api/settings/preferences/pipeline-index-symbols', {
-      method: 'PUT',
-      body: JSON.stringify({ symbols }),
-    }),
-  updateRealtimeQuotes: (enabled: boolean) =>
-    request<{ realtime_quotes_enabled: boolean; realtime_allowed?: boolean; mode?: string; error?: string }>('/api/settings/preferences/realtime-quotes', {
-      method: 'PUT',
-      body: JSON.stringify({ realtime_quotes_enabled: enabled }),
-    }),
-  updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf'>>) =>
-    request<Partial<Preferences>>('/api/settings/preferences/realtime-quote-scope', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
-  updateWatchlistGroupsInNav: (enabled: boolean) =>
-    request<{ watchlist_groups_in_nav: boolean }>('/api/settings/preferences/watchlist-groups-in-nav', {
-      method: 'PUT',
-      body: JSON.stringify({ watchlist_groups_in_nav: enabled }),
-    }),
-  quoteStatus: () =>
-    request<{
-      enabled: boolean
-      running: boolean
-      paused?: boolean
-      mode?: 'none' | 'watchlist' | 'full_market'
-      realtime_allowed?: boolean
-      interval_s: number
-      symbol_count: number
-      watchlist_symbol_count?: number
-      index_symbol_count?: number
-      etf_symbol_count?: number
-      quote_age_ms: number | null
-      is_trading_hours: boolean
-      is_polling_window?: boolean
-      market_phase?: string
-      final_sync_done?: boolean
-      final_sync_failed?: string | null
-      last_fetch_ms: number | null
-    }>('/api/intraday/status'),
-  quoteInterval: () =>
-    request<{ interval: number; min_interval: number; max_interval: number }>(
-      '/api/settings/preferences/quote-interval',
-    ),
-  updateQuoteInterval: (interval: number) =>
-    request<{ interval: number; min_interval: number; max_interval: number }>(
-      '/api/settings/preferences/quote-interval',
-      { method: 'PUT', body: JSON.stringify({ interval }) },
-    ),
-  intradayRefresh: () => request<{ status: string }>('/api/intraday/refresh', { method: 'POST' }),
-  indexQuotes: (symbols?: string[]) =>
-    request<{ rows: IndexQuote[]; count: number }>(
-      `/api/intraday/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
-    ),
-  updateRealtimeMonitorConfig: (cfg: {
-    sse_refresh_pages?: Record<string, boolean>
-    strategy_monitor_enabled?: boolean
-    strategy_monitor_ids?: string[]
-    screener_auto_run?: boolean
-    minute_intraday_refresh?: boolean
-    minute_intraday_refresh_interval?: number
-    monitor_ext_fields?: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
-  }) =>
-    request<{
-      sse_refresh_pages: Record<string, boolean>
-      strategy_monitor_enabled: boolean
-      strategy_monitor_ids: string[]
-      screener_auto_run: boolean
-      minute_intraday_refresh: boolean
-      minute_intraday_refresh_interval: number
-      monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
-    }>('/api/settings/preferences/realtime-monitor', {
-      method: 'PUT',
-      body: JSON.stringify(cfg),
-    }),
-  updateSystemNotify: (enabled: boolean) =>
-    request<{ system_notify_enabled: boolean }>('/api/settings/preferences/system-notify', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-      /** AI 助手「动作工具免确认」开关 (默认关闭) */
-  updateAssistantAutoApprove: (enabled: boolean) =>
-    request<{ assistant_auto_approve_actions: boolean }>('/api/settings/preferences/assistant-auto-approve', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  /** AI 助手「毛玻璃遮罩」开关 (默认开启) */
-  updateAssistantMask: (enabled: boolean) =>
-    request<{ assistant_mask_enabled: boolean }>('/api/settings/preferences/assistant-mask', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  updateFeishuWebhook: (url: string, secret: string = '') =>
-    request<{ feishu_webhook_url: string; feishu_webhook_secret: string }>('/api/settings/preferences/feishu-webhook', {
-      method: 'PUT',
-      body: JSON.stringify({ url, secret }),
-    }),
-  updateWecomWebhook: (url: string) =>
-    request<{ wecom_webhook_url: string }>('/api/settings/preferences/wecom-webhook', {
-      method: 'PUT',
-      body: JSON.stringify({ url }),
-    }),
-  updateDingtalkWebhook: (url: string, secret?: string) =>
-    request<{ dingtalk_webhook_url: string; dingtalk_webhook_secret: string }>('/api/settings/preferences/dingtalk-webhook', {
-      method: 'PUT',
-      body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
-    }),
-  updateCustomWebhook: (url: string, secret?: string) =>
-    request<{ custom_webhook_url: string; custom_webhook_secret_set: boolean }>('/api/settings/preferences/custom-webhook', {
-      method: 'PUT',
-      body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
-    }),
-  updateEmailSmtp: (config: EmailSmtpConfig, password?: string) =>
-    request<{ email_smtp_config: EmailSmtpConfig; email_smtp_password_set: boolean }>('/api/settings/preferences/email-smtp', {
-      method: 'PUT',
-      body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
-    }),
-  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
-    request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
-      method: 'POST',
-      body: JSON.stringify({ channel }),
-    }),
-  updateWecomBot: (botId: string, secret: string, enabled: boolean = true) =>
-    request<{
-      wecom_bot_id: string
-      wecom_bot_secret: string
-      wecom_bot_enabled: boolean
-      wecom_bot_status: WecomBotStatus
-    }>('/api/settings/preferences/wecom-bot', {
-      method: 'PUT',
-      body: JSON.stringify({ bot_id: botId, secret, enabled }),
-    }),
-  toggleWecomBot: (enabled: boolean) =>
-    request<{ wecom_bot_enabled: boolean; wecom_bot_status: WecomBotStatus }>('/api/settings/preferences/wecom-bot-toggle', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
-    request<{
-      dingtalk_bot_id: string
-      dingtalk_bot_secret: string
-      dingtalk_bot_enabled: boolean
-      dingtalk_bot_status: DingtalkBotStatus
-    }>('/api/settings/preferences/dingtalk-bot', {
-      method: 'PUT',
-      body: JSON.stringify({ bot_id: botId, secret, enabled }),
-    }),
-  toggleDingtalkBot: (enabled: boolean) =>
-    request<{ dingtalk_bot_enabled: boolean; dingtalk_bot_status: DingtalkBotStatus }>('/api/settings/preferences/dingtalk-bot-toggle', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  updateWebhookDefault: (enabled: boolean) =>
-    request<{ webhook_enabled_default: boolean }>('/api/settings/preferences/webhook-enabled-default', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  updateWebhookDefaultChannels: (channels: string[]) =>
-    request<{ webhook_default_channels: string[] }>('/api/settings/preferences/webhook-default-channels', {
-      method: 'PUT',
-      body: JSON.stringify({ channels }),
-    }),
-  updatePipelineSchedule: (hour: number, minute: number) =>
-    request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {
-      method: 'PUT',
-      body: JSON.stringify({ hour, minute }),
-    }),
-  updateReviewSchedule: (enabled: boolean, hour: number, minute: number) =>
-    request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled, hour, minute }),
-    }),
-  updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
-    request<{ review_push_channels: string[]; review_push_mode: 'auto' | 'manual' }>('/api/settings/preferences/review-push', {
-      method: 'PUT',
-      body: JSON.stringify({ channels, mode: mode ?? null }),
-    }),
-  /** 复盘系统提示词: 自定义值 + 内置默认全文(按需拉取, 供「填入默认模板」) */
-  getMarketRecapPrompt: () =>
-    request<{ custom: string; default: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt'),
-  /** 保存自定义复盘系统提示词; 空串 = 恢复内置默认模板 */
-  updateMarketRecapPrompt: (prompt: string) =>
-    request<{ custom: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt', {
-      method: 'PUT',
-      body: JSON.stringify({ prompt }),
-    }),
-  updateDepthPollingInterval: (interval: number) =>
-    request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {
-      method: 'PUT',
-      body: JSON.stringify({ interval }),
-    }),
-  updateLimitLadderMonitor: (enabled: boolean) =>
-    request<{ limit_ladder_monitor_enabled: boolean }>('/api/settings/preferences/limit-ladder-monitor', {
-      method: 'PUT',
-      body: JSON.stringify({ enabled }),
-    }),
-  runLimitLadderFix: () =>
-    request<{ ok: boolean; count: number; msg: string }>('/api/settings/preferences/limit-ladder-monitor/run', {
-      method: 'POST',
-    }),
-  updateDepthFinalizeTime: (hour: number, minute: number) =>
-    request<{ hour: number; minute: number }>('/api/settings/preferences/depth-finalize-time', {
-      method: 'PUT',
-      body: JSON.stringify({ hour, minute }),
-    }),
-  saveNavOrder: (nav_order: string[]) =>
-    request<{ nav_order: string[] }>('/api/settings/preferences/nav-order', {
-      method: 'PUT',
-      body: JSON.stringify({ nav_order }),
-    }),
-  saveNavHidden: (nav_hidden: string[]) =>
-    request<{ nav_hidden: string[] }>('/api/settings/preferences/nav-hidden', {
-      method: 'PUT',
-      body: JSON.stringify({ nav_hidden }),
-    }),
-  /** 保存看板自定义布局; layout=null 恢复默认布局 */
-  saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
-    request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
-      method: 'PUT',
-      body: JSON.stringify({ layout }),
-    }),
-  updateInstrumentsSchedule: (hour: number, minute: number) =>
-    request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
-      method: 'PUT',
-      body: JSON.stringify({ hour, minute }),
-    }),
-  updateEnrichedBatchSize: (size: number) =>
-    request<{ enriched_batch_size: number }>('/api/settings/preferences/enriched-batch-size', {
-      method: 'PUT',
-      body: JSON.stringify({ size }),
-    }),
-  updateIndexDailyBatchSize: (size: number) =>
-    request<{ index_daily_batch_size: number }>('/api/settings/preferences/index-daily-batch-size', {
-      method: 'PUT',
-      body: JSON.stringify({ size }),
-    }),
-updateDailyBatchSymbols: (size: number) =>
-    request<{ daily_batch_symbols: number }>('/api/settings/preferences/daily-batch-symbols', {
-      method: 'PUT',
-      body: JSON.stringify({ size }),
-    }),
-  updateMinuteBatchSymbols: (size: number) =>
-    request<{ minute_batch_symbols: number }>('/api/settings/preferences/minute-batch-symbols', {
-      method: 'PUT',
-      body: JSON.stringify({ size }),
-    }),
+	/** 分钟数据缺口体检: 列出本地分区中分钟 K 不完整的 (标的, 交易日)。
+	 *  只发现不补齐 — 超出上游历史窗口的缺口补不回来, 前端据此标注。 */
+	minuteGaps: (params?: { symbols?: string[]; dates?: string[]; limit?: number }) => {
+		const q = new URLSearchParams()
+		if (params?.symbols?.length) q.set('symbols', params.symbols.join(','))
+		if (params?.dates?.length) q.set('dates', params.dates.join(','))
+		if (params?.limit) q.set('limit', String(params.limit))
+		const qs = q.toString()
+		return request<{
+			status: string
+			scanned_dates: number
+			scanned_symbols: number
+			complete_dates: string[]
+			gaps: MinuteGapRow[]
+			summary_by_date: { date: string; gap_symbols: number; missing_bars: number; expected_bars: number }[]
+			truncated: boolean
+			limit?: number
+		}>(`/api/kline/minute-gaps${qs ? `?${qs}` : ''}`)
+	},
+	updatePipelinePullTypes: (cfg: Partial<Pick<Preferences, 'pipeline_pull_a_share' | 'pipeline_pull_etf' | 'pipeline_pull_index'>>) =>
+		request<{
+			pipeline_pull_a_share: boolean
+			pipeline_pull_etf: boolean
+			pipeline_pull_index: boolean
+		}>('/api/settings/preferences/pipeline-pull-types', {
+			method: 'PUT',
+			body: JSON.stringify(cfg),
+		}),
+	updatePipelineRegimeEnabled: (enabled: boolean) =>
+		request<{ pipeline_regime_enabled: boolean }>('/api/settings/preferences/pipeline-regime-enabled', {
+			method: 'PUT',
+			body: JSON.stringify({ pipeline_regime_enabled: enabled }),
+		}),
+	updateRegimeBatchParams: (params: { batch_days?: number; warmup_days?: number }) =>
+		request<{
+			regime_batch_days: number;
+			regime_warmup_days: number
+		}>('/api/settings/preferences/regime-batch-params', {
+			method: 'PUT',
+			body: JSON.stringify(params),
+		}),
+	updatePipelineIndexSymbols: (symbols: string) =>
+		request<{ pipeline_index_symbols: string }>('/api/settings/preferences/pipeline-index-symbols', {
+			method: 'PUT',
+			body: JSON.stringify({ symbols }),
+		}),
+	updateRealtimeQuotes: (enabled: boolean) =>
+		request<{
+			realtime_quotes_enabled: boolean;
+			realtime_allowed?: boolean;
+			mode?: string;
+			error?: string
+		}>('/api/settings/preferences/realtime-quotes', {
+			method: 'PUT',
+			body: JSON.stringify({ realtime_quotes_enabled: enabled }),
+		}),
+	updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf'>>) =>
+		request<Partial<Preferences>>('/api/settings/preferences/realtime-quote-scope', {
+			method: 'PUT',
+			body: JSON.stringify(cfg),
+		}),
+	updateWatchlistGroupsInNav: (enabled: boolean) =>
+		request<{ watchlist_groups_in_nav: boolean }>('/api/settings/preferences/watchlist-groups-in-nav', {
+			method: 'PUT',
+			body: JSON.stringify({ watchlist_groups_in_nav: enabled }),
+		}),
+	quoteStatus: () =>
+		request<{
+			enabled: boolean
+			running: boolean
+			paused?: boolean
+			mode?: 'none' | 'watchlist' | 'full_market'
+			realtime_allowed?: boolean
+			interval_s: number
+			symbol_count: number
+			watchlist_symbol_count?: number
+			index_symbol_count?: number
+			etf_symbol_count?: number
+			quote_age_ms: number | null
+			is_trading_hours: boolean
+			is_polling_window?: boolean
+			market_phase?: string
+			final_sync_done?: boolean
+			final_sync_failed?: string | null
+			last_fetch_ms: number | null
+		}>('/api/intraday/status'),
+	quoteInterval: () =>
+		request<{ interval: number; min_interval: number; max_interval: number }>(
+			'/api/settings/preferences/quote-interval',
+		),
+	updateQuoteInterval: (interval: number) =>
+		request<{ interval: number; min_interval: number; max_interval: number }>(
+			'/api/settings/preferences/quote-interval',
+			{ method: 'PUT', body: JSON.stringify({ interval }) },
+		),
+	intradayRefresh: () => request<{ status: string }>('/api/intraday/refresh', { method: 'POST' }),
+	indexQuotes: (symbols?: string[]) =>
+		request<{ rows: IndexQuote[]; count: number }>(
+			`/api/intraday/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
+		),
+	updateRealtimeMonitorConfig: (cfg: {
+		sse_refresh_pages?: Record<string, boolean>
+		strategy_monitor_enabled?: boolean
+		strategy_monitor_ids?: string[]
+		screener_auto_run?: boolean
+		minute_intraday_refresh?: boolean
+		minute_intraday_refresh_interval?: number
+		monitor_ext_fields?: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
+	}) =>
+		request<{
+			sse_refresh_pages: Record<string, boolean>
+			strategy_monitor_enabled: boolean
+			strategy_monitor_ids: string[]
+			screener_auto_run: boolean
+			minute_intraday_refresh: boolean
+			minute_intraday_refresh_interval: number
+			monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
+		}>('/api/settings/preferences/realtime-monitor', {
+			method: 'PUT',
+			body: JSON.stringify(cfg),
+		}),
+	updateSystemNotify: (enabled: boolean) =>
+		request<{ system_notify_enabled: boolean }>('/api/settings/preferences/system-notify', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	/** AI 助手「动作工具免确认」开关 (默认关闭) */
+	updateAssistantAutoApprove: (enabled: boolean) =>
+		request<{ assistant_auto_approve_actions: boolean }>('/api/settings/preferences/assistant-auto-approve', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	/** AI 助手「毛玻璃遮罩」开关 (默认开启) */
+	updateAssistantMask: (enabled: boolean) =>
+		request<{ assistant_mask_enabled: boolean }>('/api/settings/preferences/assistant-mask', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	updateFeishuWebhook: (url: string, secret: string = '') =>
+		request<{
+			feishu_webhook_url: string;
+			feishu_webhook_secret: string
+		}>('/api/settings/preferences/feishu-webhook', {
+			method: 'PUT',
+			body: JSON.stringify({ url, secret }),
+		}),
+	updateWecomWebhook: (url: string) =>
+		request<{ wecom_webhook_url: string }>('/api/settings/preferences/wecom-webhook', {
+			method: 'PUT',
+			body: JSON.stringify({ url }),
+		}),
+	updateDingtalkWebhook: (url: string, secret?: string) =>
+		request<{
+			dingtalk_webhook_url: string;
+			dingtalk_webhook_secret: string
+		}>('/api/settings/preferences/dingtalk-webhook', {
+			method: 'PUT',
+			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
+		}),
+	updateCustomWebhook: (url: string, secret?: string) =>
+		request<{
+			custom_webhook_url: string;
+			custom_webhook_secret_set: boolean
+		}>('/api/settings/preferences/custom-webhook', {
+			method: 'PUT',
+			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
+		}),
+	updateEmailSmtp: (config: EmailSmtpConfig, password?: string) =>
+		request<{
+			email_smtp_config: EmailSmtpConfig;
+			email_smtp_password_set: boolean
+		}>('/api/settings/preferences/email-smtp', {
+			method: 'PUT',
+			body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
+		}),
+	sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
+		request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
+			method: 'POST',
+			body: JSON.stringify({ channel }),
+		}),
+	updateWecomBot: (botId: string, secret: string, enabled: boolean = true) =>
+		request<{
+			wecom_bot_id: string
+			wecom_bot_secret: string
+			wecom_bot_enabled: boolean
+			wecom_bot_status: WecomBotStatus
+		}>('/api/settings/preferences/wecom-bot', {
+			method: 'PUT',
+			body: JSON.stringify({ bot_id: botId, secret, enabled }),
+		}),
+	toggleWecomBot: (enabled: boolean) =>
+		request<{
+			wecom_bot_enabled: boolean;
+			wecom_bot_status: WecomBotStatus
+		}>('/api/settings/preferences/wecom-bot-toggle', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
+		request<{
+			dingtalk_bot_id: string
+			dingtalk_bot_secret: string
+			dingtalk_bot_enabled: boolean
+			dingtalk_bot_status: DingtalkBotStatus
+		}>('/api/settings/preferences/dingtalk-bot', {
+			method: 'PUT',
+			body: JSON.stringify({ bot_id: botId, secret, enabled }),
+		}),
+	toggleDingtalkBot: (enabled: boolean) =>
+		request<{
+			dingtalk_bot_enabled: boolean;
+			dingtalk_bot_status: DingtalkBotStatus
+		}>('/api/settings/preferences/dingtalk-bot-toggle', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	updateWebhookDefault: (enabled: boolean) =>
+		request<{ webhook_enabled_default: boolean }>('/api/settings/preferences/webhook-enabled-default', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	updateWebhookDefaultChannels: (channels: string[]) =>
+		request<{ webhook_default_channels: string[] }>('/api/settings/preferences/webhook-default-channels', {
+			method: 'PUT',
+			body: JSON.stringify({ channels }),
+		}),
+	updatePipelineSchedule: (hour: number, minute: number) =>
+		request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {
+			method: 'PUT',
+			body: JSON.stringify({ hour, minute }),
+		}),
+	updateReviewSchedule: (enabled: boolean, hour: number, minute: number) =>
+		request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled, hour, minute }),
+		}),
+	updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
+		request<{
+			review_push_channels: string[];
+			review_push_mode: 'auto' | 'manual'
+		}>('/api/settings/preferences/review-push', {
+			method: 'PUT',
+			body: JSON.stringify({ channels, mode: mode ?? null }),
+		}),
+	/** 复盘系统提示词: 自定义值 + 内置默认全文(按需拉取, 供「填入默认模板」) */
+	getMarketRecapPrompt: () =>
+		request<{
+			custom: string;
+			default: string;
+			customized: boolean
+		}>('/api/settings/preferences/market-recap-prompt'),
+	/** 保存自定义复盘系统提示词; 空串 = 恢复内置默认模板 */
+	updateMarketRecapPrompt: (prompt: string) =>
+		request<{ custom: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt', {
+			method: 'PUT',
+			body: JSON.stringify({ prompt }),
+		}),
+	updateDepthPollingInterval: (interval: number) =>
+		request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {
+			method: 'PUT',
+			body: JSON.stringify({ interval }),
+		}),
+	updateLimitLadderMonitor: (enabled: boolean) =>
+		request<{ limit_ladder_monitor_enabled: boolean }>('/api/settings/preferences/limit-ladder-monitor', {
+			method: 'PUT',
+			body: JSON.stringify({ enabled }),
+		}),
+	runLimitLadderFix: () =>
+		request<{ ok: boolean; count: number; msg: string }>('/api/settings/preferences/limit-ladder-monitor/run', {
+			method: 'POST',
+		}),
+	updateDepthFinalizeTime: (hour: number, minute: number) =>
+		request<{ hour: number; minute: number }>('/api/settings/preferences/depth-finalize-time', {
+			method: 'PUT',
+			body: JSON.stringify({ hour, minute }),
+		}),
+	saveNavOrder: (nav_order: string[]) =>
+		request<{ nav_order: string[] }>('/api/settings/preferences/nav-order', {
+			method: 'PUT',
+			body: JSON.stringify({ nav_order }),
+		}),
+	saveNavHidden: (nav_hidden: string[]) =>
+		request<{ nav_hidden: string[] }>('/api/settings/preferences/nav-hidden', {
+			method: 'PUT',
+			body: JSON.stringify({ nav_hidden }),
+		}),
+	/** 保存看板自定义布局; layout=null 恢复默认布局 */
+	saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
+		request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
+			method: 'PUT',
+			body: JSON.stringify({ layout }),
+		}),
+	updateInstrumentsSchedule: (hour: number, minute: number) =>
+		request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
+			method: 'PUT',
+			body: JSON.stringify({ hour, minute }),
+		}),
+	updateEnrichedBatchSize: (size: number) =>
+		request<{ enriched_batch_size: number }>('/api/settings/preferences/enriched-batch-size', {
+			method: 'PUT',
+			body: JSON.stringify({ size }),
+		}),
+	updateIndexDailyBatchSize: (size: number) =>
+		request<{ index_daily_batch_size: number }>('/api/settings/preferences/index-daily-batch-size', {
+			method: 'PUT',
+			body: JSON.stringify({ size }),
+		}),
+	updateDailyBatchSymbols: (size: number) =>
+		request<{ daily_batch_symbols: number }>('/api/settings/preferences/daily-batch-symbols', {
+			method: 'PUT',
+			body: JSON.stringify({ size }),
+		}),
+	updateMinuteBatchSymbols: (size: number) =>
+		request<{ minute_batch_symbols: number }>('/api/settings/preferences/minute-batch-symbols', {
+			method: 'PUT',
+			body: JSON.stringify({ size }),
+		}),
 
-  // 声效语音包 (自定义提示音, data/sound_packs)
-  listSoundPacks: () =>
-    request<{ packs: SoundPack[] }>('/api/settings/sound-packs'),
+	// 声效语音包 (自定义提示音, data/sound_packs)
+	listSoundPacks: () =>
+		request<{ packs: SoundPack[] }>('/api/settings/sound-packs'),
 
-  uploadSoundPack: (file: File) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<{ status: string; pack: SoundPack }>('/api/settings/sound-packs', {
-      method: 'POST',
-      body: fd,
-      timeoutMs: 30_000,
-    })
-  },
+	uploadSoundPack: (file: File) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<{ status: string; pack: SoundPack }>('/api/settings/sound-packs', {
+			method: 'POST',
+			body: fd,
+			timeoutMs: 30_000,
+		})
+	},
 
-  deleteSoundPack: (name: string) =>
-    request<{ status: string }>(`/api/settings/sound-packs/${encodeURIComponent(name)}`, {
-      method: 'DELETE',
-    }),
+	deleteSoundPack: (name: string) =>
+		request<{ status: string }>(`/api/settings/sound-packs/${encodeURIComponent(name)}`, {
+			method: 'DELETE',
+		}),
 
 	// 自选列表列配置
 	watchlistColumns: () =>
@@ -3867,33 +3903,33 @@ updateDailyBatchSymbols: (size: number) =>
 			body: JSON.stringify(payload),
 		}),
 
-  factorBatch: (payload: {
-    factor_names: string[]
-    symbols?: string[] | null
-    start?: string | null
-    end?: string | null
-    n_groups?: number
-    rebalance?: 'daily' | 'weekly' | 'monthly'
-    weight?: 'equal' | 'factor_weight'
-    fees_pct?: number
-    slippage_bps?: number
-    asset_type?: 'stock' | 'etf' | 'index'
-  }, signal?: AbortSignal) =>
-    request<FactorBatchResult>('/api/backtest/factor/batch', {
-      method: 'POST',
-      timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
-      body: JSON.stringify(payload),
-      // 调用方持有 signal (界面「取消」按钮) 时由其自行中止, 跳过默认超时
-      ...(signal ? { signal } : {}),
-    }),
+	factorBatch: (payload: {
+		factor_names: string[]
+		symbols?: string[] | null
+		start?: string | null
+		end?: string | null
+		n_groups?: number
+		rebalance?: 'daily' | 'weekly' | 'monthly'
+		weight?: 'equal' | 'factor_weight'
+		fees_pct?: number
+		slippage_bps?: number
+		asset_type?: 'stock' | 'etf' | 'index'
+	}, signal?: AbortSignal) =>
+		request<FactorBatchResult>('/api/backtest/factor/batch', {
+			method: 'POST',
+			timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+			body: JSON.stringify(payload),
+			// 调用方持有 signal (界面「取消」按钮) 时由其自行中止, 跳过默认超时
+			...(signal ? { signal } : {}),
+		}),
 
-  miningLockStatus: () =>
-    request<MiningLockStatus>('/api/backtest/mining/lock', { quiet: true }),
+	miningLockStatus: () =>
+		request<MiningLockStatus>('/api/backtest/mining/lock', { quiet: true }),
 
-  miningForceReleaseLock: () =>
-    request<{ released: boolean; terminated_pid: number; reacquired: boolean }>(
-      '/api/backtest/mining/lock/force-release', { method: 'POST' },
-    ),
+	miningForceReleaseLock: () =>
+		request<{ released: boolean; terminated_pid: number; reacquired: boolean }>(
+			'/api/backtest/mining/lock/force-release', { method: 'POST' },
+		),
 
 	miningRuns: () =>
 		request<{ items: MiningRun[] }>('/api/backtest/mining/runs'),
@@ -3982,60 +4018,60 @@ updateDailyBatchSymbols: (size: number) =>
 			method: 'DELETE',
 		}),
 
-  strategyBacktestRun: (payload: {
-    strategy_id: string
-    symbols?: string[] | null
-    start?: string | null
-    end?: string | null
-    params?: Record<string, any> | null
-    overrides?: Record<string, any> | null
-    matching?: 'close_t' | 'open_t+1'
-    entry_fill?: 'close_t' | 'open_t+1' | null
-    exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
-    fees_pct?: number
-    commission_pct?: number
-    stamp_tax_pct?: number
-    slippage_bps?: number
-    max_positions?: number
-    initial_capital?: number
-    position_sizing?: 'equal' | 'score_weight' | 'policy'
-    position_policy?: string | null
-    position_policy_params?: Record<string, number | boolean | string> | null
-    asset_type?: 'stock' | 'etf' | 'index'
-    minute_fill?: boolean
-  }) =>
-    request<StrategyBacktestResult>('/api/backtest/strategy/run', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+	strategyBacktestRun: (payload: {
+		strategy_id: string
+		symbols?: string[] | null
+		start?: string | null
+		end?: string | null
+		params?: Record<string, any> | null
+		overrides?: Record<string, any> | null
+		matching?: 'close_t' | 'open_t+1'
+		entry_fill?: 'close_t' | 'open_t+1' | null
+		exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
+		fees_pct?: number
+		commission_pct?: number
+		stamp_tax_pct?: number
+		slippage_bps?: number
+		max_positions?: number
+		initial_capital?: number
+		position_sizing?: 'equal' | 'score_weight' | 'policy'
+		position_policy?: string | null
+		position_policy_params?: Record<string, number | boolean | string> | null
+		asset_type?: 'stock' | 'etf' | 'index'
+		minute_fill?: boolean
+	}) =>
+		request<StrategyBacktestResult>('/api/backtest/strategy/run', {
+			method: 'POST',
+			body: JSON.stringify(payload),
+		}),
 
-  positionPolicyList: () => request<{
-    policies: PositionPolicyInfo[]
-    errors: Record<string, string>
-  }>('/api/backtest/position-policies'),
-  positionPolicyTemplates: () => request<{ templates: PositionPolicyTemplate[] }>(
-    '/api/backtest/position-policies/templates',
-  ),
-  positionPolicyGet: (id: string) => request<{ id: string; meta: PositionPolicyMeta; code: string }>(
-    `/api/backtest/position-policies/${id}`,
-  ),
-  positionPolicyValidate: (payload: PositionPolicySavePayload) => request<{
-    ok: boolean
-    issues: string[]
-    smoke: { weights: number[]; budget_scale: number } | null
-  }>('/api/backtest/position-policies/validate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  }),
-  positionPolicySave: (payload: PositionPolicySavePayload) => request<{ ok: boolean; id: string; issues: string[] }>(
-    '/api/backtest/position-policies', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    },
-  ),
-  positionPolicyDelete: (id: string) => request<{ ok: boolean }>(
-    `/api/backtest/position-policies/${id}`, { method: 'DELETE' },
-  ),
+	positionPolicyList: () => request<{
+		policies: PositionPolicyInfo[]
+		errors: Record<string, string>
+	}>('/api/backtest/position-policies'),
+	positionPolicyTemplates: () => request<{ templates: PositionPolicyTemplate[] }>(
+		'/api/backtest/position-policies/templates',
+	),
+	positionPolicyGet: (id: string) => request<{ id: string; meta: PositionPolicyMeta; code: string }>(
+		`/api/backtest/position-policies/${id}`,
+	),
+	positionPolicyValidate: (payload: PositionPolicySavePayload) => request<{
+		ok: boolean
+		issues: string[]
+		smoke: { weights: number[]; budget_scale: number } | null
+	}>('/api/backtest/position-policies/validate', {
+		method: 'POST',
+		body: JSON.stringify(payload),
+	}),
+	positionPolicySave: (payload: PositionPolicySavePayload) => request<{ ok: boolean; id: string; issues: string[] }>(
+		'/api/backtest/position-policies', {
+		method: 'POST',
+		body: JSON.stringify(payload),
+	},
+	),
+	positionPolicyDelete: (id: string) => request<{ ok: boolean }>(
+		`/api/backtest/position-policies/${id}`, { method: 'DELETE' },
+	),
 
 	pipelineRun: () => request<{ job_id: string; reused: boolean }>(
 		'/api/pipeline/run', { method: 'POST' },
@@ -4203,47 +4239,47 @@ updateDailyBatchSymbols: (size: number) =>
 	pageAdminBackupUrl: (filename: string) =>
 		`/api/pages-admin/backups/${encodeURIComponent(filename)}`,
 
-  // 配置备份 (切换设备迁移配置; 导出直链下载, 导入先 inspect 预览再 apply)
-  // categories: 勾选的类别键 (后端 config_backup._CATEGORY_LABELS 的键);
-  // 含 'secrets' 才导出/导入密钥, 不含则该类别跳过。
-  configBackupExportUrl: (categoryKeys: readonly string[]) =>
-    `/api/config-backup/export?categories=${encodeURIComponent(categoryKeys.join(','))}`,
+	// 配置备份 (切换设备迁移配置; 导出直链下载, 导入先 inspect 预览再 apply)
+	// categories: 勾选的类别键 (后端 config_backup._CATEGORY_LABELS 的键);
+	// 含 'secrets' 才导出/导入密钥, 不含则该类别跳过。
+	configBackupExportUrl: (categoryKeys: readonly string[]) =>
+		`/api/config-backup/export?categories=${encodeURIComponent(categoryKeys.join(','))}`,
 
-  configBackupInspect: (file: File) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<ConfigBackupInspect>('/api/config-backup/inspect', {
-      method: 'POST',
-      body: fd,
-    })
-  },
+	configBackupInspect: (file: File) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<ConfigBackupInspect>('/api/config-backup/inspect', {
+			method: 'POST',
+			body: fd,
+		})
+	},
 
-  configBackupApply: (file: File, allowOverwrite: boolean, categoryKeys: readonly string[]) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
-    fd.append('categories', categoryKeys.join(','))
-    return request<ConfigBackupApplyResult>('/api/config-backup/apply', {
-      method: 'POST',
-      body: fd,
-      timeoutMs: 120_000,
-    })
-  },
+	configBackupApply: (file: File, allowOverwrite: boolean, categoryKeys: readonly string[]) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
+		fd.append('categories', categoryKeys.join(','))
+		return request<ConfigBackupApplyResult>('/api/config-backup/apply', {
+			method: 'POST',
+			body: fd,
+			timeoutMs: 120_000,
+		})
+	},
 
-  // ── 统一定义目录 / 导入冒烟 (P4) ──
+	// ── 统一定义目录 / 导入冒烟 (P4) ──
 
-  definitionsList: () =>
-    request<{ items: DefinitionsCatalogItem[] }>('/api/definitions'),
+	definitionsList: () =>
+		request<{ items: DefinitionsCatalogItem[] }>('/api/definitions'),
 
-  /** 逐条冒烟: 按 id 复检已存定义 (definition 与 id 二选一) */
-  definitionsSmoke: (kind: 'signal' | 'factor', id: string) =>
-    request<DefinitionSmokeResult & { file?: string }>('/api/definitions/smoke', {
-      method: 'POST',
-      body: JSON.stringify({ kind, id }),
-    }),
+	/** 逐条冒烟: 按 id 复检已存定义 (definition 与 id 二选一) */
+	definitionsSmoke: (kind: 'signal' | 'factor', id: string) =>
+		request<DefinitionSmokeResult & { file?: string }>('/api/definitions/smoke', {
+			method: 'POST',
+			body: JSON.stringify({ kind, id }),
+		}),
 
-  analysisMenu: (id: string) =>
-    request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),
+	analysisMenu: (id: string) =>
+		request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),
 
 	analysisMenuSave: (id: string, body: Omit<AnalysisMenu, 'id' | 'created_at' | 'updated_at' | 'builtin'>) =>
 		request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`, {
@@ -4349,30 +4385,30 @@ updateDailyBatchSymbols: (size: number) =>
 			+ (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : ''),
 		),
 
-  extDataPullConfig: (id: string, body: {
-    url: string; method?: string; headers?: Record<string, string>; body?: string;
-    response_path?: string; field_map?: Record<string, string>;
-    schedule_minutes?: number; enabled?: boolean;
-    schedule_time?: string | null;
-    schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
-    schedule_day?: number | null;
-    schedule_trading_only?: boolean;
-    time_window_start?: string | null; time_window_end?: string | null;
-    date_param?: string | null;
-    time_field?: string | null;
-    since_param?: string | null;
-    auth?: ExtPullAuth;
-    timeout_seconds?: number;
-    page_param?: string | null;
-    page_size_param?: string | null;
-    page_size?: number;
-    page_start?: number;
-    max_pages?: number;
-  }) =>
-    request<{ status: string; pull: PullConfig }>(
-      `/api/ext-data/${id}/pull`,
-      { method: 'PUT', body: JSON.stringify(body) },
-    ),
+	extDataPullConfig: (id: string, body: {
+		url: string; method?: string; headers?: Record<string, string>; body?: string;
+		response_path?: string; field_map?: Record<string, string>;
+		schedule_minutes?: number; enabled?: boolean;
+		schedule_time?: string | null;
+		schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
+		schedule_day?: number | null;
+		schedule_trading_only?: boolean;
+		time_window_start?: string | null; time_window_end?: string | null;
+		date_param?: string | null;
+		time_field?: string | null;
+		since_param?: string | null;
+		auth?: ExtPullAuth;
+		timeout_seconds?: number;
+		page_param?: string | null;
+		page_size_param?: string | null;
+		page_size?: number;
+		page_start?: number;
+		max_pages?: number;
+	}) =>
+		request<{ status: string; pull: PullConfig }>(
+			`/api/ext-data/${id}/pull`,
+			{ method: 'PUT', body: JSON.stringify(body) },
+		),
 
 	/** 查询拉取接口 API Key 状态 (脱敏, 不返回明文) */
 	extDataApiKey: (id: string) =>
@@ -4802,75 +4838,79 @@ updateDailyBatchSymbols: (size: number) =>
 			{ method: 'POST', body: JSON.stringify({ as_of: asOf ?? null }) },
 		),
 
-  /** 稳健优化折预览: 运行前查看 K 段验证窗切分与告警 (不回测)。 */
-  robustOptimizePreview: (start: string, end: string, kSegments: number) =>
-    request<{ k_segments: number; windows: { start: string; end: string; days: number }[]; warnings: string[] }>(
-      `/api/backtest/optimize-robust/preview?${new URLSearchParams({ start, end, k_segments: String(kSegments) })}`,
-    ),
+	/** 稳健优化折预览: 运行前查看 K 段验证窗切分与告警 (不回测)。 */
+	robustOptimizePreview: (start: string, end: string, kSegments: number) =>
+		request<{ k_segments: number; windows: { start: string; end: string; days: number }[]; warnings: string[] }>(
+			`/api/backtest/optimize-robust/preview?${new URLSearchParams({ start, end, k_segments: String(kSegments) })}`,
+		),
 
-  /** 滚动样本外检验折预览: 运行前查看折数/窗口切分与告警 (不回测)。 */
-  walkforwardPreview: (start: string, end: string, trainDays: number, testDays: number, stepDays: number) =>
-    request<{ n_folds: number; folds: { index: number; train_start: string; train_end: string; test_start: string; test_end: string }[]; warnings: string[] }>(
-      `/api/backtest/walkforward/preview?${new URLSearchParams({
-        start, end,
-        train_days: String(trainDays), test_days: String(testDays), step_days: String(stepDays),
-      })}`,
-    ),
+	/** 滚动样本外检验折预览: 运行前查看折数/窗口切分与告警 (不回测)。 */
+	walkforwardPreview: (start: string, end: string, trainDays: number, testDays: number, stepDays: number) =>
+		request<{
+			n_folds: number;
+			folds: { index: number; train_start: string; train_end: string; test_start: string; test_end: string }[];
+			warnings: string[]
+		}>(
+			`/api/backtest/walkforward/preview?${new URLSearchParams({
+				start, end,
+				train_days: String(trainDays), test_days: String(testDays), step_days: String(stepDays),
+			})}`,
+		),
 
-  // ── 策略守护 (发布后持续复验) ──────────────────────────────
-  guardianOverview: () =>
-    request<GuardianOverview>('/api/backtest/guardian/overview'),
+	// ── 策略守护 (发布后持续复验) ──────────────────────────────
+	guardianOverview: () =>
+		request<GuardianOverview>('/api/backtest/guardian/overview'),
 
-  guardianAdopt: (strategyId: string, objective: string) =>
-    request<{ ok: boolean; strategy_id: string; run_id: string }>(
-      `/api/backtest/guardian/${encodeURIComponent(strategyId)}/adopt`,
-      { method: 'POST', body: JSON.stringify({ objective }) },
-    ),
+	guardianAdopt: (strategyId: string, objective: string) =>
+		request<{ ok: boolean; strategy_id: string; run_id: string }>(
+			`/api/backtest/guardian/${encodeURIComponent(strategyId)}/adopt`,
+			{ method: 'POST', body: JSON.stringify({ objective }) },
+		),
 
-  guardianDrop: (strategyId: string) =>
-    request<{ ok: boolean; strategy_id: string }>(
-      `/api/backtest/guardian/${encodeURIComponent(strategyId)}/drop`,
-      { method: 'POST' },
-    ),
+	guardianDrop: (strategyId: string) =>
+		request<{ ok: boolean; strategy_id: string }>(
+			`/api/backtest/guardian/${encodeURIComponent(strategyId)}/drop`,
+			{ method: 'POST' },
+		),
 
-  guardianRerun: (strategyId: string) =>
-    request<{ ok: boolean; strategy_id: string; run_id: string }>(
-      `/api/backtest/guardian/${encodeURIComponent(strategyId)}/rerun`,
-      { method: 'POST' },
-    ),
+	guardianRerun: (strategyId: string) =>
+		request<{ ok: boolean; strategy_id: string; run_id: string }>(
+			`/api/backtest/guardian/${encodeURIComponent(strategyId)}/rerun`,
+			{ method: 'POST' },
+		),
 
-  guardianRunAll: () =>
-    request<{ ok: boolean; run_id: string }>('/api/backtest/guardian/run', { method: 'POST' }),
+	guardianRunAll: () =>
+		request<{ ok: boolean; run_id: string }>('/api/backtest/guardian/run', { method: 'POST' }),
 
-  guardianRuns: (limit = 20) =>
-    request<{ items: GuardianRun[] }>(`/api/backtest/guardian/runs?limit=${limit}`),
+	guardianRuns: (limit = 20) =>
+		request<{ items: GuardianRun[] }>(`/api/backtest/guardian/runs?limit=${limit}`),
 
-  guardianConfig: () => request<GuardianConfig>('/api/backtest/guardian/config'),
+	guardianConfig: () => request<GuardianConfig>('/api/backtest/guardian/config'),
 
-  guardianPatchConfig: (
-    patch: Partial<Pick<GuardianConfig, 'guardian_schedule_enabled' | 'guardian_watch_pct' | 'guardian_retire_pct' | 'guardian_k_max' | 'lab_mined_slot_limit'>>,
-  ) =>
-    request<GuardianConfig>('/api/backtest/guardian/config', {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    }),
+	guardianPatchConfig: (
+		patch: Partial<Pick<GuardianConfig, 'guardian_schedule_enabled' | 'guardian_watch_pct' | 'guardian_retire_pct' | 'guardian_k_max' | 'lab_mined_slot_limit'>>,
+	) =>
+		request<GuardianConfig>('/api/backtest/guardian/config', {
+			method: 'PATCH',
+			body: JSON.stringify(patch),
+		}),
 
-  guardianScanCombinations: () =>
-    request<{ ok: boolean; run_id: string }>('/api/backtest/guardian/combinations/scan', { method: 'POST' }),
+	guardianScanCombinations: () =>
+		request<{ ok: boolean; run_id: string }>('/api/backtest/guardian/combinations/scan', { method: 'POST' }),
 
-  guardianCreateCombination: (a: string, b: string) =>
-    request<{ ok: boolean; strategy_id: string; created: boolean }>('/api/backtest/guardian/combinations/create', {
-      method: 'POST',
-      body: JSON.stringify({ a, b }),
-    }),
+	guardianCreateCombination: (a: string, b: string) =>
+		request<{ ok: boolean; strategy_id: string; created: boolean }>('/api/backtest/guardian/combinations/create', {
+			method: 'POST',
+			body: JSON.stringify({ a, b }),
+		}),
 
-  labReport: () => request<LabReport>('/api/backtest/lab/report'),
+	labReport: () => request<LabReport>('/api/backtest/lab/report'),
 
-  strategySaveConfig: (strategyId: string, overrides: Record<string, any>) =>
-    request<{ ok: boolean }>('/api/strategies/config', {
-      method: 'POST',
-      body: JSON.stringify({ strategy_id: strategyId, overrides }),
-    }),
+	strategySaveConfig: (strategyId: string, overrides: Record<string, any>) =>
+		request<{ ok: boolean }>('/api/strategies/config', {
+			method: 'POST',
+			body: JSON.stringify({ strategy_id: strategyId, overrides }),
+		}),
 
 	strategyPatchConfig: (strategyId: string, overrides: Record<string, any>) =>
 		request<{ ok: boolean }>('/api/strategies/config', {
@@ -5157,40 +5197,40 @@ updateDailyBatchSymbols: (size: number) =>
 			{ method: 'POST' },
 		),
 
-  /** 获取策略源文件内容 */
-  strategyGetSource: (id: string) =>
-    request<{ code: string; source: string }>(`/api/strategies/${id}/source`),
+	/** 获取策略源文件内容 */
+	strategyGetSource: (id: string) =>
+		request<{ code: string; source: string }>(`/api/strategies/${id}/source`),
 
-  // 策略包 (bundle): 依赖感知的导出/导入 — 策略 .py + 引用的信号/因子定义 + 用户调参。
-  // 导出走浏览器原生下载 (同配置备份直链模式)。
-  strategyBundleExportUrl: (strategyId: string) =>
-    `/api/strategies/${encodeURIComponent(strategyId)}/bundle`,
+	// 策略包 (bundle): 依赖感知的导出/导入 — 策略 .py + 引用的信号/因子定义 + 用户调参。
+	// 导出走浏览器原生下载 (同配置备份直链模式)。
+	strategyBundleExportUrl: (strategyId: string) =>
+		`/api/strategies/${encodeURIComponent(strategyId)}/bundle`,
 
-  strategyBundleInspect: (file: File) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<StrategyBundleInspect>('/api/strategies/bundle/inspect', {
-      method: 'POST',
-      body: fd,
-    })
-  },
+	strategyBundleInspect: (file: File) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<StrategyBundleInspect>('/api/strategies/bundle/inspect', {
+			method: 'POST',
+			body: fd,
+		})
+	},
 
-  strategyBundleApply: (file: File, allowOverwrite: boolean) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
-    return request<ConfigBackupApplyResult>('/api/strategies/bundle/apply', {
-      method: 'POST',
-      body: fd,
-      timeoutMs: 120_000,
-    })
-  },
+	strategyBundleApply: (file: File, allowOverwrite: boolean) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		fd.append('allow_overwrite', allowOverwrite ? 'true' : 'false')
+		return request<ConfigBackupApplyResult>('/api/strategies/bundle/apply', {
+			method: 'POST',
+			body: fd,
+			timeoutMs: 120_000,
+		})
+	},
 
-  strategyBuild: (step: number, payload: Record<string, any>) =>
-    request<StrategyBuildResult>(
-      '/api/strategies/build',
-      { method: 'POST', body: JSON.stringify({ step, ...payload }) },
-    ),
+	strategyBuild: (step: number, payload: Record<string, any>) =>
+		request<StrategyBuildResult>(
+			'/api/strategies/build',
+			{ method: 'POST', body: JSON.stringify({ step, ...payload }) },
+		),
 
 	async* strategyBuildStream(step: number, payload: Record<string, any>): AsyncGenerator<StrategyBuildStreamEvent> {
 		const res = await fetch('/api/strategies/build/stream', {
@@ -5422,56 +5462,56 @@ export interface ExtPullAuth {
 }
 
 export interface PullConfig {
-  url: string
-  method: string
-  headers?: Record<string, string>
-  body?: string | null
-  response_path: string
-  field_map?: Record<string, string>
-  schedule_minutes: number
-  enabled: boolean
-  /** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
-  schedule_time?: string | null
-  /** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
-  schedule_period?: 'daily' | 'weekly' | 'monthly' | null
-  /** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
-  schedule_day?: number | null
-  /** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
-  schedule_trading_only?: boolean
-  last_run?: string | null
-  last_status?: string | null
-  last_message?: string | null
-  last_rows?: number | null
-  next_run?: string | null
-  time_window_start?: string | null
-  time_window_end?: string | null
-  /** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
-  date_param?: string | null
-  /** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
-  date_format?: string
-  /** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
-  time_field?: string | null
-  /** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
-  since_param?: string | null
-  auth?: ExtPullAuth | null
-  /** 单次拉取请求超时 (秒), 默认 30 */
-  timeout_seconds?: number
-  /** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
-  page_param?: string | null
-  /** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
-  page_size_param?: string | null
-  /** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
-  page_size?: number
-  /** 起始页码 (有的接口从 0 计数), 默认 1 */
-  page_start?: number
-  /** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
-  max_pages?: number
-  /**
-   * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
-   * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
-   * 自动走上这条路径, 无需任何按表硬编码。
-   */
-  fanout?: PullFanout | null
+	url: string
+	method: string
+	headers?: Record<string, string>
+	body?: string | null
+	response_path: string
+	field_map?: Record<string, string>
+	schedule_minutes: number
+	enabled: boolean
+	/** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
+	schedule_time?: string | null
+	/** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
+	schedule_period?: 'daily' | 'weekly' | 'monthly' | null
+	/** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
+	schedule_day?: number | null
+	/** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
+	schedule_trading_only?: boolean
+	last_run?: string | null
+	last_status?: string | null
+	last_message?: string | null
+	last_rows?: number | null
+	next_run?: string | null
+	time_window_start?: string | null
+	time_window_end?: string | null
+	/** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
+	date_param?: string | null
+	/** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
+	date_format?: string
+	/** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
+	time_field?: string | null
+	/** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
+	since_param?: string | null
+	auth?: ExtPullAuth | null
+	/** 单次拉取请求超时 (秒), 默认 30 */
+	timeout_seconds?: number
+	/** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
+	page_param?: string | null
+	/** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
+	page_size_param?: string | null
+	/** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
+	page_size?: number
+	/** 起始页码 (有的接口从 0 计数), 默认 1 */
+	page_start?: number
+	/** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
+	max_pages?: number
+	/**
+	 * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
+	 * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
+	 * 自动走上这条路径, 无需任何按表硬编码。
+	 */
+	fanout?: PullFanout | null
 }
 
 export interface PullFanout {
@@ -5534,20 +5574,20 @@ export interface ExtDataDetectUrlResult {
 }
 
 export interface ExtDataConfig {
-  id: string
-  label: string
-  mode: 'snapshot' | 'timeseries'
-  fields: ExtDataField[]
-  description?: string
-  symbol_map?: Record<string, string>
-  code_map?: Record<string, string>
-  created_at: string
-  updated_at: string
-  latest_sync_date?: string | null
-  date_range?: string[] | null
-  /** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
-  plate?: { date: string; plates: number; from: string; to: string } | null
-  pull?: PullConfig | null
+	id: string
+	label: string
+	mode: 'snapshot' | 'timeseries'
+	fields: ExtDataField[]
+	description?: string
+	symbol_map?: Record<string, string>
+	code_map?: Record<string, string>
+	created_at: string
+	updated_at: string
+	latest_sync_date?: string | null
+	date_range?: string[] | null
+	/** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
+	plate?: { date: string; plates: number; from: string; to: string } | null
+	pull?: PullConfig | null
 }
 
 export interface ExtDataRowsResult {

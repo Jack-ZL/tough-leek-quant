@@ -46,16 +46,16 @@ type TabDef = {
 }
 
 const TABS: readonly TabDef[] = [
-  { key: 'data-sources', label: '数据源',     icon: Database,  panel: SettingsDataSourcesPanel },
-  { key: 'ai',         label: 'AI 设置',    icon: Sparkles,  panel: SettingsAIPanel },
-  { key: 'monitoring', label: '实时监控',   icon: Radio,      panel: SettingsMonitoringPanel },
-  { key: 'pages',      label: '页面管理',   icon: LayoutGrid, panel: SettingsPageAdminPanel },
-  { key: 'timeout',    label: '网络设置',   icon: Clock3,     panel: SettingsTimeoutPanel },
-  { key: 'api-tokens', label: '开放接口',   icon: KeyRound,   panel: SettingsApiTokensPanel },
-  { key: 'definitions', label: '定义目录',   icon: Library,    panel: SettingsDefinitionsPanel },
-  { key: 'backup',     label: '配置备份',   icon: HardDriveDownload, panel: SettingsBackupPanel },
-  { key: 'system',     label: '系统设置',   icon: Settings2,  panel: SettingsSystemPanel },
-  { key: 'about',      label: '关于',       icon: Info,       panel: SettingsAboutPanel },
+	{ key: 'data-sources', label: '数据源', icon: Database, panel: SettingsDataSourcesPanel },
+	{ key: 'ai', label: 'AI 设置', icon: Sparkles, panel: SettingsAIPanel },
+	{ key: 'monitoring', label: '实时监控', icon: Radio, panel: SettingsMonitoringPanel },
+	{ key: 'pages', label: '页面管理', icon: LayoutGrid, panel: SettingsPageAdminPanel },
+	{ key: 'timeout', label: '网络设置', icon: Clock3, panel: SettingsTimeoutPanel },
+	{ key: 'api-tokens', label: '开放接口', icon: KeyRound, panel: SettingsApiTokensPanel },
+	{ key: 'definitions', label: '定义目录', icon: Library, panel: SettingsDefinitionsPanel },
+	{ key: 'backup', label: '配置备份', icon: HardDriveDownload, panel: SettingsBackupPanel },
+	{ key: 'system', label: '系统设置', icon: Settings2, panel: SettingsSystemPanel },
+	{ key: 'about', label: '关于', icon: Info, panel: SettingsAboutPanel },
 ]
 
 // 「页面管理」归拢前的三个 tab key → 深链子区块, 历史链接零失效
