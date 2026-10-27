@@ -10,17 +10,21 @@ import {
 	Database,
 	KeyRound,
 	LayoutGrid,
+	Library,
 	Radio,
 	Sparkles,
 	Settings2,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Clock3,
-	Info
+	Info,
+	HardDriveDownload
 } from 'lucide-react'
 // 面板按 tab 按需加载: 8 个面板源码 270KB+, 同步打包会让设置页 chunk 膨胀
 const SettingsAIPanel = lazy(() => import('./settings/AI').then(m => ({ default: m.SettingsAIPanel })))
 const SettingsApiTokensPanel = lazy(() => import('./settings/ApiTokens').then(m => ({ default: m.SettingsApiTokensPanel })))
+const SettingsBackupPanel = lazy(() => import('./settings/Backup').then(m => ({ default: m.SettingsBackupPanel })))
+const SettingsDefinitionsPanel = lazy(() => import('./settings/Definitions').then(m => ({ default: m.SettingsDefinitionsPanel })))
 const SettingsMonitoringPanel = lazy(() => import('./settings/Monitoring').then(m => ({ default: m.SettingsMonitoringPanel })))
 const SettingsPageAdminPanel = lazy(() => import('./settings/PageAdmin').then(m => ({ default: m.SettingsPageAdminPanel })))
 const SettingsTimeoutPanel = lazy(() => import('./settings/Timeout').then(m => ({ default: m.SettingsTimeoutPanel })))
@@ -29,6 +33,7 @@ const SettingsAboutPanel = lazy(() => import('./settings/About').then(m => ({ de
 const SettingsDataSourcesPanel = lazy(() => import('./settings/DataSources').then(m => ({ default: m.SettingsDataSourcesPanel })))
 import { PageHeader } from '@/components/PageHeader'
 import { cn } from '@/lib/cn'
+import { setUiPref } from '@/lib/uiPrefs'
 
 // ===== Tab 定义 =====
 
@@ -41,14 +46,16 @@ type TabDef = {
 }
 
 const TABS: readonly TabDef[] = [
-	{ key: 'data-sources', label: '数据源', icon: Database, panel: SettingsDataSourcesPanel },
-	{ key: 'ai', label: 'AI 设置', icon: Sparkles, panel: SettingsAIPanel },
-	{ key: 'monitoring', label: '实时监控', icon: Radio, panel: SettingsMonitoringPanel },
-	{ key: 'pages', label: '页面管理', icon: LayoutGrid, panel: SettingsPageAdminPanel },
-	{ key: 'timeout', label: '网络设置', icon: Clock3, panel: SettingsTimeoutPanel },
-	{ key: 'api-tokens', label: '开放接口', icon: KeyRound, panel: SettingsApiTokensPanel },
-	{ key: 'system', label: '系统设置', icon: Settings2, panel: SettingsSystemPanel },
-	{ key: 'about', label: '关于', icon: Info, panel: SettingsAboutPanel },
+  { key: 'data-sources', label: '数据源',     icon: Database,  panel: SettingsDataSourcesPanel },
+  { key: 'ai',         label: 'AI 设置',    icon: Sparkles,  panel: SettingsAIPanel },
+  { key: 'monitoring', label: '实时监控',   icon: Radio,      panel: SettingsMonitoringPanel },
+  { key: 'pages',      label: '页面管理',   icon: LayoutGrid, panel: SettingsPageAdminPanel },
+  { key: 'timeout',    label: '网络设置',   icon: Clock3,     panel: SettingsTimeoutPanel },
+  { key: 'api-tokens', label: '开放接口',   icon: KeyRound,   panel: SettingsApiTokensPanel },
+  { key: 'definitions', label: '定义目录',   icon: Library,    panel: SettingsDefinitionsPanel },
+  { key: 'backup',     label: '配置备份',   icon: HardDriveDownload, panel: SettingsBackupPanel },
+  { key: 'system',     label: '系统设置',   icon: Settings2,  panel: SettingsSystemPanel },
+  { key: 'about',      label: '关于',       icon: Info,       panel: SettingsAboutPanel },
 ]
 
 // 「页面管理」归拢前的三个 tab key → 深链子区块, 历史链接零失效
@@ -89,7 +96,7 @@ export function Settings() {
 		setCollapsed(prev => {
 			const next = !prev
 			try {
-				localStorage.setItem('tf-settings-nav-collapsed', next ? '1' : '0')
+				setUiPref('tf-settings-nav-collapsed', next ? '1' : '0')
 			} catch {
 			}
 			return next

@@ -1471,6 +1471,13 @@ _UI_PREFS_KEYS = (
     "voice_broadcast_rate",
     "stock_external_template",
     "page_zoom",
+    # 界面局部状态的跨端副本 (随配置备份迁移): 监控徽标/设置页收起/回测列表高度/导航形态
+    "monitor_badge_enabled",
+    "settings_nav_collapsed",
+    "bt_strategy_list_maxh",
+    "nav_state",
+    # AI 助手悬浮球显隐 (assistant.fab.enabled 的后端副本) — 同样受端口漂移影响
+    "assistant_fab_enabled",
 )
 _UI_PREFS_MAX_JSON = 16 * 1024
 
