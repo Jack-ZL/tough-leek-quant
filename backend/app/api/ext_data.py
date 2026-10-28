@@ -295,7 +295,7 @@ def _read_ext_dataframe(
 	
 	partitions = sorted(
 		d for d in base.iterdir()
-		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists(),
+		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
 	)
 	if not partitions:
 		return pl.DataFrame(), None
@@ -438,7 +438,7 @@ def _plate_stats(config: ExtConfig, data_dir: Path) -> dict | None:
 		return None
 	parts = sorted(
 		d.name[5:] for d in base.iterdir()
-		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists(),
+		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
 	)
 	if not parts:
 		return None
@@ -811,7 +811,7 @@ def _prev_daily_close(data_dir: Path, target_date: str) -> pl.DataFrame | None:
 	dates = sorted(
 		d.name[5:]
 		for d in daily.iterdir()
-		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists(),
+		if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
 	)
 	prevs = [d for d in dates if d < target_date]
 	if not prevs:
@@ -850,7 +850,7 @@ def _dimension_intraday_compute(
 		partitions = sorted(
 			d.name[5:]
 			for d in minute_dir.iterdir()
-			if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists(),
+			if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
 		)
 	if snapshot_date:
 		target = snapshot_date if snapshot_date in partitions else None
@@ -1348,7 +1348,7 @@ def _daily_series(
 	if base.exists():
 		partitions = sorted(
 			d.name[5:] for d in base.iterdir()
-			if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists(),
+			if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
 		)
 	if date:
 		target = _partition_date(date)
