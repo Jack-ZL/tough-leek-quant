@@ -380,6 +380,11 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # 日志脱敏 (P0-4): 与 main.py 同款 — 桌面版日志同样落盘 desktop.log,
+    # 密钥/webhook 地址不得明文进日志。basicConfig 之后安装, 幂等。
+    from app.logfile import install_secret_redaction
+
+    install_secret_redaction()
     # 追加文件日志: console=False 下 stderr 被吞, 必须落盘否则查无对证。
     # 放在 basicConfig 之后 (它先建好 root logger 的格式), 这里只追加 handler。
     _setup_logging()

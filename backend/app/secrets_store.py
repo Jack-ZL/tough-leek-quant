@@ -281,6 +281,7 @@ def save(updates: dict) -> dict:
     atomic_write_text(
         p, json.dumps(current, indent=2, ensure_ascii=False), mode=0o600,
     )
+    invalidate_redact_cache()  # 密钥变更 → 脱敏清单立即重建 (P0-4)
     return current
 
 
@@ -291,6 +292,7 @@ def clear(*keys: str) -> dict:
         return {}
     if not keys:
         p.unlink()
+        invalidate_redact_cache()  # 密钥清空 → 脱敏清单立即重建 (P0-4)
         return {}
     current = load()
     for k in keys:
@@ -298,6 +300,7 @@ def clear(*keys: str) -> dict:
     atomic_write_text(
         p, json.dumps(current, indent=2, ensure_ascii=False), mode=0o600,
     )
+    invalidate_redact_cache()  # 密钥变更 → 脱敏清单立即重建 (P0-4)
     return current
 
 
@@ -401,3 +404,89 @@ def mask(key: str, prefix: int = 4, suffix: int = 4) -> str:
     if len(key) <= prefix + suffix:
         return "•" * len(key)
     return f"{key[:prefix]}{'•' * 6}{key[-suffix:]}"
+
+
+# ===== 敏感值批量脱敏 redact() (P0-4「通知别烦人、别泄密」) =====
+# 用途: 日志过滤器 (logfile._SecretRedactFilter) 与 HTTPException detail 出口,
+# 把文本中出现的密钥/webhook 地址等敏感值整体替换为 mask() 掩码。
+#
+# 设计要点:
+# - 只收集长度 ≥8 的值: 短值 (如 "1", "test") 误伤率太高, 会把正常日志打成筛子;
+# - 缓存 30s + 按长度降序替换: 长值先替换, 避免短值是长值子串时留下残段;
+# - save()/clear() 主动失效缓存: 用户刚改完 Key, 下一条日志就要用新值脱敏;
+# - 任何收集异常都吞掉并返回已收集部分: 脱敏是尽力而为的防线, 不能反过来
+#   让日志/响应路径抛错。
+
+_REDACT_MIN_LEN = 8  # 参与脱敏的敏感值最小长度
+_REDACT_CACHE_TTL = 30.0  # 敏感值清单缓存秒数
+_redact_cache: list[str] | None = None
+_redact_cache_ts: float = 0.0
+
+
+def invalidate_redact_cache() -> None:
+    """使 redact 敏感值缓存失效 (save/clear 后调用, 下次 redact 重新收集)。"""
+    global _redact_cache, _redact_cache_ts
+    _redact_cache = None
+    _redact_cache_ts = 0.0
+
+
+def _collect_secret_values() -> list[str]:
+    """收集当前所有敏感值 (密钥/webhook 地址/机器人 secret 等)。
+
+    返回按长度降序、去重后的列表。任何单项读取失败只跳过该项。
+    """
+    values: list[str] = []
+
+    def _add(v) -> None:
+        if isinstance(v, str) and len(v.strip()) >= _REDACT_MIN_LEN:
+            values.append(v.strip())
+
+    # --- secrets.json 侧 ---
+    try:
+        _add(get_tickflow_key())
+        _add(get_ai_key())
+        _add(get_custom_webhook_secret())
+        _add(get_email_smtp_password())
+        # 所有 AI 档案的 api_key (不只激活档案 — 日志里可能出现任意档案的 Key)
+        for prof in list_ai_profiles():
+            _add(prof.get("api_key"))
+    except Exception:  # noqa: BLE001 — 尽力而为
+        pass
+
+    # --- preferences 侧 (webhook 地址本身含 key 查询参数, 泄露即可发消息) ---
+    try:
+        from app.services import preferences
+
+        _add(preferences.get_feishu_webhook_url())
+        _add(preferences.get_feishu_webhook_secret())
+        _add(preferences.get_wecom_webhook_url())
+        _add(preferences.get_dingtalk_webhook_url())
+        _add(preferences.get_dingtalk_webhook_secret())
+        _add(preferences.get_custom_webhook_url())
+        _add(preferences.get_wecom_bot_secret())
+        _add(preferences.get_dingtalk_bot_secret())
+    except Exception:  # noqa: BLE001 — 尽力而为
+        pass
+
+    # 去重 + 按长度降序 (长值先替换, 防子串残留)
+    return sorted(set(values), key=len, reverse=True)
+
+
+def redact(text: str) -> str:
+    """把文本中出现的所有敏感值替换为掩码。空文本/无敏感值时原样返回。
+
+    供日志过滤器与 API 异常出口调用; 高频路径, 内部带 30s 缓存。
+    """
+    if not text:
+        return text
+    global _redact_cache, _redact_cache_ts
+    import time as _time
+
+    now = _time.time()
+    if _redact_cache is None or (now - _redact_cache_ts) >= _REDACT_CACHE_TTL:
+        _redact_cache = _collect_secret_values()
+        _redact_cache_ts = now
+    for secret in _redact_cache:
+        if secret in text:
+            text = text.replace(secret, mask(secret))
+    return text

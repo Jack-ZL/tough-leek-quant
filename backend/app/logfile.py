@@ -112,6 +112,62 @@ def attach_rotating_log(filename: str, *, max_mb: int, backup_count: int) -> Non
         handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
+        # 新 handler 也要挂脱敏过滤器 (P0-4): 文件日志长期落盘, 更不能含明文密钥
+        _attach_redact_filter(handler)
         logging.getLogger().addHandler(handler)
     except Exception as e:  # noqa: BLE001
         logger.warning("文件日志初始化失败, 仅输出到终端: %s", e)
+
+
+# ===== 日志敏感值脱敏 (P0-4「通知别烦人、别泄密」) =====
+# 为什么挂 handler 而不是 logger: logging 的 logger 级 filter 只作用于
+# 「直接对该 logger 调用」产生的记录; 子 logger 的记录是 propagate 到
+# 祖先的 *handler* 上, 不经过祖先 logger 的 filter。项目里几乎所有日志都来自
+# app.* 子 logger, 所以必须挂到 root 的每个 handler 上才能全量覆盖。
+
+
+class _SecretRedactFilter(logging.Filter):
+    """把日志消息里的密钥/webhook 地址等敏感值替换为掩码。
+
+    - 只对「格式化后的完整消息」做替换 (record.getMessage()), 命中后把结果
+      写回 record.msg 并清空 args, 避免 formatter 二次拼接绕过脱敏;
+    - 任何异常都吞掉并放行日志: 脱敏是附加防线, 绝不能让打日志本身报错;
+    - 性能: secrets_store.redact 内部带 30s 敏感值缓存, 无敏感值时近似零开销。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from app.secrets_store import redact
+
+            original = record.getMessage()
+            redacted = redact(original)
+            if redacted != original:
+                record.msg = redacted
+                record.args = None
+        except Exception:  # noqa: BLE001 — 脱敏失败不阻断日志输出
+            pass
+        return True  # 永远放行, 只改写内容
+
+
+_redact_installed = False  # install_secret_redaction 幂等标记
+
+
+def _attach_redact_filter(handler: logging.Handler) -> None:
+    """给单个 handler 挂脱敏过滤器 (按类型去重, 可重复调用)。"""
+    if any(isinstance(f, _SecretRedactFilter) for f in handler.filters):
+        return
+    handler.addFilter(_SecretRedactFilter())
+
+
+def install_secret_redaction() -> None:
+    """给 root logger 当前所有 handler 挂上脱敏过滤器 (幂等)。
+
+    调用时机: main.py / desktop.py 在 logging.basicConfig 之后立即调用;
+    之后新增的文件 handler 由 attach_rotating_log 内部自行补挂。
+    """
+    global _redact_installed
+    if _redact_installed:
+        return
+    for handler in logging.getLogger().handlers:
+        _attach_redact_filter(handler)
+    _redact_installed = True

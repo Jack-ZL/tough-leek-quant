@@ -863,6 +863,10 @@ def get_preferences() -> dict:
         "strategy_monitor_enabled": preferences.get_strategy_monitor_enabled(),
         "strategy_monitor_ids": preferences.get_strategy_monitor_ids(),
         "system_notify_enabled": preferences.get_system_notify_enabled(),
+        # 夜间免打扰 (P0-4): 窗口内暂停 webhook/邮件/系统通知等外部投递
+        "notify_quiet_enabled": preferences.get_notify_quiet_enabled(),
+        "notify_quiet_start": preferences.get_notify_quiet_start(),
+        "notify_quiet_end": preferences.get_notify_quiet_end(),
         "ai_number_gate_enabled": preferences.get_ai_number_gate_enabled(),
         "feishu_webhook_url": preferences.get_feishu_webhook_url(),
         "feishu_webhook_secret": preferences.get_feishu_webhook_secret(),
@@ -1689,6 +1693,39 @@ def update_system_notify(req: SystemNotifyPrefsIn) -> dict:
     return {"system_notify_enabled": saved}
 
 
+class NotifyQuietPrefsIn(BaseModel):
+    """夜间免打扰配置 (P0-4)。start/end 为 HH:MM, 支持跨天 (start > end)。"""
+
+    enabled: bool
+    start: str
+    end: str
+
+
+@router.put("/preferences/notify-quiet")
+def update_notify_quiet(req: NotifyQuietPrefsIn) -> dict:
+    """夜间免打扰窗口 — 窗口内暂停 webhook/邮件/系统通知等一切外部投递。
+
+    应用内告警 (alerts.jsonl + SSE) 不受影响: 告警不丢, 只是不吵。
+    HH:MM 格式在此严格校验 (非法 → 400), 与 notify_policy 的 fail-open
+    运行时策略配合: 入口挡住手滑, 万一存量数据坏了也不吞告警。
+    """
+    from app.services import notify_policy, preferences
+
+    start = req.start.strip()
+    end = req.end.strip()
+    if notify_policy.parse_hhmm(start) is None:
+        raise HTTPException(status_code=400, detail=f"免打扰开始时间格式非法: {start!r} (应为 HH:MM)")
+    if notify_policy.parse_hhmm(end) is None:
+        raise HTTPException(status_code=400, detail=f"免打扰结束时间格式非法: {end!r} (应为 HH:MM)")
+    saved_enabled = preferences.set_notify_quiet_enabled(req.enabled)
+    saved_start, saved_end = preferences.set_notify_quiet_hours(start, end)
+    return {
+        "notify_quiet_enabled": saved_enabled,
+        "notify_quiet_start": saved_start,
+        "notify_quiet_end": saved_end,
+    }
+
+
 class FeishuWebhookPrefsIn(BaseModel):
     url: str
     secret: str = ""
@@ -1884,7 +1921,7 @@ def test_webhook(req: WebhookTestIn) -> dict:
             return {"ok": False, "detail": "尚未配置企业微信 Webhook，请先保存"}
         if not webhook_adapter.is_valid_wecom_url(url):
             return {"ok": False, "detail": "已保存的企业微信 Webhook 地址非法，请重新保存"}
-        ok = webhook_adapter.send_wecom(url, title, body)
+        ok = webhook_adapter.send_wecom(url, title, body, max_attempts=1)
     elif req.channel == "dingtalk":
         url = preferences.get_dingtalk_webhook_url()
         if not url:

@@ -2448,6 +2448,12 @@ export interface Preferences {
 	strategy_monitor_enabled: boolean
 	strategy_monitor_ids: string[]
 	system_notify_enabled: boolean
+	/** 夜间免打扰 (P0-4): 窗口内暂停 webhook/邮件/系统通知; 应用内告警不受影响 */
+	notify_quiet_enabled: boolean
+	/** 免打扰窗口起点 HH:MM (含) */
+	notify_quiet_start: string
+	/** 免打扰窗口终点 HH:MM (不含); start > end 表示跨天 (如 22:00→08:00) */
+	notify_quiet_end: string
 	/** AI 输出数字忠实度闸门: 无出处数字标为「〖…〗」高亮提示 (默认关, 灰度) */
 	ai_number_gate_enabled: boolean
 	feishu_webhook_url?: string
@@ -3163,6 +3169,12 @@ export const api = {
 			method: 'PUT',
 			body: JSON.stringify({ enabled }),
 		}),
+	/** 夜间免打扰窗口 (P0-4): enabled 总开关 + HH:MM 起止 (支持跨天) */
+	updateNotifyQuiet: (cfg: { enabled: boolean; start: string; end: string }) =>
+		request<{ notify_quiet_enabled: boolean; notify_quiet_start: string; notify_quiet_end: string }>(
+			'/api/settings/preferences/notify-quiet',
+			{ method: 'PUT', body: JSON.stringify(cfg) },
+		),
 	/** AI 助手「动作工具免确认」开关 (默认关闭) */
 	updateAssistantAutoApprove: (enabled: boolean) =>
 		request<{ assistant_auto_approve_actions: boolean }>('/api/settings/preferences/assistant-auto-approve', {

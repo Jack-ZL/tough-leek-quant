@@ -267,40 +267,64 @@ def normalize_wecom_url(url: str) -> str:
     return f"{WECOM_HOOK_PREFIX}?key={url}"
 
 
-def _post_wecom(webhook_url: str, payload: dict) -> bool:
-    """发送一次企业微信 webhook 请求并判定成败。
+_WECOM_MAX_ATTEMPTS = 3
 
-    成功响应: HTTP 200 且 errcode=0。失败静默返回 False。
+
+def _post_wecom(webhook_url: str, payload: dict, max_attempts: int = _WECOM_MAX_ATTEMPTS) -> bool:
+    """发送企业微信 webhook 请求并判定成败 (P0-4: 对齐飞书的瞬时失败重试)。
+
+    成功响应: HTTP 200 且 errcode=0 (或非 JSON/非 dict 的 200)。
+
+    瞬时失败 (网络/超时/HTTP 5xx) 带退避重试 —— 告警冷却在事件生成时即打戳,
+    一次瞬时抖动若不重试, 该告警会被冷却窗口压掉, 离屏用户彻底收不到推送。
+    永久失败 (4xx / errcode≠0, 如 key 失效、频率限制 45009) 不重试。
+    最终失败记 WARNING, 保证「推送丢了」在日志里可见。
+
+    max_attempts: 尝试次数, 默认 3 (生产推送语义)。诊断用途(手动测试配置)传 1,
+    避免失败时等满退避重试。
     """
-    try:
-        import httpx
+    import httpx
 
-        resp = httpx.post(webhook_url, json=payload, timeout=5.0)
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
+    last_err = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = httpx.post(webhook_url, json=payload, timeout=5.0)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    return True  # 非 JSON 的 200, 视为成功
                 if isinstance(data, dict):
                     # errcode=0 表示成功; 45009=频率限制, 其它非零=业务失败
                     if data.get("errcode") == 0:
                         return True
-                    logger.warning("企业微信推送业务失败: %s", data)
+                    # 业务失败(key 失效/限频等): 重试无益, 直接失败
+                    logger.warning("企业微信推送业务失败(不重试): %s", data)
                     return False
-            except ValueError:
-                return True
-        logger.warning("企业微信推送 HTTP %s: %s", resp.status_code, resp.text[:200])
-        return False
-    except Exception as e:  # noqa: BLE001
-        logger.warning("企业微信 Webhook 推送失败: %s", e)
-        return False
+                return True  # 200 且 JSON 非 dict, 视为成功
+            # 4xx 客户端错误(URL/key 失效等): 不重试; 5xx: 落入重试
+            last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            if resp.status_code < 500:
+                logger.warning("企业微信推送失败(不重试, 客户端错误): %s", last_err)
+                return False
+        except Exception as e:  # noqa: BLE001 — 网络/超时, 可重试
+            last_err = str(e)
+
+        if attempt < max_attempts:
+            time.sleep(min(2 ** (attempt - 1), 3))  # 退避: 1s, 2s
+
+    logger.warning("企业微信 Webhook 推送最终失败(已重试 %d 次): %s", max_attempts, last_err)
+    return False
 
 
-def send_wecom(webhook_url: str, title: str, body: str) -> bool:
+def send_wecom(webhook_url: str, title: str, body: str, max_attempts: int = _WECOM_MAX_ATTEMPTS) -> bool:
     """推送一条文本消息到企业微信群推送 Webhook。
 
     Args:
         webhook_url: 企业微信群推送 Webhook 地址 (或纯 key, 会自动补全)
         title:       消息标题 (与正文拼接为一条文本)
         body:        消息正文
+        max_attempts: 尝试次数 (诊断用途可传 1, 默认保持生产重试语义)
 
     Returns:
         True=成功送达, False=失败或 URL 非法。
@@ -315,7 +339,7 @@ def send_wecom(webhook_url: str, title: str, body: str) -> bool:
         return False
 
     payload: dict = {"msgtype": "text", "text": {"content": text}}
-    return _post_wecom(webhook_url, payload)
+    return _post_wecom(webhook_url, payload, max_attempts=max_attempts)
 
 
 def send_wecom_markdown(webhook_url: str, title: str, body_md: str) -> bool:

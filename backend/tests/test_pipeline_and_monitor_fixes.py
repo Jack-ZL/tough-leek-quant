@@ -112,6 +112,8 @@ def test_ladder_webhook_uses_chinese_title_without_brand(monkeypatch):
             calls.append((fn, args))
 
     monkeypatch.setattr(quote_service, "_WEBHOOK_EXECUTOR", CaptureExecutor())
+    # 免打扰闸门打桩为放行: 否则夜间跑测试 (22:00–08:00) 会因默认窗口跳过推送
+    monkeypatch.setattr("app.services.notify_policy.allow_push", lambda now=None: True)
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "https://open.feishu.cn/open-apis/bot/v2/hook/test")
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "secret")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "wecom-key")
@@ -153,6 +155,8 @@ def test_ladder_dispatches_custom_webhook_and_email(monkeypatch):
         "to_addresses": ["alerts@example.com"],
     }
     monkeypatch.setattr(quote_service, "_WEBHOOK_EXECUTOR", CaptureExecutor())
+    # 免打扰闸门打桩为放行: 否则夜间跑测试 (22:00–08:00) 会因默认窗口跳过推送
+    monkeypatch.setattr("app.services.notify_policy.allow_push", lambda now=None: True)
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "")
