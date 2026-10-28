@@ -34,15 +34,15 @@ import { BRAND, Logo } from '@/components/Logo'
 const STEPS = ['声明', '欢迎', '数据源', '能力路由', '完成'] as const
 
 const HIGHLIGHTS = [
-	{ icon: LineChart, title: '看板与自选', desc: '市场全景看板、涨跌分布、情绪雷达,自定义自选列表', tint: 'text-accent' },
-	{ icon: ScanSearch, title: '策略', desc: '内置多套策略,一键扫描全市场命中标的', tint: 'text-bull' },
-	{ icon: TrendingUp, title: '个股分析', desc: 'AI 四维分析个股,关键价位、技术形态一目了然', tint: 'text-warning' },
-	{ icon: Flame, title: '连板梯队', desc: '涨停梯队、封板强度、炸板监控,情绪温度计', tint: 'text-warning' },
-	{ icon: Landmark, title: '概念行业', desc: '概念板块、行业维度的资金流向与热度排名', tint: 'text-accent' },
-	{ icon: FileText, title: '财务分析', desc: 'AI 解读财报,利润、资负、现金流、核心指标', tint: 'text-bear' },
-	{ icon: ShieldCheck, title: '回测验证', desc: '策略历史回测、因子分析,用数据验证逻辑', tint: 'text-accent' },
-	{ icon: Radar, title: '实时监控', desc: '自定义条件 / 策略监控,盘中触发即推送告警', tint: 'text-bear' },
-	{ icon: BellRing, title: '本地优先', desc: '数据本地存储,隐私可控,断网仍可查阅', tint: 'text-bull' },
+  { icon: LineChart,   title: '看板与自选', desc: '市场全景看板、涨跌分布、情绪雷达,自定义自选列表', tint: 'text-accent' },
+  { icon: ScanSearch,  title: '策略',   desc: '内置多套策略,一键扫描全市场命中标的', tint: 'text-bull' },
+  { icon: TrendingUp,  title: '个股分析',   desc: 'AI 四维分析个股,关键价位、技术形态一目了然', tint: 'text-warning' },
+  { icon: Flame,       title: '连板梯队',   desc: '涨停梯队、封板强度、炸板监控,情绪温度计', tint: 'text-warning' },
+  { icon: Landmark,    title: '概念行业',   desc: '概念板块、行业维度的资金流向与热度排名', tint: 'text-accent' },
+  { icon: FileText,    title: '财务概况',   desc: 'AI 解读财报,利润、资负、现金流、核心指标', tint: 'text-bear' },
+  { icon: ShieldCheck, title: '回测验证',   desc: '策略历史回测、因子分析,用数据验证逻辑', tint: 'text-accent' },
+  { icon: Radar,       title: '实时监控',   desc: '自定义条件 / 策略监控,盘中触发即推送告警', tint: 'text-bear' },
+  { icon: BellRing,    title: '本地优先',   desc: '数据本地存储,隐私可控,断网仍可查阅', tint: 'text-bull' },
 ]
 
 export function Onboarding() {

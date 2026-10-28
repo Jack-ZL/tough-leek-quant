@@ -71,13 +71,13 @@ const VARIANTS: Variant[] = [
 ]
 
 const MOCK_NAV = [
-	{ icon: Star, label: '自选' },
-	{ icon: LineChart, label: 'K 线' },
-	{ icon: ScanSearch, label: '策略' },
-	{ icon: History, label: '回测' },
-	{ icon: SignalIcon, label: '信号' },
-	{ icon: Eye, label: '监控' },
-	{ icon: FileText, label: '财务分析' },
+  { icon: Star, label: '自选' },
+  { icon: LineChart, label: 'K 线' },
+  { icon: ScanSearch, label: '策略' },
+  { icon: History, label: '回测' },
+  { icon: SignalIcon, label: '信号' },
+  { icon: Eye, label: '监控' },
+  { icon: FileText, label: '财务概况' },
 ]
 
 export function Branding() {
