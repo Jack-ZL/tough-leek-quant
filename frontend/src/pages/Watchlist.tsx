@@ -692,7 +692,11 @@ const StockCard = React.memo(function StockCard({
 										expanded,
 										() => onToggleExpand(cellKey),
 										true,
-										dimensionKind ? value => onDimensionClick({ kind: dimensionKind, value, sourceField }) : undefined,
+										dimensionKind ? value => onDimensionClick({
+											kind: dimensionKind,
+											value,
+											sourceField
+										}) : undefined,
 									)}
 								</span>
 							</span>
@@ -1387,37 +1391,39 @@ export function Watchlist() {
 		[filteredRows, sortRows, columns],
 	)
 
-  // 日内多盘扩展列 (集合竞价等) 迷你图: 每个 bar/line 图列按列表标的拉当日序列
-  // (与策略页同口径; 人气排行等每日截面表无时间列, 不会出现图列)
-  const extChartColumns = useMemo(
-    () => columns.filter(c =>
-      c.visible && c.source.type === 'ext'
-      && (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
-    [columns],
-  )
-  const extChartColsKey = extChartColumns
-    .map(c => `${(c.source as { configId: string }).configId}.${(c.source as { fieldName: string }).fieldName}:${c.extDisplay?.chartDays ?? 10}`)
-    .join(',')
-  const extChartSymbolsKey = useMemo(
-    () => sortedRows.map(r => r.symbol as string).sort().join(','),
-    [sortedRows],
-  )
-  const extSeriesQuery = useQuery({
-    queryKey: QK.extSeries(extChartColsKey, null, extChartSymbolsKey),
-    queryFn: async () => {
-      const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
-      const entries = await Promise.all(extChartColumns.map(async c => {
-        const src = c.source as { type: 'ext'; configId: string; fieldName: string }
-        const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols, c.extDisplay?.chartDays || 10)
-        return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
-      }))
-      return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
-    },
-    enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
-    staleTime: 5 * 60_000,
-    placeholderData: prev => prev,
-  })
-  const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
+	// 日内多盘扩展列 (集合竞价等) 迷你图: 每个 bar/line 图列按列表标的拉当日序列
+	// (与策略页同口径; 人气排行等每日截面表无时间列, 不会出现图列)
+	const extChartColumns = useMemo(
+		() => columns.filter(c =>
+			c.visible && c.source.type === 'ext'
+			&& (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
+		[columns],
+	)
+	const extChartColsKey = extChartColumns
+		.map(c => `${(c.source as { configId: string }).configId}.${(c.source as {
+			fieldName: string
+		}).fieldName}:${c.extDisplay?.chartDays ?? 10}`)
+		.join(',')
+	const extChartSymbolsKey = useMemo(
+		() => sortedRows.map(r => r.symbol as string).sort().join(','),
+		[sortedRows],
+	)
+	const extSeriesQuery = useQuery({
+		queryKey: QK.extSeries(extChartColsKey, null, extChartSymbolsKey),
+		queryFn: async () => {
+			const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
+			const entries = await Promise.all(extChartColumns.map(async c => {
+				const src = c.source as { type: 'ext'; configId: string; fieldName: string }
+				const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols, c.extDisplay?.chartDays || 10)
+				return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
+			}))
+			return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
+		},
+		enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
+		staleTime: 5 * 60_000,
+		placeholderData: prev => prev,
+	})
+	const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
 
 	// 分时列集合竞价叠加: 左侧窄栏价格/匹配量/未匹配量 (来自同一张时序扩展表)
 	const auctionCfg = useAuctionConfig(columns)
@@ -1877,7 +1883,8 @@ export function Watchlist() {
 												title={dailyKChartVisible ? '隐藏日k蜡烛' : '显示日k蜡烛'}
 												aria-label={dailyKChartVisible ? '隐藏日k蜡烛' : '显示日k蜡烛'}
 											>
-												{dailyKChartVisible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+												{dailyKChartVisible ? <Eye className="h-3.5 w-3.5" /> :
+													<EyeOff className="h-3.5 w-3.5" />}
 											</button>
 										</span>
 									)
@@ -1900,7 +1907,8 @@ export function Watchlist() {
 												title={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
 												aria-label={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
 											>
-												{intradayChartVisible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+												{intradayChartVisible ? <Eye className="h-3.5 w-3.5" /> :
+													<EyeOff className="h-3.5 w-3.5" />}
 											</button>
 											{/* 分时图显示 且 未开自动轮询时, 提供手动刷新按钮 */}
 											{intradayChartVisible && !intradayAutoRefresh && (
@@ -1981,7 +1989,8 @@ export function Watchlist() {
 															{board.label}
 														</span>
 													) : null}
-													{monitoredSymbols.has(r.symbol) && <span className="ml-2"><RealtimeDot /></span>}
+													{monitoredSymbols.has(r.symbol) &&
+														<span className="ml-2"><RealtimeDot /></span>}
 												</button>
 												{/* 删除入口：从分组移除 + 从自选移除(二次确认) + 移到顶部 */}
 												<div className="ml-auto pl-1 shrink-0">
