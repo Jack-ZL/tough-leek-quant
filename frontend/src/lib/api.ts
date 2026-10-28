@@ -4373,43 +4373,59 @@ export const api = {
 			{ method: 'POST', body: JSON.stringify(body) },
 		),
 
-  extDataSchemaAll: () =>
-    request<{ items: { id: string; label: string; mode: string; time_field?: string | null; granularity?: 'intraday' | 'daily' | null; columns: { name: string; type: string; label: string }[] }[] }>('/api/ext-data/schema-all'),
+	extDataSchemaAll: () =>
+		request<{
+			items: {
+				id: string;
+				label: string;
+				mode: string;
+				time_field?: string | null;
+				granularity?: 'intraday' | 'daily' | null;
+				columns: { name: string; type: string; label: string }[]
+			}[]
+		}>('/api/ext-data/schema-all'),
 
-  /** 日内多盘序列 (列表迷你图列): 每标的一天的 [HH:MM:SS, value] 点列 */
-  extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number) =>
-    request<{ config_id: string; field: string; date: string | null; granularity?: 'intraday' | 'daily'; days?: number; items: Record<string, [string, number][]> }>(
-      `/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
-        + (date ? `&date=${date}` : '')
-        + (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
-        + (days ? `&days=${days}` : ''),
-    ),
+	/** 日内多盘序列 (列表迷你图列): 每标的一天的 [HH:MM:SS, value] 点列 */
+	extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number) =>
+		request<{
+			config_id: string;
+			field: string;
+			date: string | null;
+			granularity?: 'intraday' | 'daily';
+			days?: number;
+			items: Record<string, [string, number][]>
+		}>(
+			`/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
+			+ (date ? `&date=${date}` : '')
+			+ (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
+			+ (days ? `&days=${days}` : ''),
+		),
 
-  extDataPullConfig: (id: string, body: {
-    url: string; method?: string; headers?: Record<string, string>; body?: string;
-    response_path?: string; field_map?: Record<string, string>;
-    schedule_minutes?: number; enabled?: boolean;
-    schedule_time?: string | null;
-    schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
-    schedule_day?: number | null;
-    schedule_trading_only?: boolean;
-    time_window_start?: string | null; time_window_end?: string | null;
-    date_param?: string | null;
-    time_field?: string | null;
-    since_param?: string | null;
-    granularity?: 'auto' | 'intraday' | 'daily';
-    auth?: ExtPullAuth;
-    timeout_seconds?: number;
-    page_param?: string | null;
-    page_size_param?: string | null;
-    page_size?: number;
-    page_start?: number;
-    max_pages?: number;
-  }) =>
-    request<{ status: string; pull: PullConfig }>(
-      `/api/ext-data/${id}/pull`,
-      { method: 'PUT', body: JSON.stringify(body) },
-    ),
+	extDataPullConfig: (id: string, body: {
+		url: string; method?: string; headers?: Record<string, string>; body?: string;
+		response_path?: string; field_map?: Record<string, string>;
+		schedule_minutes?: number; enabled?: boolean;
+		schedule_time?: string | null;
+		schedule_period?: 'daily' | 'weekly' | 'monthly' | null;
+		schedule_day?: number | null;
+		schedule_trading_only?: boolean;
+		time_window_start?: string | null; time_window_end?: string | null;
+		date_param?: string | null;
+		time_field?: string | null;
+		since_param?: string | null;
+		granularity?: 'auto' | 'intraday' | 'daily';
+		auth?: ExtPullAuth;
+		timeout_seconds?: number;
+		page_param?: string | null;
+		page_size_param?: string | null;
+		page_size?: number;
+		page_start?: number;
+		max_pages?: number;
+	}) =>
+		request<{ status: string; pull: PullConfig }>(
+			`/api/ext-data/${id}/pull`,
+			{ method: 'PUT', body: JSON.stringify(body) },
+		),
 
 	/** 查询拉取接口 API Key 状态 (脱敏, 不返回明文) */
 	extDataApiKey: (id: string) =>
@@ -5463,58 +5479,58 @@ export interface ExtPullAuth {
 }
 
 export interface PullConfig {
-  url: string
-  method: string
-  headers?: Record<string, string>
-  body?: string | null
-  response_path: string
-  field_map?: Record<string, string>
-  schedule_minutes: number
-  enabled: boolean
-  /** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
-  schedule_time?: string | null
-  /** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
-  schedule_period?: 'daily' | 'weekly' | 'monthly' | null
-  /** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
-  schedule_day?: number | null
-  /** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
-  schedule_trading_only?: boolean
-  last_run?: string | null
-  last_status?: string | null
-  last_message?: string | null
-  last_rows?: number | null
-  next_run?: string | null
-  time_window_start?: string | null
-  time_window_end?: string | null
-  /** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
-  date_param?: string | null
-  /** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
-  date_format?: string
-  /** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
-  time_field?: string | null
-  /** 序列粒度: auto=按数据形态自动判断 | intraday=日内多盘 | daily=日级别 (决定 series 口径与列表迷你图形态) */
-  granularity?: 'auto' | 'intraday' | 'daily'
-  /** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
-  since_param?: string | null
-  auth?: ExtPullAuth | null
-  /** 单次拉取请求超时 (秒), 默认 30 */
-  timeout_seconds?: number
-  /** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
-  page_param?: string | null
-  /** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
-  page_size_param?: string | null
-  /** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
-  page_size?: number
-  /** 起始页码 (有的接口从 0 计数), 默认 1 */
-  page_start?: number
-  /** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
-  max_pages?: number
-  /**
-   * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
-   * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
-   * 自动走上这条路径, 无需任何按表硬编码。
-   */
-  fanout?: PullFanout | null
+	url: string
+	method: string
+	headers?: Record<string, string>
+	body?: string | null
+	response_path: string
+	field_map?: Record<string, string>
+	schedule_minutes: number
+	enabled: boolean
+	/** 每日固定拉取时刻 "HH:MM" (北京时间): 配置后忽略间隔, 每天该时刻拉一次; null=间隔制 */
+	schedule_time?: string | null
+	/** 固定时刻重复周期: daily=每天 | weekly=每周 | monthly=每月 (仅 schedule_time 生效) */
+	schedule_period?: 'daily' | 'weekly' | 'monthly' | null
+	/** weekly: 1=周一..7=周日; monthly: 1..31 (短月无该日则该月跳过) */
+	schedule_day?: number | null
+	/** 仅交易日: 跳过周六日 (节假日无法离线判定, 仍会按期尝试) */
+	schedule_trading_only?: boolean
+	last_run?: string | null
+	last_status?: string | null
+	last_message?: string | null
+	last_rows?: number | null
+	next_run?: string | null
+	time_window_start?: string | null
+	time_window_end?: string | null
+	/** 接口按日查询的参数名 (如 "date"): 配置后支持历史回补 */
+	date_param?: string | null
+	/** 日期参数值的格式: iso=YYYY-MM-DD / compact=YYYYMMDD / ts_s=unix秒 / ts_ms=unix毫秒 (该交易日北京 00:00) */
+	date_format?: string
+	/** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
+	time_field?: string | null
+	/** 序列粒度: auto=按数据形态自动判断 | intraday=日内多盘 | daily=日级别 (决定 series 口径与列表迷你图形态) */
+	granularity?: 'auto' | 'intraday' | 'daily'
+	/** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
+	since_param?: string | null
+	auth?: ExtPullAuth | null
+	/** 单次拉取请求超时 (秒), 默认 30 */
+	timeout_seconds?: number
+	/** 分页协议 (仅 GET): 页码参数名 (如 "page"), 配置后按页循环拉取 */
+	page_param?: string | null
+	/** 每页条数参数名 (如 "pageSize"), 配合 page_size 一起发送 */
+	page_size_param?: string | null
+	/** 每页条数值 (>0 且配置 page_size_param 才发送); 也用于短页判停 */
+	page_size?: number
+	/** 起始页码 (有的接口从 0 计数), 默认 1 */
+	page_start?: number
+	/** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
+	max_pages?: number
+	/**
+	 * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
+	 * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
+	 * 自动走上这条路径, 无需任何按表硬编码。
+	 */
+	fanout?: PullFanout | null
 }
 
 export interface PullFanout {
@@ -5577,22 +5593,22 @@ export interface ExtDataDetectUrlResult {
 }
 
 export interface ExtDataConfig {
-  id: string
-  label: string
-  mode: 'snapshot' | 'timeseries'
-  fields: ExtDataField[]
-  description?: string
-  symbol_map?: Record<string, string>
-  code_map?: Record<string, string>
-  created_at: string
-  updated_at: string
-  latest_sync_date?: string | null
-  date_range?: string[] | null
-  /** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
-  plate?: { date: string; plates: number; from: string; to: string; granularity: 'intraday' | 'daily' } | null
-  /** 生效序列粒度 (显式声明 > 数据形态判断): intraday | daily; snapshot 表为 null */
-  granularity_effective?: 'intraday' | 'daily' | null
-  pull?: PullConfig | null
+	id: string
+	label: string
+	mode: 'snapshot' | 'timeseries'
+	fields: ExtDataField[]
+	description?: string
+	symbol_map?: Record<string, string>
+	code_map?: Record<string, string>
+	created_at: string
+	updated_at: string
+	latest_sync_date?: string | null
+	date_range?: string[] | null
+	/** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
+	plate?: { date: string; plates: number; from: string; to: string; granularity: 'intraday' | 'daily' } | null
+	/** 生效序列粒度 (显式声明 > 数据形态判断): intraday | daily; snapshot 表为 null */
+	granularity_effective?: 'intraday' | 'daily' | null
+	pull?: PullConfig | null
 }
 
 export interface ExtDataRowsResult {
