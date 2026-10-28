@@ -1387,37 +1387,37 @@ export function Watchlist() {
 		[filteredRows, sortRows, columns],
 	)
 
-	// 日内多盘扩展列 (集合竞价等) 迷你图: 每个 bar/line 图列按列表标的拉当日序列
-	// (与策略页同口径; 人气排行等每日截面表无时间列, 不会出现图列)
-	const extChartColumns = useMemo(
-		() => columns.filter(c =>
-			c.visible && c.source.type === 'ext'
-			&& (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
-		[columns],
-	)
-	const extChartColsKey = extChartColumns
-		.map(c => `${(c.source as { configId: string }).configId}.${(c.source as { fieldName: string }).fieldName}`)
-		.join(',')
-	const extChartSymbolsKey = useMemo(
-		() => sortedRows.map(r => r.symbol as string).sort().join(','),
-		[sortedRows],
-	)
-	const extSeriesQuery = useQuery({
-		queryKey: QK.extSeries(extChartColsKey, null, extChartSymbolsKey),
-		queryFn: async () => {
-			const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
-			const entries = await Promise.all(extChartColumns.map(async c => {
-				const src = c.source as { type: 'ext'; configId: string; fieldName: string }
-				const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols)
-				return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
-			}))
-			return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
-		},
-		enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
-		staleTime: 5 * 60_000,
-		placeholderData: prev => prev,
-	})
-	const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
+  // 日内多盘扩展列 (集合竞价等) 迷你图: 每个 bar/line 图列按列表标的拉当日序列
+  // (与策略页同口径; 人气排行等每日截面表无时间列, 不会出现图列)
+  const extChartColumns = useMemo(
+    () => columns.filter(c =>
+      c.visible && c.source.type === 'ext'
+      && (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
+    [columns],
+  )
+  const extChartColsKey = extChartColumns
+    .map(c => `${(c.source as { configId: string }).configId}.${(c.source as { fieldName: string }).fieldName}:${c.extDisplay?.chartDays ?? 10}`)
+    .join(',')
+  const extChartSymbolsKey = useMemo(
+    () => sortedRows.map(r => r.symbol as string).sort().join(','),
+    [sortedRows],
+  )
+  const extSeriesQuery = useQuery({
+    queryKey: QK.extSeries(extChartColsKey, null, extChartSymbolsKey),
+    queryFn: async () => {
+      const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
+      const entries = await Promise.all(extChartColumns.map(async c => {
+        const src = c.source as { type: 'ext'; configId: string; fieldName: string }
+        const r = await api.extDataSeries(src.configId, src.fieldName, undefined, symbols, c.extDisplay?.chartDays || 10)
+        return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
+      }))
+      return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
+    },
+    enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
+    staleTime: 5 * 60_000,
+    placeholderData: prev => prev,
+  })
+  const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
 
 	// 分时列集合竞价叠加: 左侧窄栏价格/匹配量/未匹配量 (来自同一张时序扩展表)
 	const auctionCfg = useAuctionConfig(columns)
