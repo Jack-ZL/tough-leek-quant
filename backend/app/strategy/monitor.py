@@ -343,6 +343,10 @@ class MonitorRuleEngine:
         self._strategy_signal_seen: dict[tuple[str, str, str, str, str], str] = {}
         # 数据目录 (用于加载策略 overrides)
         self._data_dir = None
+        # ===== cooldown 持久化状态 (P0-4: 重启不再重复推送) =====
+        # _last_fire 变更后置脏; 节流落盘 (≥60s 一次), 关停时 flush_cooldown() 兜底。
+        self._cooldown_dirty = False
+        self._cooldown_last_flush = 0.0  # 上次落盘时间戳 (time.time())
         # 历史窗口加载器: (target_date, lookback_days) → 多日 enriched DataFrame。
         # 用于声明 filter_history 的策略 (如反包), 实时监控时拼历史窗口 + 今日行情跑策略。
         # 为 None 时, filter_history 策略仍会被跳过 (保持旧行为, 不破坏无历史场景)。
@@ -371,8 +375,96 @@ class MonitorRuleEngine:
         self._strategy_engine = engine
 
     def set_data_dir(self, data_dir) -> None:
-        """注入数据目录, 用于加载策略的用户覆盖配置。"""
+        """注入数据目录, 用于加载策略的用户覆盖配置。
+
+        同时加载持久化的 cooldown 记录 (monitor_last_fire.json),
+        使重启后仍处于冷却期的告警不会立刻重推 (P0-4)。
+        """
         self._data_dir = data_dir
+        self._load_last_fire()
+
+    # ===== cooldown 持久化 (P0-4「通知别烦人、别泄密」) =====
+    # 背景: _last_fire 原本纯内存, 重启即清零 → 冷却期内的告警会立刻重推一遍。
+    # 方案: 落盘 <data_dir>/user_data/monitor_last_fire.json, 格式为
+    #   [[rule_id, symbol, event_type, ts_seconds], ...]  (JSON 数组, 键是三元组所以拍平)。
+    # 写入策略: 触发/清理时置脏 + 节流落盘 (≥60s), 关停时 flush_cooldown() 兜底,
+    #   避免每轮轮询都写盘; 原子写 (atomic_write_text) 防半截 JSON。
+
+    _COOLDOWN_MAX_AGE_SECONDS = 30 * 86400  # 超过 30 天的记录视为陈旧, 加载时丢弃
+    _COOLDOWN_FLUSH_INTERVAL = 60.0  # 节流落盘最小间隔 (秒)
+
+    def _cooldown_path(self):
+        """cooldown 持久化文件路径; 未注入 data_dir 时返回 None (纯内存模式)。"""
+        if not self._data_dir:
+            return None
+        from pathlib import Path
+        return Path(self._data_dir) / "user_data" / "monitor_last_fire.json"
+
+    def _load_last_fire(self) -> None:
+        """从磁盘恢复 _last_fire。文件缺失/损坏均容忍: 退回空 dict (旧行为)。"""
+        path = self._cooldown_path()
+        if path is None or not path.exists():
+            return
+        import json
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            cutoff = time.time() - self._COOLDOWN_MAX_AGE_SECONDS
+            restored: dict[tuple[str, str, str], float] = {}
+            for item in raw if isinstance(raw, list) else []:
+                # 每项必须是 [rule_id, symbol, event_type, ts] 四元组
+                if not isinstance(item, list) or len(item) != 4:
+                    continue
+                rid, sym, etype, ts = item
+                if not (isinstance(rid, str) and isinstance(sym, str) and isinstance(etype, str)):
+                    continue
+                ts = float(ts)
+                if ts < cutoff:  # 陈旧记录直接丢弃, 防文件无限膨胀
+                    continue
+                restored[(rid, sym, etype)] = ts
+            if restored:
+                # 与内存现状合并: 内存值 (若有) 更新, 以内存为准
+                merged = dict(restored)
+                merged.update(self._last_fire)
+                self._last_fire = merged
+                logger.info("monitor: 已恢复 %d 条 cooldown 记录 (重启不重推)", len(restored))
+        except Exception as exc:  # noqa: BLE001 — 恢复失败不该阻断引擎启动
+            logger.warning("monitor: cooldown 记录加载失败, 忽略: %s", exc)
+
+    def _mark_fire(self, key: tuple[str, str, str], now: float) -> None:
+        """记录一次触发时间 (替代直接写 _last_fire[key] = now)。
+
+        置脏 + 节流落盘: 距上次写盘 ≥60s 才真正写, 高频触发场景下
+        最坏丢 60s 内的记录 — 对 cooldown (小时级) 语义无实质影响。
+
+        注意: 节流判定复用调用方传入的 now (与 cooldown 打戳同一时钟),
+        不额外调 time.time() — 测试常对 time.time 做 side_effect 序列打桩,
+        多打一次会把序列打穿。
+        """
+        self._last_fire[key] = now
+        self._cooldown_dirty = True
+        if now - self._cooldown_last_flush >= self._COOLDOWN_FLUSH_INTERVAL:
+            self.flush_cooldown(flushed_at=now)
+
+    def flush_cooldown(self, flushed_at: float | None = None) -> None:
+        """把 _last_fire 原子落盘 (脏时才写)。关停钩子调用, 失败仅记日志。
+
+        flushed_at: 落盘时刻 (调用方时钟); 缺省取 time.time()。
+        """
+        if not self._cooldown_dirty:
+            return
+        path = self._cooldown_path()
+        if path is None:
+            return
+        import json
+        try:
+            from app.services.fs_utils import atomic_write_text
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = [[k[0], k[1], k[2], v] for k, v in self._last_fire.items()]
+            atomic_write_text(path, json.dumps(payload, ensure_ascii=False))
+            self._cooldown_dirty = False
+            self._cooldown_last_flush = flushed_at if flushed_at is not None else time.time()
+        except Exception as exc:  # noqa: BLE001 — 落盘失败不影响告警主流程
+            logger.warning("monitor: cooldown 记录落盘失败: %s", exc)
 
     def _signal_label(self, field: str) -> str:
         """信号/字段 → 中文名: 信号列 (csg_/csgi_/signal_*) 查用户定义, 其余查 _SIGNAL_CN。
@@ -475,6 +567,7 @@ class MonitorRuleEngine:
         self._last_fire = {
             key: value for key, value in list(self._last_fire.items()) if key[0] in active_ids
         }
+        self._cooldown_dirty = True  # 规则集变更 → cooldown 记录需重新落盘
         self._strategy_pools = {
             key: value for key, value in list(self._strategy_pools.items()) if key[0] in active_ids
         }
@@ -511,6 +604,7 @@ class MonitorRuleEngine:
     def remove_rule(self, rule_id: str) -> None:
         self._rules.pop(rule_id, None)
         self._last_fire = {k: v for k, v in list(self._last_fire.items()) if k[0] != rule_id}
+        self._cooldown_dirty = True  # 规则删除 → 对应 cooldown 记录从磁盘同步移除
         self._strategy_pools = {
             k: v for k, v in list(self._strategy_pools.items()) if k[0] != rule_id
         }
@@ -528,6 +622,7 @@ class MonitorRuleEngine:
     def clear(self) -> None:
         self._rules.clear()
         self._last_fire.clear()
+        self._cooldown_dirty = True  # 全量清空 → 落盘同步清空
         self._strategy_pools.clear()
         self._strategy_signal_state.clear()
         self._strategy_signal_seen.clear()
@@ -729,6 +824,7 @@ class MonitorRuleEngine:
             for key, value in self._last_fire.items()
             if not (key[1].startswith("_date_") and key[1] != f"_date_{today_iso}")
         }
+        self._cooldown_dirty = True  # 过期键清理 → 落盘同步瘦身
 
         today_d = _dt.date.fromisoformat(today_iso)
         events: list[dict] = []
@@ -744,7 +840,7 @@ class MonitorRuleEngine:
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 continue
-            self._last_fire[key] = now
+            self._mark_fire(key, now)
 
             symbols = [s for s in rule.get("symbols", []) if s]
             single_symbol = symbols[0] if len(symbols) == 1 else None
@@ -860,7 +956,7 @@ class MonitorRuleEngine:
             cooldown = int(rule.get("cooldown_seconds", 3600))
             if last is not None and now - last < cooldown:
                 continue
-            self._last_fire[cooldown_key] = now
+            self._mark_fire(cooldown_key, now)
             message = rule.get("message", "") or self._sector_message(
                 snapshot, trigger, direction, threshold, window, value,
             )
@@ -1022,7 +1118,7 @@ class MonitorRuleEngine:
             cooldown = int(rule.get("cooldown_seconds", 3600))
             if last is not None and now - last < cooldown:
                 continue
-            self._last_fire[cooldown_key] = now
+            self._mark_fire(cooldown_key, now)
             event = {
                 "ts": int(now * 1000),
                 "rule_id": rule["id"],
@@ -1112,7 +1208,7 @@ class MonitorRuleEngine:
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 continue  # 冷却期内, 跳过
-            self._last_fire[key] = now
+            self._mark_fire(key, now)
 
             # 批量事件: name 存放预构建的消息文本
             if is_batch:
@@ -1607,7 +1703,7 @@ class MonitorRuleEngine:
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 return []
-            self._last_fire[key] = now
+            self._mark_fire(key, now)
             return [_event("", "", message)]
 
         events: list[dict] = []
@@ -1617,7 +1713,7 @@ class MonitorRuleEngine:
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 continue
-            self._last_fire[key] = now
+            self._mark_fire(key, now)
             delta = row.get(cmp_col)
             message = f"放量 · 单轮增量 {_fmt(delta)} >= {th_text}{span_text}"
             events.append(_event(
@@ -1667,7 +1763,7 @@ class MonitorRuleEngine:
             last = self._last_fire.get(key)
             if last is not None and (now - last) < cooldown:
                 continue
-            self._last_fire[key] = now
+            self._mark_fire(key, now)
 
             name = row.get("name") or self._name_map.get(sym) or sym
             price = row.get("close")

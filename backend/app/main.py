@@ -6,7 +6,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +72,12 @@ logging.basicConfig(
     level=settings.log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# 日志脱敏 (P0-4「通知别烦人、别泄密」): 在 root logger 上挂过滤器,
+# 把日志消息里出现的密钥/webhook 地址等敏感值替换为掩码后再输出。
+# 必须在 basicConfig 之后安装 (它先建好 root logger), 且幂等可重复调用。
+from app.logfile import install_secret_redaction  # noqa: E402
+
+install_secret_redaction()
 logger = logging.getLogger(__name__)
 
 # 追加文件日志: uvicorn (含 --reload 开发模式) 默认只有 StreamHandler, 同步/管道等
@@ -515,6 +521,11 @@ async def _application_lifespan(app: FastAPI):
         mrs = getattr(app.state, "minute_refresh", None)
         if mrs:
             mrs.stop()
+        # cooldown 记录兜底落盘 (P0-4): 运行期是节流写 (≥60s), 关停时把
+        # 最后一段脏数据刷盘, 保证重启后冷却期内的告警不会立刻重推。
+        meng = getattr(app.state, "monitor_engine", None)
+        if meng:
+            meng.flush_cooldown()
         # webhook 投递线程池: 放弃排队投递并关闭, 避免通知静默丢失在 daemon 线程里
         from app.services.quote_service import shutdown_webhook_executor
 
@@ -744,6 +755,28 @@ async def capability_denied_handler(request: Request, exc: CapabilityDenied) -> 
     return JSONResponse(
         status_code=403,
         content={"detail": str(exc), "suggestion": exc.suggestion},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_redact_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """HTTPException 统一出口脱敏 (P0-4)。
+
+    部分端点会把上游错误/内部路径拼进 detail 直接回给前端 (如代理转发失败),
+    若其中夹带了 webhook 地址或密钥, 会随响应体泄露给浏览器/抓包者。
+    这里在返回前对字符串 detail 过一遍 secrets_store.redact();
+    非字符串 detail (dict 等) 原样透传, 保持既有行为。
+    """
+    detail = exc.detail
+    if isinstance(detail, str):
+        from app.secrets_store import redact
+
+        detail = redact(detail)
+    headers = getattr(exc, "headers", None)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=headers,
     )
 
 # 生产期静态文件(前端 dist)

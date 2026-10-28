@@ -80,7 +80,8 @@ def test_wecom_sends_saved_url(monkeypatch):
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: WECOM_URL)
     monkeypatch.setattr(
         "app.services.webhook_adapter.send_wecom",
-        lambda url, title, body: calls.update(url=url, title=title, body=body) or True,
+        # **kwargs 吸收 max_attempts=1 (诊断模式不重试, P0-4 新增参数)
+        lambda url, title, body, **kwargs: calls.update(url=url, title=title, body=body) or True,
     )
 
     result = run_webhook_test(WebhookTestIn(channel="wecom"))

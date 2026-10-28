@@ -1683,7 +1683,11 @@ class QuoteService:
         """
         try:
             from app import secrets_store
-            from app.services import email_adapter, preferences, webhook_adapter
+            from app.services import email_adapter, notify_policy, preferences, webhook_adapter
+
+            # 夜间免打扰 (P0-4): 窗口内跳过外部投递; 应用内落盘/SSE 已在调用前完成, 告警不丢
+            if not notify_policy.allow_push():
+                return
 
             feishu_url = preferences.get_feishu_webhook_url()
             feishu_secret = preferences.get_feishu_webhook_secret()
@@ -1763,7 +1767,11 @@ class QuoteService:
         """
         try:
             from app import secrets_store
-            from app.services import preferences, webhook_adapter
+            from app.services import notify_policy, preferences, webhook_adapter
+
+            # 夜间免打扰 (P0-4): 窗口内跳过外部投递; 应用内落盘/SSE 不受影响
+            if not notify_policy.allow_push():
+                return
 
             feishu_url = preferences.get_feishu_webhook_url()
             feishu_secret = preferences.get_feishu_webhook_secret()
@@ -1807,7 +1815,11 @@ class QuoteService:
         - 批量策略事件 (symbol="") 聚合为一条通知, 避免刷屏
         """
         try:
-            from app.services import notify_adapter, preferences
+            from app.services import notify_adapter, notify_policy, preferences
+
+            # 夜间免打扰 (P0-4): 窗口内不弹系统通知; 应用内告警记录不受影响
+            if not notify_policy.allow_push():
+                return
 
             if not preferences.get_system_notify_enabled():
                 return

@@ -958,6 +958,40 @@ def set_system_notify_enabled(enabled: bool) -> bool:
     return bool(enabled)
 
 
+# ===== 夜间免打扰 (P0-4「通知别烦人、别泄密」) =====
+# 免打扰窗口内暂停一切外部投递 (webhook/邮件) 与操作系统通知;
+# 应用内 alerts.jsonl 落盘与 SSE 不受影响 — 告警不丢, 只是不吵。
+_NOTIFY_QUIET_DEFAULT_START = "22:00"
+_NOTIFY_QUIET_DEFAULT_END = "08:00"
+
+
+def get_notify_quiet_enabled() -> bool:
+    """夜间免打扰总开关 — 默认开 (半夜不推送是默认礼仪)。"""
+    return bool(load().get("notify_quiet_enabled", True))
+
+
+def set_notify_quiet_enabled(enabled: bool) -> bool:
+    """保存免打扰总开关。"""
+    save({"notify_quiet_enabled": bool(enabled)})
+    return bool(enabled)
+
+
+def get_notify_quiet_start() -> str:
+    """免打扰窗口起点 (HH:MM, 含)。"""
+    return str(load().get("notify_quiet_start") or _NOTIFY_QUIET_DEFAULT_START)
+
+
+def get_notify_quiet_end() -> str:
+    """免打扰窗口终点 (HH:MM, 不含); 支持跨天 (起点晚于终点, 如 22:00→08:00)。"""
+    return str(load().get("notify_quiet_end") or _NOTIFY_QUIET_DEFAULT_END)
+
+
+def set_notify_quiet_hours(start: str, end: str) -> tuple[str, str]:
+    """保存免打扰窗口。HH:MM 格式校验由 API 层负责, 此处只落盘。"""
+    save({"notify_quiet_start": start, "notify_quiet_end": end})
+    return start, end
+
+
 def get_ai_number_gate_enabled() -> bool:
     """AI 输出数字忠实度闸门开关 (docs/ai-number-fidelity-plan.md)。
 
