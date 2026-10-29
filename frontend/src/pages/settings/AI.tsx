@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-	Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, SlidersHorizontal,
+	Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, Shield, SlidersHorizontal,
 	Shuffle, ExternalLink, Trash2, FileCog, RefreshCw,
 	Terminal, ChevronDown, Sparkles, Atom, Waves, Cloud, Gem, Moon,
 	Plus, CheckCircle2, Zap,
@@ -766,10 +766,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 				model: (isCodexProvider ? codexModel : model).trim(),
 				...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
 			})
-			setTestResult({
-				ok: r.ok,
-				msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
-			})
+			// codex 探测是真实最小 exec (CLI 启动+一次生成), 默认 30s 会掐断
+			isCodexProvider ? { timeoutMs: 90_000 } : undefined,
+				setTestResult({
+					ok: r.ok,
+					msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
+				})
 		} catch (e: any) {
 			setTestResult({ ok: false, msg: String(e?.message ?? '测试失败') })
 		} finally {
@@ -797,8 +799,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 				 区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
 				<div className="space-y-4">
 					{/* 面板页眉 (非卡片): 标题 / 当前状态 / 连接测试。
-					这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
-					套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
+					 这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
+					 套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
 					 的请求方式开关顶到了页面最上方。 */}
 					<div className="flex items-start gap-4">
 						<div className="min-w-0 flex-1">
