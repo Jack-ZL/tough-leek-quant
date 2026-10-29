@@ -28,6 +28,7 @@ from app.services.mining_jobs import ACTIVE_RUN_STATUSES
 from app.services.mining_process_lock import (
     MiningProcessLock,
     MiningProcessLockError,
+    locate_lock_holder_pid,
     probe_lock_held,
     read_lock_holder,
 )
@@ -56,13 +57,19 @@ def lock_status(
     pid = os.getpid() if self_pid is None else self_pid
     held = probe_lock_held(data_dir)
     holder = read_lock_holder(data_dir)
+    holder_source = "file" if holder else None
+    if held and holder is None:
+        # 旧格式/损坏内容 (典型: 旧版本残留后端进程): 从 OS 层面反查持有者,
+        # 让这类锁也能走人工确认的强制释放, 而不是让用户手动猜进程。
+        located_pid = locate_lock_holder_pid(data_dir)
+        if located_pid is not None:
+            holder = {"pid": located_pid, "role": "unknown"}
+            holder_source = "os-scan"
     mine = held and bool(holder) and holder.get("pid") == pid
     holder_pid = holder.get("pid") if holder else None
     holder_alive = _pid_alive(holder_pid) if holder_pid else False
     pid_consistent = (
-        _pid_matches_start_time(holder_pid, holder.get("started_at"))
-        if holder_alive
-        else True
+        _pid_matches_start_time(holder_pid, holder.get("started_at")) if holder_alive else True
     )
     active_runs = _count_active_runs(data_dir)
     store_idle = _store_idle_seconds(data_dir, now=time.time() if now is None else now)
@@ -80,12 +87,11 @@ def lock_status(
         "held": held,
         "mine": mine,
         "holder": holder,
+        "holder_source": holder_source,
         "holder_alive": holder_alive,
         "pid_consistent": pid_consistent,
         "active_runs": active_runs,
-        "store_idle_seconds": (
-            round(store_idle, 1) if store_idle is not None else None
-        ),
+        "store_idle_seconds": (round(store_idle, 1) if store_idle is not None else None),
         "stale_after_seconds": stale_after,
         "force_releasable": releasable,
         "reason": reason,
@@ -117,15 +123,11 @@ def force_release(
         lambda: (not _pid_alive(target_pid)) or (not probe_lock_held(data_dir)),
         _TERMINATE_GRACE_SECONDS + _RELEASE_WAIT_SECONDS,
     ):
-        raise MiningLockAdminError(
-            f"持有者 pid={target_pid} 未能终止或锁未释放, 请手动处理"
-        )
+        raise MiningLockAdminError(f"持有者 pid={target_pid} 未能终止或锁未释放, 请手动处理")
     try:
         lock.acquire()
     except MiningProcessLockError as exc:
-        raise MiningLockAdminError(
-            "持有者已终止, 但锁仍被其他进程抢先获取; 请重试"
-        ) from exc
+        raise MiningLockAdminError("持有者已终止, 但锁仍被其他进程抢先获取; 请重试") from exc
     return {
         "released": True,
         "terminated_pid": target_pid,
@@ -149,7 +151,10 @@ def _classify(
     if mine:
         return False, "锁由当前后端持有"
     if not holder_known:
-        return False, "锁文件为旧格式或不可读, 无法定位持有进程 — 请手动查找并结束它"
+        return False, (
+            "锁文件为旧格式或不可读, 且无法从系统层面定位持有进程 — "
+            "请手动结束后端残留进程后重启面板"
+        )
     if not holder_alive:
         # 内核会在进程退出时释放 flock, 理论上到不了这里; 防御性兜底
         return False, "持有者进程已不存在, 锁应已释放 — 请刷新状态"

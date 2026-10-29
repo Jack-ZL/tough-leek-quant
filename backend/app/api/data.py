@@ -668,6 +668,8 @@ def status(request: Request) -> dict:
         "checked_at": datetime.now(timezone.utc)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
+        # 同步/修复期间同样可能返回 null 统计, 不可把它当成无本地数据。
+        "stats_pending": busy,
         # 指标缓存就绪标志 (启动时 enriched 异步预热, 完成前为 false)
         "indicators_ready": getattr(request.app.state, "indicators_ready", True),
     }

@@ -3,6 +3,7 @@
 存储位置: data/user_data/preferences.json
 沿用 secrets_store 的 merge-write 模式,但不做 chmod 0600 (非敏感数据)。
 """
+
 from __future__ import annotations
 
 import copy
@@ -24,6 +25,7 @@ _cache_sig: tuple[int, int] | None = None
 
 def _path() -> Path:
     from app.config import settings
+
     p = settings.data_dir / "user_data" / "preferences.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
@@ -70,7 +72,8 @@ def save(updates: dict) -> dict:
         current = load()
         current.update(updates)
         atomic_write_text(
-            _path(), json.dumps(current, indent=2, ensure_ascii=False),
+            _path(),
+            json.dumps(current, indent=2, ensure_ascii=False),
         )
         _invalidate_cache()
     return current
@@ -115,6 +118,7 @@ def get_minute_intraday_refresh() -> bool:
     # 未设置过: 有权限默认开, 无权限默认关。
     try:
         from app.services.quote_service import QuoteService
+
         return QuoteService.is_realtime_allowed()
     except Exception:
         return False
@@ -127,9 +131,10 @@ _INTRADAY_REFRESH_INTERVAL_MAX = 60
 
 def get_minute_intraday_refresh_interval() -> int:
     """分时图实时刷新轮询间隔 (秒)。默认 6s, 范围 [3, 60]。"""
-    return max(_INTRADAY_REFRESH_INTERVAL_MIN,
-               min(_INTRADAY_REFRESH_INTERVAL_MAX,
-                   int(load().get("minute_intraday_refresh_interval", 6))))
+    return max(
+        _INTRADAY_REFRESH_INTERVAL_MIN,
+        min(_INTRADAY_REFRESH_INTERVAL_MAX, int(load().get("minute_intraday_refresh_interval", 6))),
+    )
 
 
 # 监控中心个股通知 ext 字段默认配置 (与 ext_presets 内置预设对齐)
@@ -157,7 +162,9 @@ def _normalize_ext_field(raw) -> dict | None:
         return {
             "field": field,
             "maxTags": int(raw["maxTags"]) if raw.get("maxTags") else 0,
-            "hiddenIndices": [int(i) for i in raw["hiddenIndices"]] if raw.get("hiddenIndices") else [],
+            "hiddenIndices": [int(i) for i in raw["hiddenIndices"]]
+            if raw.get("hiddenIndices")
+            else [],
         }
     return None
 
@@ -195,6 +202,7 @@ def get_minute_sync_segment_days() -> int:
     """
     return max(5, min(30, load().get("minute_sync_segment_days", 20)))
 
+
 # ===== 盘中分钟增量刷新 (Expert 专有) =====
 
 # 稳态轮为 intraday.universe 单请求增量, 无脉冲并发, 间隔可低至 3s;
@@ -226,6 +234,7 @@ DATA_SOURCE_JOB_TIMEOUT_MIN_S = 60
 def get_data_source_job_timeout_s() -> int:
     """返回普通数据后台任务的卡死判定时间(秒)。"""
     from app.services.pipeline_jobs import DEFAULT_JOB_TIMEOUT_S
+
     raw = load().get("data_source_job_timeout_s", DEFAULT_JOB_TIMEOUT_S)
     try:
         timeout_s = int(raw)
@@ -237,6 +246,7 @@ def get_data_source_job_timeout_s() -> int:
 def get_data_source_long_job_timeout_s() -> int:
     """返回分钟 K 全市场等长任务的卡死判定时间(秒)。"""
     from app.services.pipeline_jobs import LONG_JOB_TIMEOUT_S
+
     raw = load().get(
         "data_source_long_job_timeout_s",
         LONG_JOB_TIMEOUT_S,
@@ -306,48 +316,67 @@ def set_minute_batch_symbols(size: int) -> int:
 def _allowed_data_providers() -> set[str]:
     try:
         from app.data_providers import custom as custom_sources
+
         return _ALLOWED_DATA_PROVIDERS | custom_sources.names()
     except Exception:  # noqa: BLE001
         return set(_ALLOWED_DATA_PROVIDERS)
 
 
+def _validated_provider(raw: str, pref_key: str) -> str:
+    """数据源偏好白名单校验。非法/已卸载的源回退 tickflow 并告警。
+
+    静默回退曾让「配了 fuyao 却全程走免费档」无从排查 (fuyao 事件的
+    定位难点之一): 回退必须留痕。
+    """
+    if raw in _allowed_data_providers():
+        return raw
+    logger.warning(
+        "数据源偏好 %s=%r 不在可用列表 %s, 回退 tickflow",
+        pref_key,
+        raw,
+        sorted(_allowed_data_providers()),
+    )
+    return "tickflow"
+
+
 def get_daily_data_provider() -> str:
     provider = str(load().get("daily_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "daily_data_provider")
 
 
 def get_adj_factor_provider() -> str:
     # 「跟随日K」(same_as_daily) 特殊值已下线: 存量配置里的旧值按非法值回退 tickflow
     provider = str(load().get("adj_factor_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "adj_factor_provider")
 
 
 def get_minute_data_provider() -> str:
     provider = str(load().get("minute_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "minute_data_provider")
 
 
 def get_full_minute_data_provider() -> str:
     provider = str(load().get("full_minute_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "full_minute_data_provider")
 
 
 def get_depth5_data_provider() -> str:
     provider = str(load().get("depth5_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "depth5_data_provider")
 
 
 def get_realtime_data_provider() -> str:
     provider = str(load().get("realtime_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "realtime_data_provider")
 
 
 def get_financial_provider() -> str:
     provider = str(load().get("financial_data_provider", "tickflow") or "tickflow").lower()
-    return provider if provider in _allowed_data_providers() else "tickflow"
+    return _validated_provider(provider, "financial_data_provider")
 
 
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
+
 
 def get_pipeline_pull_a_share() -> bool:
     """是否拉取 A 股日K。默认 True。"""
@@ -541,10 +570,7 @@ def get_pipeline_pull_types() -> dict:
 
 def set_pipeline_pull_types(cfg: dict) -> dict:
     """批量保存拉取开关。只接受白名单内的布尔字段。"""
-    updates = {
-        k: bool(v) for k, v in cfg.items()
-        if k in _PIPELINE_PULL_KEYS and v is not None
-    }
+    updates = {k: bool(v) for k, v in cfg.items() if k in _PIPELINE_PULL_KEYS and v is not None}
     save(updates)
     return get_pipeline_pull_types()
 
@@ -623,6 +649,7 @@ def set_index_daily_batch_size(size: int) -> int:
 
 
 # ── 五档盘口 sealed(真假涨停) 配置 ──────────────────────
+
 
 def get_limit_ladder_monitor_enabled() -> bool:
     """连板梯队 5 档监控开关。关闭时 depth 不轮询(连板梯队降级显示)。"""
@@ -718,9 +745,7 @@ def set_market_recap_system_prompt(text: str | None) -> str:
             _invalidate_cache()
         return ""
     if len(cleaned) > MARKET_RECAP_PROMPT_MAX_CHARS:
-        raise ValueError(
-            f"复盘提示词过长 ({len(cleaned)} > {MARKET_RECAP_PROMPT_MAX_CHARS} 字符)"
-        )
+        raise ValueError(f"复盘提示词过长 ({len(cleaned)} > {MARKET_RECAP_PROMPT_MAX_CHARS} 字符)")
     save({"market_recap_system_prompt": cleaned})
     return cleaned
 
@@ -776,11 +801,7 @@ def get_guardian_schedule() -> dict:
     if isinstance(k_max, bool) or not isinstance(k_max, int) or not 2 <= k_max <= 4:
         k_max = 4
     slot_limit = data.get("lab_mined_slot_limit", 10)
-    if (
-        isinstance(slot_limit, bool)
-        or not isinstance(slot_limit, int)
-        or not 0 <= slot_limit <= 50
-    ):
+    if isinstance(slot_limit, bool) or not isinstance(slot_limit, int) or not 0 <= slot_limit <= 50:
         slot_limit = 10
     return {
         "guardian_schedule_enabled": enabled,
@@ -801,9 +822,7 @@ def set_guardian_schedule(
     """校验并一次写入守护/实验室配置整组 (阈值语义与 backtest.guardian 一致)。"""
     from app.backtest.guardian import GuardianThresholds
 
-    thresholds = GuardianThresholds(
-        watch_pct=watch_pct, retire_pct=retire_pct, k_max=k_max
-    )
+    thresholds = GuardianThresholds(watch_pct=watch_pct, retire_pct=retire_pct, k_max=k_max)
     if (
         isinstance(lab_mined_slot_limit, bool)
         or not isinstance(lab_mined_slot_limit, int)
@@ -884,7 +903,6 @@ def set_review_push_mode(mode: str) -> str:
     mode = mode if mode in REVIEW_PUSH_MODES else "manual"
     save({"review_push_mode": mode})
     return mode
-
 
 
 # ===== 实时监控 =====
@@ -1011,6 +1029,7 @@ def set_wecom_webhook_url(url: str) -> str:
     存储时统一补全为完整 URL, 避免后续每次推送都要再判一次。
     """
     from app.services.webhook_adapter import normalize_wecom_url
+
     save({"wecom_webhook_url": normalize_wecom_url(url)})
     return get_wecom_webhook_url()
 
@@ -1035,6 +1054,7 @@ def set_dingtalk_webhook_url(url: str) -> str:
     存储时统一补全为完整 URL, 避免后续每次推送都要再判一次。
     """
     from app.services.webhook_adapter import normalize_dingtalk_url
+
     save({"dingtalk_webhook_url": normalize_dingtalk_url(url)})
     return get_dingtalk_webhook_url()
 
@@ -1289,14 +1309,16 @@ def set_realtime_monitor_config(cfg: dict) -> dict:
         # clamp 到 [5, 60], 与 getter 一致, 防前端传越界值
         updates["minute_intraday_refresh_interval"] = max(
             _INTRADAY_REFRESH_INTERVAL_MIN,
-            min(_INTRADAY_REFRESH_INTERVAL_MAX, int(cfg["minute_intraday_refresh_interval"])))
+            min(_INTRADAY_REFRESH_INTERVAL_MAX, int(cfg["minute_intraday_refresh_interval"])),
+        )
     if "minute_refresh_enabled" in cfg:
         updates["minute_refresh_enabled"] = bool(cfg["minute_refresh_enabled"])
     if "minute_refresh_interval" in cfg:
         # clamp 到 [3, 120], 与 getter 一致, 防前端传越界值
         updates["minute_refresh_interval"] = max(
             _MINUTE_REFRESH_INTERVAL_MIN,
-            min(_MINUTE_REFRESH_INTERVAL_MAX, int(cfg["minute_refresh_interval"])))
+            min(_MINUTE_REFRESH_INTERVAL_MAX, int(cfg["minute_refresh_interval"])),
+        )
     if "monitor_ext_fields" in cfg:
         raw = cfg["monitor_ext_fields"] or {}
         updates["monitor_ext_fields"] = {
@@ -1369,6 +1391,7 @@ def set_screener_result_columns(columns: list[dict]) -> list[dict]:
 
 # ===== 首次使用引导 =====
 
+
 def get_onboarding_completed() -> bool:
     """是否已完成首次使用向导。默认 False（新用户）。"""
     return bool(load().get("onboarding_completed", False))
@@ -1382,6 +1405,7 @@ def set_onboarding_completed(done: bool = True) -> bool:
 
 # ===== 财务数据同步时间(持久化,重启不丢失) =====
 # 结构: { "metrics": "2026-06-25T10:00:00+08:00", "income": ..., ... }
+
 
 def get_financial_sync_times() -> dict[str, str]:
     """返回各财务表的最后同步时间(ISO 字符串)。未同步过的表不在返回值中。"""

@@ -800,23 +800,24 @@ export interface AiReviewReport {
 
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
 export interface DragonTigerStockItem {
-	thscode: string
-	ticker?: string | null
-	name?: string | null
-	change?: number | null      // 当日涨跌幅 (小数制)
-	net_value?: number | null   // 龙虎榜净买入 (元)
-	net_rate?: number | null    // 净买占比 (小数制)
-	buy_value?: number | null   // 买入额 (元)
-	sell_value?: number | null  // 卖出额 (元)
-	hot_rank?: number | null    // 同花顺人气排名 (小=靠前)
-	range_days?: number | null  // 1=当日榜 3=3日榜
-	hot_money_net_value?: number | null
-	hot_money_item_net_value?: number | null  // 游资榜 rows 专用: 该席位在该股的净买入
-	org_net_value?: number | null
-	org_net_rate?: number | null
-	org_buy_num?: number | null
-	org_sell_num?: number | null
-	concept_list?: { name?: string }[] | null
+  /** 后端已归一 (缺失时由 ticker 推导); 旧缓存/异常数据源可能为 null, 消费方需兜底 */
+  thscode: string | null
+  ticker?: string | null
+  name?: string | null
+  change?: number | null      // 当日涨跌幅 (小数制)
+  net_value?: number | null   // 龙虎榜净买入 (元)
+  net_rate?: number | null    // 净买占比 (小数制)
+  buy_value?: number | null   // 买入额 (元)
+  sell_value?: number | null  // 卖出额 (元)
+  hot_rank?: number | null    // 同花顺人气排名 (小=靠前)
+  range_days?: number | null  // 1=当日榜 3=3日榜
+  hot_money_net_value?: number | null
+  hot_money_item_net_value?: number | null  // 游资榜 rows 专用: 该席位在该股的净买入
+  org_net_value?: number | null
+  org_net_rate?: number | null
+  org_buy_num?: number | null
+  org_sell_num?: number | null
+  concept_list?: { name?: string }[] | null
 }
 
 export interface DragonTigerHotMoney {
@@ -1008,11 +1009,11 @@ export interface AiIterateResult {
 
 // ===== Custom Signals (自定义信号) =====
 export interface CustomSignalCondition {
-	left: string     // 字段名
-	op: string       // > >= < <= == !=
-	right: string    // "field:xxx" 或数字字符串
-	leftDays?: number   // 左字段取几日前 (0=当日, 默认)
-	rightDays?: number  // 右字段取几日前 (仅 right 为字段时有意义)
+  left: string     // 字段名
+  op: string       // > >= < <= == !=
+  right: string | number  // "field:xxx" 或数字常量 (迁移的历史信号常量为 number, 后端两者均合法)
+  leftDays?: number   // 左字段取几日前 (0=当日, 默认)
+  rightDays?: number  // 右字段取几日前 (仅 right 为字段时有意义)
 }
 
 export interface CustomSignal {
@@ -1671,22 +1672,24 @@ export interface MiningAvailability {
 
 /** 挖掘锁诊断 (撞锁降级模式的持有者线索 + 强制释放判定)。 */
 export interface MiningLockStatus {
-	held: boolean
-	mine: boolean
-	holder: {
-		pid: number
-		started_at?: string
-		role?: string
-		host?: string
-		schema_version?: number
-	} | null
-	holder_alive: boolean
-	pid_consistent: boolean
-	active_runs: number
-	store_idle_seconds: number | null
-	stale_after_seconds: number
-	force_releasable: boolean
-	reason: string | null
+  held: boolean
+  mine: boolean
+  holder: {
+    pid: number
+    started_at?: string
+    role?: string
+    host?: string
+    schema_version?: number
+  } | null
+  /** 持有者线索来源: 锁文件内容 / 旧格式锁经操作系统扫描反查 */
+  holder_source?: 'file' | 'os-scan' | null
+  holder_alive: boolean
+  pid_consistent: boolean
+  active_runs: number
+  store_idle_seconds: number | null
+  stale_after_seconds: number
+  force_releasable: boolean
+  reason: string | null
 }
 
 export interface MiningRequestV1 {
@@ -2869,24 +2872,16 @@ export const api = {
 	clearAiSettings: () =>
 		request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
 
-	/** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置 */
-	testAiSettings: (ai: {
-		provider?: string;
-		base_url?: string;
-		api_key?: string;
-		model?: string;
-		protocol?: string
-	}) =>
-		request<{
-			ok: boolean;
-			model?: string;
-			response?: string;
-			error?: string;
-			error_type?: string
-		}>('/api/settings/ai/test', {
-			method: 'POST',
-			body: JSON.stringify(ai),
-		}),
+  /** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置 */
+  testAiSettings: (
+    ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string },
+    opts?: { timeoutMs?: number },
+  ) =>
+    request<{ ok: boolean; model?: string; response?: string; error?: string; error_type?: string }>('/api/settings/ai/test', {
+      method: 'POST',
+      body: JSON.stringify(ai),
+      ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+    }),
 
 	upgradeGuardStatus: () => request<UpgradeGuardStatus>('/api/upgrade-guard/status'),
 	upgradeGuardScan: () => request<UpgradeGuardStatus>('/api/upgrade-guard/scan', { method: 'POST' }),
@@ -5401,55 +5396,57 @@ interface InstrumentsStats {
 }
 
 export interface DataStatus {
-	daily: TableStats | null
-	enriched: TableStats | null
-	index_daily: TableStats | null
-	index_enriched: TableStats | null
-	index_instruments: InstrumentsStats | null
-	etf_daily: TableStats | null
-	etf_enriched: TableStats | null
-	etf_instruments: InstrumentsStats | null
-	minute: TableStats | null
-	adj_factor: TableStats | null
-	instruments: InstrumentsStats | null
-	financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
-	storage: {
-		daily_files: number
-		daily_size_mb: number
-		enriched_files: number
-		enriched_size_mb: number
-		index_daily_files?: number
-		index_daily_size_mb?: number
-		index_enriched_files?: number
-		index_enriched_size_mb?: number
-		index_instruments_files?: number
-		index_instruments_size_mb?: number
-		etf_daily_files?: number
-		etf_daily_size_mb?: number
-		etf_enriched_files?: number
-		etf_enriched_size_mb?: number
-		etf_instruments_files?: number
-		etf_instruments_size_mb?: number
-		etf_adj_factor_files?: number
-		etf_adj_factor_size_mb?: number
-		minute_files: number
-		minute_size_mb: number
-		adj_factor_files: number
-		adj_factor_size_mb: number
-		instruments_files: number
-		instruments_size_mb: number
-		financials_files?: number
-		financials_size_mb?: number
-		ext_data_files?: number
-		ext_data_size_mb?: number
-		total_size_mb: number
-	}
-	next_pipeline_run: string | null
-	next_instruments_run: string | null
-	last_pipeline_run: string | null
-	last_instruments_run: string | null
-	checked_at: string
-	indicators_ready?: boolean
+  daily: TableStats | null
+  enriched: TableStats | null
+  index_daily: TableStats | null
+  index_enriched: TableStats | null
+  index_instruments: InstrumentsStats | null
+  etf_daily: TableStats | null
+  etf_enriched: TableStats | null
+  etf_instruments: InstrumentsStats | null
+  minute: TableStats | null
+  adj_factor: TableStats | null
+  instruments: InstrumentsStats | null
+  financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
+  storage: {
+    daily_files: number
+    daily_size_mb: number
+    enriched_files: number
+    enriched_size_mb: number
+    index_daily_files?: number
+    index_daily_size_mb?: number
+    index_enriched_files?: number
+    index_enriched_size_mb?: number
+    index_instruments_files?: number
+    index_instruments_size_mb?: number
+    etf_daily_files?: number
+    etf_daily_size_mb?: number
+    etf_enriched_files?: number
+    etf_enriched_size_mb?: number
+    etf_instruments_files?: number
+    etf_instruments_size_mb?: number
+    etf_adj_factor_files?: number
+    etf_adj_factor_size_mb?: number
+    minute_files: number
+    minute_size_mb: number
+    adj_factor_files: number
+    adj_factor_size_mb: number
+    instruments_files: number
+    instruments_size_mb: number
+    financials_files?: number
+    financials_size_mb?: number
+    ext_data_files?: number
+    ext_data_size_mb?: number
+    total_size_mb: number
+  } | null  // busy 降级 (预热/同步/修复期间) 且冷启动缓存未热时为 null, 不代表无数据
+  next_pipeline_run: string | null
+  next_instruments_run: string | null
+  last_pipeline_run: string | null
+  last_instruments_run: string | null
+  checked_at: string
+  /** 预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
+  stats_pending?: boolean
+  indicators_ready?: boolean
 }
 
 export interface EnrichedField {
