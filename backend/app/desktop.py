@@ -13,8 +13,10 @@
 
 不含: 业务逻辑、配置持久化、监控告警 (全在 app.main 里)。
 """
+
 from __future__ import annotations
 
+import errno
 import html
 import logging
 import os
@@ -23,13 +25,14 @@ import sys
 import threading
 import time
 import traceback
-from pathlib import Path
+from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
 
 _APP_NAME = "TSP"
 _BASE_PORT = 3018
 _PORT_PROBE_RANGE = 50  # 从 3018 起最多试 50 个端口
+_instance_lock: BinaryIO | None = None
 
 
 def _failed_html(reason: str | None = None) -> str:
@@ -111,38 +114,52 @@ def _precheck_mining_lock() -> str | None:
 def _acquire_single_instance() -> bool:
     """单实例锁。已运行返回 False (本进程应退出), 否则 True。
 
-    用 data_dir/.desktop.lock 文件锁实现。跨进程, 文件存在即视为已运行
-    (简单可靠; 不引入 msvcrt/fcntl 平台差异)。
+    文件内容仅供诊断, 实际以系统文件锁为准。进程崩溃后系统会自动释放,
+    避免残留 PID 被其他进程复用时永远误判为「已运行」。
     """
     from app.config import settings
 
+    global _instance_lock
+    if _instance_lock is not None:
+        return False
+
     lock_path = settings.data_dir / ".desktop.lock"
-    if lock_path.exists():
-        # 软检测: 写入进程 PID, 若该 PID 已不存在则视为残留锁, 允许接管
+    stream = lock_path.open("a+b")
+    try:
+        os.set_inheritable(stream.fileno(), False)
         try:
-            pid_str = lock_path.read_text(encoding="utf-8").strip()
-            pid = int(pid_str) if pid_str.isdigit() else None
-        except Exception:  # noqa: BLE001
-            pid = None
+            if os.name == "nt":
+                import msvcrt
 
-        if pid is not None and _pid_alive(pid):
-            logger.warning("检测到已有实例运行 (PID %d), 本进程退出", pid)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise
+            logger.warning("检测到已有桌面实例持锁, 本进程退出")
             return False
-        # 残留锁: 清理后继续
-        logger.info("清理残留单实例锁 (PID %s 已不存在)", pid)
 
-    lock_path.write_text(str(_current_pid()), encoding="utf-8")
-    return True
+        stream.seek(0)
+        stream.truncate()
+        stream.write(str(_current_pid()).encode("ascii"))
+        stream.flush()
+        _instance_lock = stream
+        return True
+    finally:
+        if _instance_lock is not stream:
+            stream.close()
 
 
 def _release_single_instance() -> None:
-    from app.config import settings
-
-    lock_path = settings.data_dir / ".desktop.lock"
-    try:
-        lock_path.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    global _instance_lock
+    stream, _instance_lock = _instance_lock, None
+    if stream is not None:
+        # 不 unlink: 删除再重建会让并发启动的进程锁住不同文件, 同时通过检查。
+        stream.close()
 
 
 def _guard_streams() -> None:
@@ -163,11 +180,21 @@ def _guard_streams() -> None:
 
     class _NullStream:
         """丢弃所有写入的空流 (替代 None 的 stdout/stderr)。"""
-        def write(self, _s): return 0
-        def flush(self): pass
-        def reconfigure(self, *a, **kw): pass
-        def isatty(self): return False
-        def fileno(self): raise OSError("no fileno")
+
+        def write(self, _s):
+            return 0
+
+        def flush(self):
+            pass
+
+        def reconfigure(self, *a, **kw):
+            pass
+
+        def isatty(self):
+            return False
+
+        def fileno(self):
+            raise OSError("no fileno")
 
     # 仅在 stdout/stderr 缺失或不可写时替换 (有真控制台时保持原样)
     for name in ("stdout", "stderr"):
@@ -280,7 +307,7 @@ def _run_uvmicorn(port: int, ready_event: threading.Event) -> None:
         host="127.0.0.1",  # 仅本机, 不暴露外网 (桌面版无需远程访问)
         port=port,
         log_level="info",
-        access_log=False,    # 桌面版不需要访问日志
+        access_log=False,  # 桌面版不需要访问日志
         loop="auto",
         # log_config=None: uvicorn 默认给 uvicorn.* 挂独立 console handler 且
         # propagate=False, windowed 模式下 stderr 已被守护替换, lifespan 启动
@@ -293,6 +320,7 @@ def _run_uvmicorn(port: int, ready_event: threading.Event) -> None:
     # 线程结束时通知主线程 (无论正常退出还是异常)
     def _signal_done(*exc):
         ready_event.set()
+
     server.config.callback_notify = None  # 不用 notify 机制
 
     try:
@@ -351,8 +379,8 @@ def _open_window(url: str) -> None:
         # 桌面版固定单窗口, 禁用外部浏览器跳转
         confirm_close=False,
     )
-    # pywebview 会阻塞主线程直到窗口关闭
-    webview.start(debug=False)
+    # 继承隐藏启动标志时首次显示可能被抑制, GUI 就绪后再显式显示 (同失败页)。
+    webview.start(lambda: window.show(), debug=False)
 
 
 def _open_static_window(html_text: str) -> None:
@@ -391,31 +419,28 @@ def main() -> int:
 
         return run_worker()
 
+    instance_acquired = False
     try:
         _ensure_data_dir_writable()
-    except Exception:
-        # 数据目录不可写是致命错误, 无法继续
-        return 1
 
-    # 单实例: 已运行则退出
-    if not _acquire_single_instance():
-        return 0
+        if not _acquire_single_instance():
+            return 0
+        instance_acquired = True
 
-    # 挖掘锁预检: 撞锁只降级不再拦截启动 — lifespan 会以降级模式起面板
-    # (挖掘入口 409), 用户可在挖掘页查看持有者并强制释放陈旧持有者;
-    # 这里只提前留一条日志方便排查。
-    conflict = _precheck_mining_lock()
-    if conflict is not None:
-        logger.warning("启动预检: %s", conflict.replace("\n", " "))
+        # 撞挖掘锁只降级, 其他预检异常必须同样落盘、弹框并释放桌面锁。
+        conflict = _precheck_mining_lock()
+        if conflict is not None:
+            logger.warning("启动预检: %s", conflict.replace("\n", " "))
 
-    try:
         port = _find_free_port(_BASE_PORT)
         logger.info("桌面版后端将监听 127.0.0.1:%d", port)
 
         # 后台线程起 uvicorn
         ready = threading.Event()
         server_thread = threading.Thread(
-            target=_run_uvmicorn, args=(port, ready), daemon=True,
+            target=_run_uvmicorn,
+            args=(port, ready),
+            daemon=True,
             name="uvicorn",
         )
         server_thread.start()
@@ -424,8 +449,7 @@ def main() -> int:
         # ready 由后端线程 finally 置位 → 线程已退出时立刻返回, 不等满超时
         if not _wait_for_server(port, timeout=60.0, done_event=ready):
             reason = (
-                "后端进程已提前退出，详情见 data\\logs\\desktop.log"
-                if ready.is_set() else None
+                "后端进程已提前退出，详情见 data\\logs\\desktop.log" if ready.is_set() else None
             )
             logger.error("后端未就绪 (reason=%s), 桌面版退出", reason)
             _open_static_window(_failed_html(reason))
@@ -448,7 +472,8 @@ def main() -> int:
         _show_crash("TSP 启动失败", traceback.format_exc())
         return 1
     finally:
-        _release_single_instance()
+        if instance_acquired:
+            _release_single_instance()
 
 
 if __name__ == "__main__":

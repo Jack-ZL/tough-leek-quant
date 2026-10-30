@@ -46,6 +46,7 @@ import {
 } from '@/components/screener/ScreenerFilter'
 import { StrategySettingsDialog } from '@/components/screener/StrategySettingsDialog'
 import { DefaultStrategyParamsDialog } from '@/components/screener/DefaultStrategyParamsDialog'
+import { ResourceTransferButton } from '@/components/ResourceTransferDialog'
 import { StrategyPoolDialog } from '@/components/screener/StrategyPoolDialog'
 import { StrategyBuilderDialog } from '@/components/screener/StrategyBuilderDialog'
 import { StrategyStoreDialog } from '@/components/screener/StrategyStoreDialog'
@@ -1050,15 +1051,18 @@ export function Screener() {
 							</button>
 						)}
 						{/* 默认基础参数: 之后新建策略默认使用的基础过滤配置 */}
-						<button
-							onClick={() => setShowDefaultParams(true)}
-							title="默认基础参数 — 新建策略默认使用的基础过滤配置"
-							className="inline-flex items-center justify-center h-7 w-7 rounded-btn
-                border border-border bg-surface text-muted
-                hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
-						>
-							<SlidersHorizontal className="h-3.5 w-3.5" />
-						</button>
+						<div className="flex shrink-0 items-center gap-1.5">
+							<ResourceTransferButton kind="strategy" />
+							<button
+								onClick={() => setShowDefaultParams(true)}
+								title="默认基础参数 — 新建策略默认使用的基础过滤配置"
+								className="inline-flex items-center justify-center h-7 w-7 rounded-btn
+                  border border-border bg-surface text-muted
+                  hover:text-accent hover:border-accent/50 transition-colors cursor-pointer"
+							>
+								<SlidersHorizontal className="h-3.5 w-3.5" />
+							</button>
+						</div>
 					</div>
 				}
 			/>
@@ -1089,8 +1093,8 @@ export function Screener() {
 										: '当前周期筛选下无策略，切换周期筛选或编辑策略池'}
 								</div>
 								{/* 池空时补文档入口: 用户此刻最需要的是「怎么造一个策略」, 而文档路径
-					       在界面上不可发现 —— 补上下文提到的三份指南, 与其它页引用 docs 同款
-					       (等宽文本而非链接: 这些是仓库内文件, 浏览器里点不开)。 */}
+								 在界面上不可发现 —— 补上下文提到的三份指南, 与其它页引用 docs 同款
+								 (等宽文本而非链接: 这些是仓库内文件, 浏览器里点不开)。 */}
 								{pool.length === 0 && (
 									<div className="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed text-muted/80">
 										<span>自己写策略看</span>
@@ -1300,8 +1304,15 @@ export function Screener() {
 											setPreviewName(name ?? '');
 											setPreviewNavList(navList ?? [])
 										}}
-										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({ symbol, action: 'add', groupId })}
-										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({ symbol, action: 'remove' })}
+										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({
+											symbol,
+											action: 'add',
+											groupId
+										})}
+										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({
+											symbol,
+											action: 'remove'
+										})}
 										watchlistPending={toggleWatchlist.isPending}
 										klineData={klineData}
 										dailyKChartVisible={dailyKChartVisible}

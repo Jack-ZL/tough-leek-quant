@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback, memo, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { DailyResultStaleNotice } from '@/components/data/DailyDataHealthNotice'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
 	Play,
@@ -2249,7 +2250,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 									}`}
 								title={val === 'position' ? '受仓位/资金约束的真实账户模拟' : '全部候选独立执行，不受资金和持仓数量约束'}
 							>
-								{val === 'position' ? <Play className="h-3.5 w-3.5" /> : <BarChart3 className="h-3.5 w-3.5" />}
+								{val === 'position' ? <Play className="h-3.5 w-3.5" /> :
+									<BarChart3 className="h-3.5 w-3.5" />}
 								{label}
 							</button>
 						))}
@@ -2344,6 +2346,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 					</div>
 				)}
 
+				<DailyResultStaleNotice result={result} assetType={result?.config.asset_type === 'etf' ? 'etf' : 'stock'} />
 				{backtestTask?.error && (
 					<div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-btn px-3 py-2">
 						<div>{backtestTask.error}</div>
@@ -2649,7 +2652,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 								<span className="font-medium text-amber-300">成交约束：</span>
 								{executionSummary.map((item, index) => (
 									<span key={item.key} className="ml-2">
-										{index > 0 ? '· ' : ''}{item.label} <span className="font-mono text-foreground">{item.value}</span> 次
+										{index > 0 ? '· ' : ''}{item.label}
+										<span className="font-mono text-foreground">{item.value}</span> 次
 									</span>
 								))}
 							</div>
@@ -2812,11 +2816,19 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 												{visibleTrades.map((t: StrategyBacktestTrade, i: number) => (
 													<tr
 														key={`${t.symbol}-${t.entry_date}-${tradeStart + i}`}
-														onClick={() => setChartOverlay({ kind: 'trade', trade: t, source: 'trades' })}
+														onClick={() => setChartOverlay({
+															kind: 'trade',
+															trade: t,
+															source: 'trades'
+														})}
 														onKeyDown={(e) => {
 															if (e.key === 'Enter' || e.key === ' ') {
 																e.preventDefault()
-																setChartOverlay({ kind: 'trade', trade: t, source: 'trades' })
+																setChartOverlay({
+																	kind: 'trade',
+																	trade: t,
+																	source: 'trades'
+																})
 															}
 														}}
 														role="button"
@@ -3200,7 +3212,11 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 												<ConditionEditor
 													conditions={overlayConditions}
 													onChange={next => updateOverride('overlay_filter', next)}
-													options={{ fields: overlayFields, groups: overlayGroups, stringFields: overlayStringFields }}
+													options={{
+														fields: overlayFields,
+														groups: overlayGroups,
+														stringFields: overlayStringFields
+													}}
 													title="叠加过滤（多条件为「且」关系，硬过滤）"
 													allowEmpty
 												/>

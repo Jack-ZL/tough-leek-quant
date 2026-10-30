@@ -7,6 +7,7 @@ SSE 推送四种事件 (使用标准 SSE event 字段):
   - strategy_alert: 策略监控/告警触发，前端弹通知
   - depth_updated: 五档盘口修正完成，前端刷新连板梯队/看板封单数据
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,9 @@ def _get_quote_service(request: Request):
     return getattr(request.app.state, "quote_service", None)
 
 
-def _fallback_index_quotes_from_daily(request: Request, symbols: list[str] | None = None) -> list[dict]:
+def _fallback_index_quotes_from_daily(
+    request: Request, symbols: list[str] | None = None
+) -> list[dict]:
     """实时指数缓存为空时，从本地指数日 K 取最近收盘价作为兜底。"""
     repo = getattr(request.app.state, "repo", None)
     if not repo:
@@ -42,14 +45,14 @@ def _fallback_index_quotes_from_daily(request: Request, symbols: list[str] | Non
             f"""
             WITH ranked AS (
                 SELECT symbol, date, close,
-                       row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                    row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
                 FROM kline_index_daily
                 {symbol_filter}
             ), latest AS (
                 SELECT symbol,
-                       max(CASE WHEN rn = 1 THEN date END) AS date,
-                       max(CASE WHEN rn = 1 THEN close END) AS last_price,
-                       max(CASE WHEN rn = 2 THEN close END) AS prev_close
+                    max(CASE WHEN rn = 1 THEN date END) AS date,
+                    max(CASE WHEN rn = 1 THEN close END) AS last_price,
+                    max(CASE WHEN rn = 2 THEN close END) AS prev_close
                 FROM ranked
                 WHERE rn <= 2
                 GROUP BY symbol
@@ -70,17 +73,19 @@ def _fallback_index_quotes_from_daily(request: Request, symbols: list[str] | Non
         if last_price is not None and prev_close not in (None, 0):
             change_amount = float(last_price) - float(prev_close)
             change_pct = change_amount / float(prev_close) * 100
-        out.append({
-            "symbol": symbol,
-            "name": None,
-            "date": str(dt) if dt else None,
-            "last_price": float(last_price) if last_price is not None else None,
-            "close": float(last_price) if last_price is not None else None,
-            "prev_close": float(prev_close) if prev_close is not None else None,
-            "change_amount": change_amount,
-            "change_pct": change_pct,
-            "source": "index_daily",
-        })
+        out.append(
+            {
+                "symbol": symbol,
+                "name": None,
+                "date": str(dt) if dt else None,
+                "last_price": float(last_price) if last_price is not None else None,
+                "close": float(last_price) if last_price is not None else None,
+                "prev_close": float(prev_close) if prev_close is not None else None,
+                "change_amount": change_amount,
+                "change_pct": change_pct,
+                "source": "index_daily",
+            }
+        )
     return out
 
 
@@ -90,8 +95,15 @@ def status(request: Request):
     qs = _get_quote_service(request)
     if qs:
         return qs.status()
-    return {"enabled": False, "running": False, "symbol_count": 0, "index_symbol_count": 0,
-            "quote_age_ms": None, "is_trading_hours": False, "last_fetch_ms": None}
+    return {
+        "enabled": False,
+        "running": False,
+        "symbol_count": 0,
+        "index_symbol_count": 0,
+        "quote_age_ms": None,
+        "is_trading_hours": False,
+        "last_fetch_ms": None,
+    }
 
 
 @router.get("/indices")
@@ -144,13 +156,16 @@ async def quote_stream(request: Request):
                 # 告警 (分片推送, 避免单条 SSE 过大)
                 alerts = data["alerts"]
                 for chunk_start in range(0, len(alerts), 20):
-                    chunk = alerts[chunk_start:chunk_start + 20]
+                    chunk = alerts[chunk_start : chunk_start + 20]
                     yield {
                         "event": "strategy_alert",
-                        "data": json.dumps({
-                            "ts": int(time.time() * 1000),
-                            "alerts": chunk,
-                        }, ensure_ascii=False),
+                        "data": json.dumps(
+                            {
+                                "ts": int(time.time() * 1000),
+                                "alerts": chunk,
+                            },
+                            ensure_ascii=False,
+                        ),
                     }
 
                 # 复盘进度 (定时复盘流式生成时) — 前端 reviewStore 直接消费
@@ -165,13 +180,20 @@ async def quote_stream(request: Request):
                 if data["quote_updated"]:
                     yield {
                         "event": "quotes_updated",
-                        "data": json.dumps({
-                            "ts": int(time.time() * 1000),
-                            "symbol_count": qs._symbol_count,
-                        }),
+                        "data": json.dumps(
+                            {
+                                "ts": int(time.time() * 1000),
+                                "symbol_count": qs._symbol_count,
+                            }
+                        ),
                     }
 
                 # 策略监控完成后, 结果已写入内存缓存; 独立通知只刷新策略个股列表。
+                if "daily_integrity_updated" in data:
+                    yield {
+                        "event": "daily_integrity_updated",
+                        "data": json.dumps({"data_changed": data["daily_integrity_updated"]}),
+                    }
                 if data["strategy_results_updated"]:
                     yield {
                         "event": "strategy_results_updated",
@@ -182,9 +204,11 @@ async def quote_stream(request: Request):
                 if data["depth_updated"]:
                     yield {
                         "event": "depth_updated",
-                        "data": json.dumps({
-                            "ts": int(time.time() * 1000),
-                        }),
+                        "data": json.dumps(
+                            {
+                                "ts": int(time.time() * 1000),
+                            }
+                        ),
                     }
         finally:
             qs.unsubscribe(sub)

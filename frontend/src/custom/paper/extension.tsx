@@ -233,7 +233,9 @@ function SetupCard({ accId, onDone, onCancel }: {
 	const [ruleWarn, setRuleWarn] = useState<string | null>(null)
 
 	const strategiesQ = useQuery({
-		queryKey: QK.screenerStrategies('any', 'all'),
+		// 与 Screener/DefaultStrategyParamsDialog 同键同请求 (api.screenerStrategies(
+		// undefined, 'all')), 共享缓存而不是各拼哨兵值各拉一份
+		queryKey: [...QK.screenerStrategies('all'), 'all'],
 		queryFn: () => api.screenerStrategies(undefined, 'all'),
 		staleTime: 60_000,
 	})
@@ -678,7 +680,8 @@ function SuggestInput({
 									{i === activeIdx &&
 										<span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-accent" />}
 									<div className="flex min-w-0 items-center gap-1.5">
-										{opt.left && <span className="shrink-0 font-mono text-[11px] text-secondary">{opt.left}</span>}
+										{opt.left &&
+											<span className="shrink-0 font-mono text-[11px] text-secondary">{opt.left}</span>}
 										<span className={cn('min-w-0 truncate text-xs', i === activeIdx ? 'text-accent' : 'text-foreground')}>{opt.label}</span>
 										{(opt.badges ?? []).slice(0, 3).map(b => (
 											<span key={b} className="shrink-0 rounded bg-elevated px-1 py-px text-[9px] leading-4 text-muted">{b}</span>
@@ -1377,7 +1380,9 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
 
 	// ID 联想: 跟策略 → 策略引擎列表; 跟监控规则 → 监控规则列表。本地按中文名/ID 过滤。
 	const strategiesQ = useQuery({
-		queryKey: QK.screenerStrategies('any', 'all'),
+		// 与 Screener/DefaultStrategyParamsDialog 同键同请求 (api.screenerStrategies(
+		// undefined, 'all')), 共享缓存而不是各拼哨兵值各拉一份
+		queryKey: [...QK.screenerStrategies('all'), 'all'],
 		queryFn: () => api.screenerStrategies(undefined, 'all'),
 		staleTime: 60_000,
 	})
@@ -1807,7 +1812,7 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
 											<th className="py-1.5 text-center font-medium">净值趋势</th>
 											<SortTh label="最近结算" sortKey="last_nav_date" sort={sort} onSort={onSortCmp} align="right" />
 											{/* 操作列 sticky 贴右: 14 列宽表在窄视口横向滚动时, 冻结/删除入口始终可见。
-	                     box-shadow 在 border-collapse 表格上不渲染, 分界用 1px 左边框。 */}
+											 box-shadow 在 border-collapse 表格上不渲染, 分界用 1px 左边框。 */}
 											<th className="sticky right-0 z-10 w-16 border-l border-border/60 bg-surface/95 py-1.5 text-center font-medium backdrop-blur-sm" title="冻结切换 / 删除账户">操作</th>
 										</tr>
 									</thead>
@@ -1883,7 +1888,10 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
 														<td className="sticky right-0 z-10 border-l border-border/60 bg-surface/95 py-2 text-right backdrop-blur-sm" onClick={e => e.stopPropagation()}>
 															<div className="flex items-center justify-end gap-0.5">
 																<button
-																	onClick={() => freezeM.mutate({ acc: r.account, frozen: r.status !== 'frozen' })}
+																	onClick={() => freezeM.mutate({
+																		acc: r.account,
+																		frozen: r.status !== 'frozen'
+																	})}
 																	disabled={freezeM.isPending}
 																	className={cn(
 																		'rounded p-1 transition-colors',
@@ -1967,7 +1975,9 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
 	const [maxPositions, setMaxPositions] = useState('10')
 
 	const strategiesQ = useQuery({
-		queryKey: QK.screenerStrategies('any', 'all'),
+		// 与 Screener/DefaultStrategyParamsDialog 同键同请求 (api.screenerStrategies(
+		// undefined, 'all')), 共享缓存而不是各拼哨兵值各拉一份
+		queryKey: [...QK.screenerStrategies('all'), 'all'],
 		queryFn: () => api.screenerStrategies(undefined, 'all'),
 		staleTime: 60_000,
 	})
@@ -2123,7 +2133,10 @@ function BatchCreateModal({ onClose, onCreated }: { onClose: () => void; onCreat
 									<span className="w-16 shrink-0 text-[10px] text-muted">{r.kind === 'strategy' ? '跟策略' : '跟规则'}</span>
 									<input
 										value={r.name}
-										onChange={e => setRows(prev => prev.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+										onChange={e => setRows(prev => prev.map((x, j) => (j === i ? {
+											...x,
+											name: e.target.value
+										} : x)))}
 										placeholder="账户名 (缺省用 ID)"
 										className="min-w-0 flex-1 rounded-btn border border-border bg-base px-2 py-1 text-xs outline-none focus:border-accent/50"
 									/>
@@ -2292,7 +2305,7 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
 		...(tradesQ.data?.fills ?? []).map(f => f.symbol),
 	]))
 	const namesQ = useQuery({
-		queryKey: ['instrument-names', nameSymbols.join(',')],
+		queryKey: QK.instrumentNames(nameSymbols),
 		queryFn: () => api.instrumentNames(nameSymbols),
 		enabled: nameSymbols.length > 0,
 		staleTime: 300000,
@@ -2525,7 +2538,8 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
 							</div>
 							{tab === 'orders' ? (
 								<div className="mt-2 space-y-1">
-									{orders.length === 0 && <div className="py-6 text-center text-xs text-muted">暂无订单</div>}
+									{orders.length === 0 &&
+										<div className="py-6 text-center text-xs text-muted">暂无订单</div>}
 									{orders.map((o: PaperOrder) => (
 										<div key={o.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs hover:bg-elevated/50">
 											<span className={cn('w-8 shrink-0 font-medium', o.side === 'buy' ? 'text-bull' : 'text-bear')}>
@@ -2564,7 +2578,8 @@ function AccountPanel({ acc, name, onDeleted }: { acc: string; name?: string; on
 								</div>
 							) : tab === 'trades' ? (
 								<div className="mt-2 space-y-1">
-									{trades.length === 0 && <div className="py-6 text-center text-xs text-muted">暂无成交</div>}
+									{trades.length === 0 &&
+										<div className="py-6 text-center text-xs text-muted">暂无成交</div>}
 									{trades.map((f: PaperFill) => (
 										<div key={`${f.seq}-${f.order_id ?? 'corp'}`} className="flex items-center gap-2 rounded-btn px-2 py-1.5 font-mono text-xs hover:bg-elevated/50">
 											<span className="w-14 shrink-0 text-muted">{f.date}</span>
