@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { DailyResultStaleNotice } from '@/components/data/DailyDataHealthNotice'
 import { motion } from 'framer-motion'
 import { Play, BarChart3, BookmarkPlus, Clock } from 'lucide-react'
 import { api, type FactorColumn, type FactorBacktestResult, type GroupStat } from '@/lib/api'
@@ -83,7 +84,10 @@ function LoadingPanel({ symbolsText }: { symbolsText: string }) {
   )
 }
 
-export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = false }: { initialFactorName?: string; autoRun?: boolean }) {
+export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = false }: {
+  initialFactorName?: string;
+  autoRun?: boolean
+}) {
   const queryClient = useQueryClient()
   const [factorName, setFactorName] = useState(initialFactorName)
   const [symbols, setSymbols] = useState('')
@@ -107,7 +111,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
     const cols = columns.data?.columns ?? []
     const groups: Record<string, FactorColumn[]> = {}
     for (const c of cols) {
-      ;(groups[c.group] ??= []).push(c)
+      ; (groups[c.group] ??= []).push(c)
     }
     return groups
   }, [columns.data])
@@ -151,7 +155,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
     if (!autoRun || autoRunRef.current) return
     autoRunRef.current = true
     run.mutate()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun])
 
   const saveCandidate = useMutation({
@@ -197,7 +201,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
   const rangeButtonCls = (key: string) => `rounded-btn px-2 py-1 text-[11px] font-medium transition-colors ${rangeKey === key
     ? 'bg-accent/15 text-accent'
     : 'text-muted hover:bg-elevated/70 hover:text-secondary'
-  }`
+    }`
 
   return (
     <div className="h-full min-h-0 overflow-hidden rounded-card border border-border bg-surface/80 grid grid-cols-1 xl:grid-cols-[18rem_minmax(0,1fr)]">
@@ -235,7 +239,10 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
               <button
                 key={t}
                 type="button"
-                onClick={() => { setAssetType(t); setSymbols('') }}
+                onClick={() => {
+                  setAssetType(t);
+                  setSymbols('')
+                }}
                 className={`h-full px-3 text-xs font-medium transition-colors cursor-pointer
                   ${assetType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'}`}
               >
@@ -377,6 +384,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
           <LoadingPanel symbolsText={symbols ? `${symbols.split(',').length} 只标的` : '全市场 · 当前区间'} />
         )}
 
+        <DailyResultStaleNotice result={result} assetType={result?.config.asset_type === 'etf' ? 'etf' : 'stock'} />
         {result && !result.error && (
           <motion.div
             initial={{ opacity: 0, y: 8 }}

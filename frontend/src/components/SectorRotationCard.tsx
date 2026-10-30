@@ -438,6 +438,9 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 		enabled: !!data?.date && phase === 'live',
 		refetchInterval: 30_000,
 		staleTime: 25_000,
+		// 跨交易日键切换 (date 变化) 时保留同指数的上一份数据, 叠加线不闪空一拍
+		placeholderData: (prev: any, prevQuery: any) =>
+			(prevQuery?.queryKey as readonly unknown[] | undefined)?.[1] === indexSymbol ? prev : undefined,
 	})
 	const indexDailyQuery = useQuery({
 		queryKey: QK.sectorRotationIndexDaily(indexSymbol),
@@ -1170,7 +1173,8 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 							value={indexSymbol}
 							onChange={event => onIndexChange(event.target.value)}
 						>
-							{CORE_INDEXES.map(item => <option key={item.symbol} value={item.symbol}>{item.name}</option>)}
+							{CORE_INDEXES.map(item =>
+								<option key={item.symbol} value={item.symbol}>{item.name}</option>)}
 						</select>
 					</label>
 					<label className="flex items-center gap-1.5 text-[10px] text-muted">
@@ -1354,27 +1358,39 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 										items={[
 											{ swatch: swatchLine('#60a5fa'), label: '线端常显板块名 (悬停聚焦)' },
 											{ swatch: swatchDot('#fbbf24'), label: '圆点=领涨易主 · 标注接管板块' },
-											{ swatch: swatchDash('rgba(128,140,160,0.9)'), label: '0% 轴: 上穿=切入 / 下穿=退潮' },
+											{
+												swatch: swatchDash('rgba(128,140,160,0.9)'),
+												label: '0% 轴: 上穿=切入 / 下穿=退潮'
+											},
 										]}
 									/>
 									{/* 高度随列宽 (9:5): 固定像素高在宽窗口会压成 4:1 扁条; minHeight 兜底窄列 */}
-									<div ref={trend.ref} style={{ aspectRatio: '9 / 5', minHeight: 300 }} className="w-full" />
+									<div ref={trend.ref} style={{
+										aspectRatio: '9 / 5',
+										minHeight: 300
+									}} className="w-full" />
 								</div>
 							)
 						)}
 						<div className={cn('relative xl:min-h-0', !showLeftChart && 'xl:col-span-2')}>
 							<div className="flex flex-col gap-2 xl:absolute xl:inset-0">
 								{/* 涨跌切换 (0轴穿越) — 独立分组: 可见窗口累计 + 最新事件名单,
-                 悬停名称联动上图/榜单定位 */}
+								 悬停名称联动上图/榜单定位 */}
 								<div className="rounded-lg border border-border/60 bg-elevated/30 p-1.5">
 									<Legend
 										items={[
 											{ swatch: swatchLine('#f59e0b'), label: '切换强度 (左轴)' },
-											{ swatch: swatchDot('#f59e0b'), label: '圆点=领涨易主(含开局) · 颜色同走势线 · 大点=最强切换' },
+											{
+												swatch: swatchDot('#f59e0b'),
+												label: '圆点=领涨易主(含开局) · 颜色同走势线 · 大点=最强切换'
+											},
 											...(indexLine
 												? [{ swatch: swatchLine('#60a5fa'), label: `${indexLine.label} (右轴)` }]
 												: []),
-											{ swatch: swatchDash('rgba(128,140,160,0.8)'), label: '全市场 (右轴) · 与展示图指针联动' },
+											{
+												swatch: swatchDash('rgba(128,140,160,0.8)'),
+												label: '全市场 (右轴) · 与展示图指针联动'
+											},
 										]}
 									/>
 									<div ref={chart.ref} className="h-44 w-full" />
@@ -1455,7 +1471,8 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 											onMouseLeave={() => setHoverName(null)}
 											className="rounded bg-base/60 px-1.5 py-0.5 text-bull hover:bg-elevated/60"
 										>
-											{event.name} <span className="font-mono text-[9px] opacity-60">{event.time}</span>
+											{event.name}
+											<span className="font-mono text-[9px] opacity-60">{event.time}</span>
 										</button>
 									))}
 									{!upNames.length && <span className="text-muted/70">无</span>}
@@ -1470,7 +1487,8 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 											onMouseLeave={() => setHoverName(null)}
 											className="rounded bg-base/60 px-1.5 py-0.5 text-bear hover:bg-elevated/60"
 										>
-											{event.name} <span className="font-mono text-[9px] opacity-60">{event.time}</span>
+											{event.name}
+											<span className="font-mono text-[9px] opacity-60">{event.time}</span>
 										</button>
 									))}
 									{!downNames.length && <span className="text-muted/70">无</span>}
