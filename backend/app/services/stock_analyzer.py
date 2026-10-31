@@ -273,6 +273,7 @@ def _build_user_prompt(
     raw_close: float | None = None,
     web_search: bool = False,
     scorecard_context: str = "",
+    quality_context: str = "",
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
@@ -280,6 +281,7 @@ def _build_user_prompt(
     web_search 与系统提示词第 5 节变体保持一致(联网时消息面提示改为结合搜索结果)。
     scorecard_context (P0-7): AI 历史战绩块, 空串不注入; 放用户提示词的原因同
     market_recap._build_user_prompt (自定义系统提示词快照会覆盖注入)。
+    quality_context (P1-11): 数据体检块, 空串不注入; 同上放用户提示词。
     """
     news_hint = (
         "消息面维度可结合联网检索到的相关新闻/公告与价量异动交叉验证。"
@@ -338,6 +340,9 @@ def _build_user_prompt(
     # P0-7 历史战绩块 (自带 "## 你的历史战绩" 标题与前导空行, 空串则整段不出现)
     if scorecard_context:
         parts.append(scorecard_context)
+    # P1-11 数据体检块 (自带 "## 数据体检" 标题与前导空行, 无问题则空串不出现)
+    if quality_context:
+        parts.append(quality_context)
     return "\n".join(parts)
 
 
@@ -400,6 +405,22 @@ async def analyze_stock_stream(
     asset_type = repo.resolve_asset_type(symbol)
     fins = {} if asset_type in {"etf", "index"} else _load_financials(data_dir, symbol)
 
+    # 3.5 数据体检 (P1-11): 对即将喂给 AI 的同一份 df/fins 打分。
+    # fail-open — 体检自身任何异常都不影响分析主流程 (quality=None 不注入)。
+    from app.services import ai_data_quality
+    try:
+        quality = ai_data_quality.score_symbol(data_dir, symbol, df, fins, asset_type)
+    except Exception:  # noqa: BLE001
+        logger.warning("[P1-11] 数据体检失败 (跳过注入): %s", symbol, exc_info=True)
+        quality = None
+    # 门控默认关闭 (只警示); 开启后 D 级硬伤在此拒绝, 不消耗 AI token
+    if ai_data_quality.should_block(quality):
+        yield json.dumps({
+            "type": "error",
+            "message": ai_data_quality.block_message(quality),
+        }, ensure_ascii=False)
+        return
+
     # 4. meta
     yield json.dumps({
         "type": "meta",
@@ -407,6 +428,8 @@ async def analyze_stock_stream(
         "summary": summarize_levels(levels, close),
         "levels": levels,
         "close": close,
+        # P1-11: 体检结果随 meta 下发, 前端显示等级徽章并随报告落库
+        "quality": quality,
     }, ensure_ascii=False)
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)
@@ -441,7 +464,9 @@ async def analyze_stock_stream(
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
                                          raw_close=raw_close, web_search=search_on,
-                                         scorecard_context=scorecard_ctx)
+                                         scorecard_context=scorecard_ctx,
+                                         # P1-11 数据体检块 (无问题时空串不注入)
+                                         quality_context=ai_data_quality.prompt_block(quality))
         # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
         user_content = user_prompt + length_hint
 

@@ -196,12 +196,15 @@ def _build_emotion_block(overview: dict) -> str:
 
 
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
-                       bench_context: str = "", scorecard_context: str = "") -> str:
+                       bench_context: str = "", scorecard_context: str = "",
+                       quality_context: str = "") -> str:
     """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。
 
     scorecard_context (P0-7): AI 历史战绩块, 由 ai_scorecard.prompt_line() 生成,
     空串表示无已结算样本不注入。放用户提示词而非系统提示词 —— 系统提示词支持
     用户自定义快照, 注入会被覆盖; 数字闸门白名单从 prompt 成品采集, 数字天然放行。
+    quality_context (P1-11): 全市场数据体检块, 由 ai_data_quality.market_block()
+    生成, 体检干净时空串不注入; 放用户提示词的原因同上。
     """
     as_of = overview.get("as_of") or "今日"
 
@@ -266,6 +269,10 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
     # P0-7 历史战绩块 (自带 "## 你的历史战绩" 标题与前导空行, 空串则整段不出现)
     if scorecard_context:
         parts.append(scorecard_context)
+
+    # P1-11 全市场数据体检块 (自带 "## 数据体检" 标题与前导空行, 体检干净则不出现)
+    if quality_context:
+        parts.append(quality_context)
 
     return "\n".join(parts)
 
@@ -359,8 +366,15 @@ async def recap_market_stream(
             scorecard_ctx = ai_scorecard.prompt_line()
         except Exception:  # noqa: BLE001
             scorecard_ctx = ""
+        # P1-11 全市场数据体检: 只读 integrity 体检报告小 JSON, 失败给空串不注入
+        from app.services import ai_data_quality
+        try:
+            quality_ctx = ai_data_quality.market_block(repo.store.data_dir)
+        except Exception:  # noqa: BLE001
+            quality_ctx = ""
         user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx,
-                                         scorecard_context=scorecard_ctx)
+                                         scorecard_context=scorecard_ctx,
+                                         quality_context=quality_ctx)
 
         # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化数据
         # (overview/news, 形态族双口径) + prompt 成品文本 (含龙虎榜/风向标上下文)。

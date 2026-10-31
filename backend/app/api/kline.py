@@ -1698,14 +1698,21 @@ def get_minute_gaps(
 
     repo = request.app.state.repo
     now = cn_now()
-    return scan_minute_gaps(
+    symbol_filter = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else None
+    date_filter = [d.strip() for d in dates.split(",") if d.strip()] if dates else None
+    result = scan_minute_gaps(
         repo.store.data_dir / "kline_minute",
         today=cn_today(),
         now_hm=(now.hour, now.minute),
-        symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
-        dates=[d.strip() for d in dates.split(",") if d.strip()] if dates else None,
+        symbols=symbol_filter,
+        dates=date_filter,
         limit=limit,
     )
+    # P1-11: 全量扫描结果落盘为快照, 供 AI 数据体检只读消费 (过滤扫描不完整, 不落盘)
+    if not symbol_filter and not date_filter:
+        from app.services.ai_data_quality import save_minute_snapshot
+        save_minute_snapshot(repo.store.data_dir, result)
+    return result
 
 
 @router.post("/minute-migrate")

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import { api, friendlyStreamError, type AiVerdict, type PriceLevel, type LevelType } from './api'
+// P1-11: DataQuality 数据体检类型随 meta 事件下发、随报告落库
+import { api, friendlyStreamError, type AiVerdict, type DataQuality, type PriceLevel, type LevelType } from './api'
 
 /**
  * AI 个股分析 —— 全局任务/报告 store(与 aiReportStore 解耦、并行存在)。
@@ -26,6 +27,8 @@ export interface ActiveTask {
     summary?: string
     levels?: Record<LevelType, PriceLevel[]>
     close?: number | null
+    /** 数据体检 (P1-11): meta 事件下发, 徽章展示 + 落库 */
+    quality?: DataQuality | null
   } | null
   /** 研判卡 (ai_verdict): done 前由后端 verdict 事件下发; 未收到则为 null */
   verdict?: AiVerdict | null
@@ -45,6 +48,8 @@ export interface HistoryReport {
   close?: number | null
   levels?: Record<LevelType, PriceLevel[]>
   verdict?: AiVerdict | null
+  /** 数据体检快照 (P1-11): 历史回看时复现徽章 */
+  quality?: DataQuality | null
   created_at: string
 }
 
@@ -205,7 +210,8 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
       if (!cur) return
       switch (chunk.type) {
         case 'meta':
-          patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close } })
+          // P1-11: quality 随 meta 下发 (体检失败时为 null, 徽章不显示)
+          patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close, quality: chunk.quality ?? null } })
           break
         case 'delta':
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }
@@ -236,6 +242,7 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
           content: final.content, summary: final.meta?.summary ?? '',
           close: final.meta?.close ?? null, levels: final.meta?.levels,
           verdict: final.verdict ?? null,
+          quality: final.meta?.quality ?? null,  // P1-11 体检快照落库
         })
         if (res.report) {
           patchTask(id, { savedReportId: res.report.id })

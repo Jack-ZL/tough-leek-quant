@@ -8,6 +8,8 @@ import { copyText } from '@/lib/clipboard'
 import { api, type AiScorecard } from '@/lib/api'
 import { toast } from '@/components/Toast'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
+// P1-11 数据体检徽章 (个股分析/多空辩论共用)
+import { QualityBadge } from './QualityBadge'
 import {
   type ActiveTask, type HistoryReport,
   minimizeDialog, closeDialog, startAnalysis, verdictTone,
@@ -39,7 +41,8 @@ function getContent(task: ActiveTask | HistoryReport | null): string {
 function getMeta(task: ActiveTask | HistoryReport | null) {
   if (!task) return null
   if ('meta' in task) return task.meta
-  return { summary: task.summary, close: task.close, levels: task.levels }
+  // P1-11: 历史报告的体检快照是顶层字段, 与活跃任务 meta.quality 对齐
+  return { summary: task.summary, close: task.close, levels: task.levels, quality: task.quality ?? null }
 }
 
 export function StockAnalysisDialog({ task, mode, minimized }: Props) {
@@ -272,6 +275,8 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   {scorecardOpen && <ScorecardPanel sc={scorecard} />}
                 </div>
               )}
+              {/* P1-11 数据体检徽章: 报告生成时的数据质量评级, 点击展开问题清单 */}
+              {meta?.quality && <QualityBadge quality={meta.quality} />}
               <MarkdownRenderer content={content} />
               {phase === 'streaming' && (
                 <span className="inline-block w-1.5 h-3.5 bg-sky-400 ml-0.5 align-middle animate-pulse rounded-sm" />

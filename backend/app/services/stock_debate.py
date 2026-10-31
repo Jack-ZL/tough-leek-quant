@@ -282,9 +282,24 @@ def build_materials(repo, data_dir: Path, symbol: str) -> dict | None:
                 + json.dumps(fins, ensure_ascii=False) + "\n```"
     else:
         text += "\n\n(该标的暂无财务数据, 请勿编造财务数字。)"
+
+    # 数据体检 (P1-11): 与个股分析同一套打分, 体检块直接拼进材料文本 —
+    # 多方/空方/风控主管拿到的材料逐字节一致, 对数据局限的认知也一致。
+    # fail-open: 体检异常只跳过注入, 不影响辩论备料。
+    from app.services import ai_data_quality
+    try:
+        quality = ai_data_quality.score_symbol(data_dir, symbol, df, fins, asset_type)
+    except Exception:  # noqa: BLE001
+        logger.warning("[P1-11] 辩论备料数据体检失败 (跳过注入): %s", symbol, exc_info=True)
+        quality = None
+    quality_text = ai_data_quality.prompt_block(quality)
+    if quality_text:
+        text += "\n" + quality_text
+
     return {
         "kline_rows": kline_rows, "levels": levels, "close": close,
         "fins": fins, "asset_type": asset_type, "text": text,
+        "quality": quality,  # P1-11: meta 事件透传给前端徽章
     }
 
 
@@ -456,11 +471,20 @@ async def debate_stream(
                           "message": f"标的 {symbol} 暂无日 K 数据,请先同步"}, ensure_ascii=False)
         return
 
+    # P1-11 门控 (默认关闭只警示): 开启后 D 级硬伤拒绝辩论, 不消耗 AI token
+    from app.services import ai_data_quality
+    if ai_data_quality.should_block(materials.get("quality")):
+        yield json.dumps({"type": "error",
+                          "message": ai_data_quality.block_message(materials["quality"])},
+                         ensure_ascii=False)
+        return
+
     role_profiles = resolve_role_profiles()
     yield json.dumps({
         "type": "meta", "symbol": symbol, "name": name,
         "summary": summarize_levels(materials["levels"], materials["close"]),
         "levels": materials["levels"], "close": materials["close"],
+        "quality": materials.get("quality"),  # P1-11 数据体检徽章
         "roles": {r: {"model": role_model_display(role_profiles.get(r)),
                       "custom_profile": role_profiles.get(r) is not None}
                   for r in ROLES},
