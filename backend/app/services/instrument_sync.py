@@ -72,6 +72,37 @@ def _fetch_instruments_via_provider() -> list[dict] | None:
     return rows
 
 
+def _carry_over_missing_exchanges(df: pl.DataFrame, data_dir: Path) -> tuple[pl.DataFrame, list[str]]:
+    """本次同步整体缺失的交易所, 从历史维表保留其旧行。
+
+    回归背景: 某交易所 get_instruments 瞬时报错 (connection reset 等) 时,
+    旧实现把残缺结果全量覆盖写盘 —— 整个交易所的标的从维表消失, 搜索/标的池/
+    名称表随之全瞎, 比用旧一天维表严重得多。缺失交易所沿用旧行 (as_of 保留
+    原值), 同步成功的交易所照常更新; 同 symbol 以本次新行为准。
+    """
+    path = data_dir / "instruments" / "instruments.parquet"
+    if not path.exists() or "exchange" not in df.columns:
+        return df, []
+    try:
+        existing = pl.read_parquet(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("instruments 历史维表读取失败, 无法保留缺失交易所: %s", e)
+        return df, []
+    if existing.is_empty() or "exchange" not in existing.columns:
+        return df, []
+    have = set(df["exchange"].drop_nulls().unique().to_list())
+    missing = [ex for ex in existing["exchange"].drop_nulls().unique().to_list()
+               if ex not in have]
+    if not missing:
+        return df, []
+    carried = existing.filter(pl.col("exchange").is_in(missing))
+    merged = (
+        pl.concat([df, carried], how="diagonal_relaxed")
+        .unique(subset=["symbol"], keep="first")
+    )
+    return merged, missing
+
+
 def sync_instruments(data_dir: Path) -> int:
     """全量同步标的维表 → data/instruments/instruments.parquet。
 
@@ -97,6 +128,15 @@ def sync_instruments(data_dir: Path) -> int:
     df = pl.DataFrame(all_rows)
     df = _preserve_share_fields(df, data_dir)
     df = df.with_columns(pl.lit(date.today()).alias("as_of"))
+
+    fresh_height = df.height
+    df, carried_ex = _carry_over_missing_exchanges(df, data_dir)
+    if carried_ex:
+        logger.warning(
+            "instruments 本次同步缺失交易所 %s, 从历史维表保留 %d 行 (总 %d 行), "
+            "避免瞬时网络故障掏空维表",
+            "/".join(carried_ex), df.height - fresh_height, df.height,
+        )
 
     out = data_dir / "instruments" / "instruments.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
