@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-	Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, Shield, SlidersHorizontal,
+	Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, SlidersHorizontal,
 	Shuffle, ExternalLink, Trash2, FileCog, RefreshCw,
 	Terminal, ChevronDown, Sparkles, Atom, Waves, Cloud, Gem, Moon,
 	Plus, CheckCircle2, Zap,
@@ -760,18 +760,17 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		setTestResult(null)
 		try {
 			// 只探测当前表单值, 绝不保存 — 测试失败不能把坏配置写进已保存配置。
+			// codex 探测是真实最小 exec (CLI 启动+一次生成), 默认 30s 会掐断, 放宽到 90s
 			const r = await api.testAiSettings({
 				provider,
 				...(isCodexProvider ? {} : { base_url: baseUrl.trim(), protocol }),
 				model: (isCodexProvider ? codexModel : model).trim(),
 				...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+			}, isCodexProvider ? { timeoutMs: 90_000 } : undefined)
+			setTestResult({
+				ok: r.ok,
+				msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
 			})
-			// codex 探测是真实最小 exec (CLI 启动+一次生成), 默认 30s 会掐断
-			isCodexProvider ? { timeoutMs: 90_000 } : undefined,
-				setTestResult({
-					ok: r.ok,
-					msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
-				})
 		} catch (e: any) {
 			setTestResult({ ok: false, msg: String(e?.message ?? '测试失败') })
 		} finally {

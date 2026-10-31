@@ -4,5 +4,5 @@
 import { JobTimeoutCard } from './JobTimeoutCard'
 
 export function SettingsTimeoutPanel() {
-  return <JobTimeoutCard />
+	return <JobTimeoutCard />
 }

@@ -3,7 +3,18 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ScrollText, ExternalLink, CheckCircle2, Download, RefreshCw, Sparkles, Scale, Heart, Rocket, X } from 'lucide-react'
+import {
+  ScrollText,
+  ExternalLink,
+  CheckCircle2,
+  Download,
+  RefreshCw,
+  Sparkles,
+  Scale,
+  Heart,
+  Rocket,
+  X
+} from 'lucide-react'
 import { useVersion } from '@/lib/useSharedQueries'
 import { useUpdateCheck } from '@/lib/updateCheck'
 import { Modal } from '@/components/Modal'
@@ -75,8 +86,7 @@ export function SettingsAboutPanel() {
           </div>
           <button
             onClick={() => setLicenseOpen(true)}
-            className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                       bg-elevated text-secondary hover:text-foreground transition-colors"
+            className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs bg-elevated text-secondary hover:text-foreground transition-colors"
           >
             <ScrollText className="h-3.5 w-3.5" />
             查看许可
@@ -189,7 +199,11 @@ export function SettingsAboutPanel() {
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
-                onClick={() => setQrZoom({ src: '/donate-wechat.jpg', alt: '微信赞赏码', caption: '微信扫一扫 · 赞赏支持' })}
+                onClick={() => setQrZoom({
+                  src: '/donate-wechat.jpg',
+                  alt: '微信赞赏码',
+                  caption: '微信扫一扫 · 赞赏支持'
+                })}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
                            bg-accent text-white hover:bg-accent/90 transition-colors"
               >
@@ -204,7 +218,11 @@ export function SettingsAboutPanel() {
 
           {/* 右: 微信赞赏码 (白底保证二维码可扫) */}
           <button
-            onClick={() => setQrZoom({ src: '/donate-wechat.jpg', alt: '微信赞赏码', caption: '微信扫一扫 · 赞赏支持' })}
+            onClick={() => setQrZoom({
+              src: '/donate-wechat.jpg',
+              alt: '微信赞赏码',
+              caption: '微信扫一扫 · 赞赏支持'
+            })}
             title="点击放大"
             className="group shrink-0 rounded-lg border border-border bg-white p-2
                        hover:border-accent/40 transition-colors"
