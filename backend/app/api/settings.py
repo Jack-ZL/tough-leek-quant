@@ -2,6 +2,7 @@
 
 提供面向非开发者的 UI 配置入口,避免逼用户改 .env。
 """
+
 from __future__ import annotations
 
 import logging
@@ -264,6 +265,7 @@ def complete_onboarding() -> dict:
     跨设备/清缓存安全 —— 状态落在后端文件,不依赖浏览器本地存储。
     """
     from app.services import preferences
+
     done = preferences.set_onboarding_completed(True)
     return {"ok": True, "onboarding_completed": done}
 
@@ -273,28 +275,28 @@ class AiSettingsIn(BaseModel):
     base_url: str = ""
     api_key: str | None = None
     model: str = ""
-    protocol: str = ""              # chat_completions | responses; 空=保持原值
+    protocol: str = ""  # chat_completions | responses; 空=保持原值
     reasoning_effort: str = Field(default="high", max_length=64)
     codex_command: str = ""
     codex_reasoning_effort: str = ""
     user_agent: str = ""
-    max_output_tokens: int | None = None   # 输出上限, 钳制所有任务的 max_tokens
-    context_window: int | None = None      # 输入上下文窗口上限 (约 token)
-    round_checkpoint: int | None = None    # 助手工具轮次检查点; 0=不检查
-    web_search: bool | None = None         # 联网搜索开关 (enable_search); None=保持原值
-    profile_id: str = ""                   # 同步更新的模型档案 id; 空=当前激活档案
-    profile_name: str = ""                 # 档案显示名 (仅档案库展示用)
+    max_output_tokens: int | None = None  # 输出上限, 钳制所有任务的 max_tokens
+    context_window: int | None = None  # 输入上下文窗口上限 (约 token)
+    round_checkpoint: int | None = None  # 助手工具轮次检查点; 0=不检查
+    web_search: bool | None = None  # 联网搜索开关 (enable_search); None=保持原值
+    profile_id: str = ""  # 同步更新的模型档案 id; 空=当前激活档案
+    profile_name: str = ""  # 档案显示名 (仅档案库展示用)
 
 
 class AiProfileIn(BaseModel):
     """模型档案 upsert 入参 (档案库条目, apply=true 时同时写入生效配置)。"""
 
-    id: str = ""                           # 空=新建 (按 name/model 生成)
+    id: str = ""  # 空=新建 (按 name/model 生成)
     name: str = ""
     provider: str = "openai_compat"
     protocol: str = ""
     base_url: str = ""
-    api_key: str | None = None             # None=保留档案原值 (编辑时不必重填)
+    api_key: str | None = None  # None=保留档案原值 (编辑时不必重填)
     model: str = ""
     user_agent: str = ""
     max_output_tokens: int | None = None
@@ -304,7 +306,7 @@ class AiProfileIn(BaseModel):
     codex_command: str = ""
     codex_model: str = ""
     codex_reasoning_effort: str = ""
-    apply: bool = False                    # true=保存后立即激活 (镜像到扁平键)
+    apply: bool = False  # true=保存后立即激活 (镜像到扁平键)
 
 
 class AiProfileActivateIn(BaseModel):
@@ -316,7 +318,7 @@ class AiTestIn(BaseModel):
 
     provider: str = "openai_compat"
     base_url: str = ""
-    api_key: str | None = None      # 留空回退已保存 Key (改模型/协议不必重输)
+    api_key: str | None = None  # 留空回退已保存 Key (改模型/协议不必重输)
     model: str = ""
     protocol: str = ""
 
@@ -436,7 +438,11 @@ def _sync_ai_runtime() -> None:
             except (TypeError, ValueError):
                 val = dflt
         elif key == "ai_web_search":
-            val = val if isinstance(val, bool) else str(val).strip().lower() in ("1", "true", "yes", "on")
+            val = (
+                val
+                if isinstance(val, bool)
+                else str(val).strip().lower() in ("1", "true", "yes", "on")
+            )
         setattr(_s, key, val)
 
 
@@ -523,14 +529,14 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if req.api_key == "":
         updates["ai_api_key"] = ""  # 显式清 Key 也要反映到档案
     prof_fields = {
-        f: updates[f"ai_{f}"]
-        for f in secrets_store.AI_PROFILE_FIELDS
-        if f"ai_{f}" in updates
+        f: updates[f"ai_{f}"] for f in secrets_store.AI_PROFILE_FIELDS if f"ai_{f}" in updates
     }
     if req.profile_name.strip():
         prof_fields["name"] = req.profile_name.strip()
     if prof_fields:
-        pid = (req.profile_id or "").strip() or secrets_store.get_active_ai_profile_id() or "default"
+        pid = (
+            (req.profile_id or "").strip() or secrets_store.get_active_ai_profile_id() or "default"
+        )
         _, pid = secrets_store.upsert_ai_profile(pid, prof_fields)
         secrets_store.save({"ai_active_profile": pid})
 
@@ -574,7 +580,9 @@ def save_ai_profile(req: AiProfileIn) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         fields["codex_model"] = normalize_codex_model(req.model or req.codex_model)
-        fields["codex_reasoning_effort"] = normalize_codex_reasoning_effort(req.codex_reasoning_effort)
+        fields["codex_reasoning_effort"] = normalize_codex_reasoning_effort(
+            req.codex_reasoning_effort
+        )
     profiles, pid = secrets_store.upsert_ai_profile(req.id, fields)
 
     if req.apply:
@@ -621,7 +629,20 @@ def clear_ai_settings() -> dict:
         "ai_codex_command",
         "ai_codex_reasoning_effort",
     )
-    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window", "ai_web_search", "ai_profiles", "ai_active_profile")
+    secrets_store.clear(
+        "ai_provider",
+        "ai_protocol",
+        "ai_base_url",
+        "ai_api_key",
+        "ai_model",
+        "ai_codex_command",
+        "ai_codex_reasoning_effort",
+        "ai_max_output_tokens",
+        "ai_context_window",
+        "ai_web_search",
+        "ai_profiles",
+        "ai_active_profile",
+    )
     # 同步重置运行时内存(provider 回默认值,其余置空)
     settings.ai_provider = "openai_compat"
     settings.ai_protocol = "chat_completions"
@@ -687,29 +708,39 @@ async def list_sponsor_models() -> dict:
         busy = next((b for b in bands if b.get("code") == "BUSY"), None)
         offpeak = next((b for b in bands if b.get("code") == "OFF_PEAK"), None)
         current_band = time_pricing.get("currentBand")
-        current = next((b for b in bands if b.get("code") == current_band), None) if isinstance(current_band, str) else None
-        items.append({
-            "id": model_id,
-            "context_length": context_length if isinstance(context_length, int) else None,
-            "discount_rate": float(rate) if isinstance(rate, (int, float)) else 1.0,
-            "input_price": _amount(pricing, "input"),
-            "output_price": _amount(pricing, "output"),
-            # 忙闲时 (无 timePricing 的模型为 None, 前端回退单一折扣)
-            "busy_discount_rate": _rate(busy),
-            "offpeak_discount_rate": _rate(offpeak),
-            "offpeak_label": offpeak.get("label") if isinstance(offpeak, dict) and isinstance(offpeak.get("label"), str) else None,
-            "current_band": current_band if isinstance(current_band, str) else None,
-            "current_discount_rate": _rate(current),
-        })
+        current = (
+            next((b for b in bands if b.get("code") == current_band), None)
+            if isinstance(current_band, str)
+            else None
+        )
+        items.append(
+            {
+                "id": model_id,
+                "context_length": context_length if isinstance(context_length, int) else None,
+                "discount_rate": float(rate) if isinstance(rate, (int, float)) else 1.0,
+                "input_price": _amount(pricing, "input"),
+                "output_price": _amount(pricing, "output"),
+                # 忙闲时 (无 timePricing 的模型为 None, 前端回退单一折扣)
+                "busy_discount_rate": _rate(busy),
+                "offpeak_discount_rate": _rate(offpeak),
+                "offpeak_label": offpeak.get("label")
+                if isinstance(offpeak, dict) and isinstance(offpeak.get("label"), str)
+                else None,
+                "current_band": current_band if isinstance(current_band, str) else None,
+                "current_discount_rate": _rate(current),
+            }
+        )
     items.sort(key=lambda x: x["id"])
     return {"models": [item["id"] for item in items], "items": items}
 
 
 # ===== 偏好设置 =====
 
+
 def _realtime_allowed() -> bool:
     """当前档位是否允许实时行情(none/free 不允许)。"""
     from app.services.quote_service import QuoteService
+
     return QuoteService.is_realtime_allowed()
 
 
@@ -721,6 +752,7 @@ def _minute_history_days() -> int | None:
     前端分时档位/默认值据此收窄。
     """
     from app.services import kline_sync, preferences
+
     provider_name = preferences.get_minute_data_provider()
     provider, fallback, _err = kline_sync._resolve_minute_provider(provider_name)
     if fallback or provider is None:
@@ -822,6 +854,7 @@ class MiningSchedulePrefs(BaseModel):
 def get_preferences() -> dict:
     """返回用户偏好设置。"""
     from app.services import preferences
+
     return {
         "realtime_quotes_enabled": preferences.get_realtime_quotes_enabled(),
         "realtime_allowed": _realtime_allowed(),
@@ -912,8 +945,15 @@ def get_preferences() -> dict:
 def list_data_sources() -> dict:
     """列出已加载的数据源 (内置 / 插件 / 用户自定义)。"""
     from app.data_providers import custom as custom_sources
+
     return {
-        "builtin": [{"name": "tickflow", "display_name": "TickFlow", "datasets": ["daily", "adj_factor", "realtime", "minute"]}],
+        "builtin": [
+            {
+                "name": "tickflow",
+                "display_name": "TickFlow",
+                "datasets": ["daily", "adj_factor", "realtime", "minute"],
+            }
+        ],
         "plugins": custom_sources.list_plugins(),
         "custom": custom_sources.list_sources(),
         "errors": custom_sources.errors(),
@@ -998,6 +1038,7 @@ def clear_plugin_key(name: str) -> dict:
 def reload_data_sources() -> dict:
     """重新加载 data_sources/*.yaml。"""
     from app.data_providers import custom as custom_sources
+
     custom_sources.load_all()
     return list_data_sources()
 
@@ -1010,6 +1051,7 @@ def install_plugin(name: str) -> dict:
     客户端需设较长超时。
     """
     from app.data_providers import custom as custom_sources
+
     if not custom_sources.is_builtin(name):
         raise HTTPException(status_code=404, detail=f"插件 '{name}' 不存在")
     ok, message = custom_sources.install_plugin(name)
@@ -1029,6 +1071,7 @@ def uninstall_plugin(name: str) -> dict:
     """
     from app.data_providers import custom as custom_sources
     from app.services import preferences
+
     if not custom_sources.is_builtin(name):
         raise HTTPException(status_code=404, detail=f"插件 '{name}' 不存在")
     ok, message = custom_sources.uninstall_plugin(name)
@@ -1052,6 +1095,7 @@ def uninstall_plugin(name: str) -> dict:
 def get_data_source(name: str) -> dict:
     """读取一个自定义数据源的完整配置(用于前端编辑回填)。"""
     from app.data_providers import custom as custom_sources
+
     cfg = custom_sources.get_config_dict(name)
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"数据源 '{name}' 不存在")
@@ -1068,6 +1112,7 @@ def save_data_source(req: CustomSourceIn) -> dict:
     amount 映射被拒, 以为存上了)。
     """
     from app.data_providers import custom as custom_sources
+
     config = req.model_dump()
     config["name"] = (config.get("name") or "").lower()
     probe = None
@@ -1094,6 +1139,7 @@ def delete_data_source(name: str, request: Request) -> dict:
     """
     from app.data_providers import custom as custom_sources
     from app.services import preferences
+
     try:
         custom_sources.delete_config(name)
     except ValueError as e:
@@ -1145,6 +1191,7 @@ def test_data_source(req: CustomSourceTestIn) -> dict:
 def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
     """保存数据源选择。"""
     from app.services import preferences
+
     updates = req.model_dump(exclude_none=True)
     if updates:
         preferences.save(updates)
@@ -1165,6 +1212,7 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
 def update_data_source_job_timeouts(req: DataSourceJobTimeoutPrefs) -> dict:
     """保存普通与长数据后台任务的卡死判定时间。"""
     from app.services import preferences
+
     preferences.save(req.model_dump())
     return req.model_dump()
 
@@ -1173,6 +1221,7 @@ def update_data_source_job_timeouts(req: DataSourceJobTimeoutPrefs) -> dict:
 def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
     """保存分时详情与批量响应的 gzip 传输压缩开关。逐请求即时读取, 保存后立即生效。"""
     from app.services import preferences
+
     preferences.save({"minute_batch_compress": req.minute_batch_compress})
     return {"minute_batch_compress": preferences.get_minute_batch_compress()}
 
@@ -1181,6 +1230,7 @@ def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
 def update_daily_batch_compress(req: DailyBatchCompressPrefs) -> dict:
     """保存日K详情与批量响应的 gzip 传输压缩开关 (与分时独立)。逐请求即时读取。"""
     from app.services import preferences
+
     preferences.save({"daily_batch_compress": req.daily_batch_compress})
     return {"daily_batch_compress": preferences.get_daily_batch_compress()}
 
@@ -1201,6 +1251,7 @@ def update_mining_schedule(req: MiningSchedulePrefs) -> dict:
 def get_watchlist_columns() -> dict:
     """返回自选列表列配置。"""
     from app.services import preferences
+
     cols = preferences.get_watchlist_columns()
     return {"columns": cols}
 
@@ -1217,6 +1268,7 @@ class NavHiddenIn(BaseModel):
 def update_nav_order(req: NavOrderIn) -> dict:
     """保存左侧菜单排序（内置页面 path + 扩展分析菜单 id 的有序列表）。"""
     from app.services import preferences
+
     saved = preferences.set_nav_order(req.nav_order)
     return {"nav_order": saved}
 
@@ -1225,12 +1277,14 @@ def update_nav_order(req: NavOrderIn) -> dict:
 def update_nav_hidden(req: NavHiddenIn) -> dict:
     """保存左侧菜单隐藏项。"""
     from app.services import preferences
+
     saved = preferences.set_nav_hidden(req.nav_hidden)
     return {"nav_hidden": saved}
 
 
 class DashboardLayoutIn(BaseModel):
     """看板自定义布局; layout=null 恢复默认。"""
+
     layout: dict | None = None
 
 
@@ -1238,6 +1292,7 @@ class DashboardLayoutIn(BaseModel):
 def update_dashboard_layout(req: DashboardLayoutIn) -> dict:
     """保存看板自定义布局(网格 blob); null = 清除回默认布局。"""
     from app.services import preferences
+
     try:
         saved = preferences.set_dashboard_layout(req.layout)
     except ValueError as e:
@@ -1249,6 +1304,7 @@ def update_dashboard_layout(req: DashboardLayoutIn) -> dict:
 def update_watchlist_columns(req: dict) -> dict:
     """保存自选列表列配置。"""
     from app.services import preferences
+
     columns = req.get("columns", [])
     saved = preferences.set_watchlist_columns(columns)
     return {"columns": saved}
@@ -1258,6 +1314,7 @@ def update_watchlist_columns(req: dict) -> dict:
 def get_screener_result_columns() -> dict:
     """返回策略结果列表列配置。"""
     from app.services import preferences
+
     cols = preferences.get_screener_result_columns()
     return {"columns": cols}
 
@@ -1276,6 +1333,7 @@ def update_ui_prefs(req: UiPrefsIn) -> dict:
     透传模型而非逐字段声明, 新增一项只需前后端各加一个键, 不产生两处易漂移的清单。
     """
     from app.services import preferences
+
     try:
         saved = preferences.set_ui_prefs(req.model_dump())
     except ValueError as e:
@@ -1287,6 +1345,7 @@ def update_ui_prefs(req: UiPrefsIn) -> dict:
 def update_screener_result_columns(req: dict) -> dict:
     """保存策略结果列表列配置。"""
     from app.services import preferences
+
     columns = req.get("columns", [])
     saved = preferences.set_screener_result_columns(columns)
     return {"columns": saved}
@@ -1300,6 +1359,7 @@ def update_minute_sync(req: MinuteSyncPrefs) -> dict:
     与段大小各自独立更新。
     """
     from app.services import preferences
+
     days = max(1, min(30, req.minute_sync_days))
     updates: dict = {
         "minute_sync_enabled": req.minute_sync_enabled,
@@ -1341,6 +1401,7 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
     starter+ 或自定义实时源(如 fuyao)为全市场实时。前端据此把开关置灰 / 回弹。
     """
     from app.services import preferences
+
     qs = getattr(request.app.state, "quote_service", None)
     depth_svc = getattr(request.app.state, "depth_service", None)
 
@@ -1369,14 +1430,20 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
         # 禁止开启 — 实时行情的展示 (enriched 底座 + 快照覆盖)、监控、连板梯队
         # 全部依赖本地数据, 空数据下轮询只是空转耗配额, 且无 instruments 维表。
         repo = getattr(request.app.state, "repo", None)
-        if repo is not None and repo.latest_daily_date() is None and repo.latest_enriched_date() is None:
+        if (
+            repo is not None
+            and repo.latest_daily_date() is None
+            and repo.latest_enriched_date() is None
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="本地暂无行情数据，请先在「数据」页同步后再开启实时行情",
             )
     if req.realtime_quotes_enabled and qs and qs.is_paused():
         # 管道/数据修正运行期间禁止开启实时行情 — 防止写盘竞态
-        raise HTTPException(status_code=409, detail="数据同步运行中，实时行情已临时暂停，请稍后再开启")
+        raise HTTPException(
+            status_code=409, detail="数据同步运行中，实时行情已临时暂停，请稍后再开启"
+        )
     if req.realtime_quotes_enabled:
         # 历史完整性门禁: 检测到最近交易日的盘中快照/缺口时禁止开启 —
         # 实时 flush 写出"今天"分区后, 盘后管道的"只刷今天"分支会让停机日的
@@ -1387,37 +1454,43 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
         if repo is not None:
             try:
                 issues = data_integrity.scan_recent_integrity(repo.store.data_dir)
+                issues = [i for i in issues if i.table in data_integrity.active_daily_tables()]
             except Exception:  # noqa: BLE001
                 issues = []
             earliest = data_integrity.earliest_issue_day(issues)
             if issues and data_integrity.within_auto_repair_window(earliest):
-                symbols = sorted({
-                    s
-                    for i in issues
-                    if i.table == "kline_daily" and i.kind == "snapshot"
-                    for s in i.symbols
-                }) or None
+                symbols = data_integrity._stock_snapshot_symbols(issues)
                 job_id, is_new = data_integrity.launch_integrity_repair(
-                    request.app.state, earliest, "realtime_gate", symbols=symbols,
+                    request.app.state,
+                    earliest,
+                    "realtime_gate",
+                    symbols=symbols,
                 )
                 if job_id is not None:
                     detail = (
                         f"检测到{data_integrity.describe_issues(issues)}，"
-                        + ("已自动创建修复任务，完成后即可开启实时行情"
-                           if is_new else "修复任务正在进行中，请稍后再开启")
+                        + (
+                            "已自动创建修复任务，完成后即可开启实时行情"
+                            if is_new
+                            else "修复任务正在进行中，请稍后再开启"
+                        )
                         + f"（任务 {job_id}）"
                     )
                     raise HTTPException(status_code=409, detail=detail)
                 backoff = data_integrity.repair_backoff_remaining_s(
-                    repo.store.data_dir, earliest,
+                    repo.store.data_dir,
+                    earliest,
                 )
                 if backoff > 0:
-                    raise HTTPException(status_code=409, detail=(
-                        f"检测到{data_integrity.describe_issues(issues)}；"
-                        f"上次自动修复未成功（多为数据源拉取失败），"
-                        f"{int(backoff // 60) + 1} 分钟后将自动重试，"
-                        "也可到 数据→修正数据 手动执行"
-                    ))
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"检测到{data_integrity.describe_issues(issues)}；"
+                            f"上次自动修复未成功（多为数据源拉取失败），"
+                            f"{int(backoff // 60) + 1} 分钟后将自动重试，"
+                            "也可到 数据→修正数据 手动执行"
+                        ),
+                    )
 
     preferences.save({"realtime_quotes_enabled": req.realtime_quotes_enabled})
     if qs:
@@ -1434,6 +1507,7 @@ def update_realtime_quotes(req: RealtimeQuotesPrefs, request: Request) -> dict:
 def update_realtime_quote_scope(req: RealtimeQuoteScopePrefs) -> dict:
     """保存盘中实时行情范围；独立于盘后管道范围。"""
     from app.services import preferences
+
     cfg = req.model_dump(exclude_none=True)
     return preferences.set_realtime_quote_scope(cfg)
 
@@ -1452,6 +1526,7 @@ def update_assistant_auto_approve(req: AssistantAutoApproveIn) -> dict:
     不再弹确认卡, 直接执行。默认关闭; 轮次检查点不受影响。
     """
     from app.services import preferences
+
     saved = preferences.set_assistant_auto_approve_actions(req.enabled)
     return {"assistant_auto_approve_actions": saved}
 
@@ -1470,6 +1545,7 @@ def update_assistant_mask(req: AssistantMaskIn) -> dict:
     关闭则恢复非模态体验 (页面主体可正常交互)。纯视觉偏好, 无副作用。
     """
     from app.services import preferences
+
     saved = preferences.set_assistant_mask_enabled(req.enabled)
     return {"assistant_mask_enabled": saved}
 
@@ -1482,6 +1558,7 @@ class WatchlistGroupsInNavPrefs(BaseModel):
 def update_watchlist_groups_in_nav(req: WatchlistGroupsInNavPrefs) -> dict:
     """保存自选分组是否显示在侧边栏开关。"""
     from app.services import preferences
+
     preferences.save({"watchlist_groups_in_nav": req.watchlist_groups_in_nav})
     return {"watchlist_groups_in_nav": req.watchlist_groups_in_nav}
 
@@ -1514,6 +1591,7 @@ def update_realtime_monitor_config(req: RealtimeMonitorConfigIn, request: Reques
         data_dir = request.app.state.repo.store.data_dir
         if monitor_engine is not None and strategy_engine is not None:
             from app.strategy import monitor_rules as mr_store
+
             try:
                 if preferences.get_strategy_monitor_enabled():
                     ids = preferences.get_strategy_monitor_ids()
@@ -1532,6 +1610,7 @@ def update_realtime_monitor_config(req: RealtimeMonitorConfigIn, request: Reques
 
 class PipelinePullTypesIn(BaseModel):
     """盘后管道拉取内容开关(A股 / ETF / 指数 独立控制)。"""
+
     pipeline_pull_a_share: bool | None = None
     pipeline_pull_etf: bool | None = None
     pipeline_pull_index: bool | None = None
@@ -1541,12 +1620,14 @@ class PipelinePullTypesIn(BaseModel):
 def update_pipeline_pull_types(req: PipelinePullTypesIn) -> dict:
     """更新盘后管道拉取内容开关。"""
     from app.services import preferences
+
     cfg = req.model_dump(exclude_none=True)
     return preferences.set_pipeline_pull_types(cfg)
 
 
 class PipelineRegimeEnabledIn(BaseModel):
     """盘后管道是否自动计算市场环境(regime)。"""
+
     pipeline_regime_enabled: bool
 
 
@@ -1554,12 +1635,14 @@ class PipelineRegimeEnabledIn(BaseModel):
 def update_pipeline_regime_enabled(req: PipelineRegimeEnabledIn) -> dict:
     """更新盘后管道 regime 自动计算开关。"""
     from app.services import preferences
+
     preferences.save({"pipeline_regime_enabled": bool(req.pipeline_regime_enabled)})
     return {"pipeline_regime_enabled": preferences.get_pipeline_regime_enabled()}
 
 
 class RegimeBatchParamsIn(BaseModel):
     """regime 全量回填分批参数(控制内存峰值)。"""
+
     batch_days: int | None = None
     warmup_days: int | None = None
 
@@ -1568,6 +1651,7 @@ class RegimeBatchParamsIn(BaseModel):
 def update_regime_batch_params(req: RegimeBatchParamsIn) -> dict:
     """更新 regime 分批参数。仅在传入字段时保存对应项(支持部分更新)。"""
     from app.services import preferences
+
     updates: dict = {}
     if req.batch_days is not None:
         updates["regime_batch_days"] = req.batch_days
@@ -1583,6 +1667,7 @@ def update_regime_batch_params(req: RegimeBatchParamsIn) -> dict:
 
 class PipelineIndexSymbolsIn(BaseModel):
     """指数自定义拉取代码(逗号/换行/空格分隔,空串表示全量)。"""
+
     symbols: str = ""
 
 
@@ -1653,6 +1738,7 @@ def update_mainline_filter(req: MainlineFilterIn) -> dict:
 def update_pipeline_index_symbols(req: PipelineIndexSymbolsIn) -> dict:
     """保存指数自定义拉取代码。"""
     from app.services import preferences
+
     symbols = preferences.set_pipeline_index_symbols(req.symbols)
     return {"pipeline_index_symbols": symbols}
 
@@ -1677,6 +1763,7 @@ def update_ai_number_gate(req: AiNumberGatePrefsIn) -> dict:
     纯偏好无副作用; ai_number_gate 在每次流式生成时读取, 即时生效。
     """
     from app.services import preferences
+
     saved = preferences.set_ai_number_gate_enabled(req.enabled)
     return {"ai_number_gate_enabled": saved}
 
@@ -1689,6 +1776,7 @@ def update_system_notify(req: SystemNotifyPrefsIn) -> dict:
     quote_service 在每轮告警评估时读此开关决定是否发系统通知。
     """
     from app.services import preferences
+
     saved = preferences.set_system_notify_enabled(req.enabled)
     return {"system_notify_enabled": saved}
 
@@ -1745,7 +1833,7 @@ def update_feishu_webhook(req: FeishuWebhookPrefsIn) -> dict:
         raise HTTPException(
             status_code=400,
             detail="Webhook 地址非法, 需为飞书自定义机器人地址 "
-                   "(https://open.feishu.cn/open-apis/bot/v2/hook/...)",
+            "(https://open.feishu.cn/open-apis/bot/v2/hook/...)",
         )
     saved_url = preferences.set_feishu_webhook_url(url)
     saved_secret = preferences.set_feishu_webhook_secret((req.secret or "").strip())
@@ -1770,7 +1858,7 @@ def update_wecom_webhook(req: WecomWebhookPrefsIn) -> dict:
         raise HTTPException(
             status_code=400,
             detail="Webhook 地址非法, 需为企业微信群推送 Webhook 地址 "
-                   "(https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=... 或纯 key)",
+            "(https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=... 或纯 key)",
         )
     saved_url = preferences.set_wecom_webhook_url(url)
     return {"wecom_webhook_url": saved_url}
@@ -1796,7 +1884,7 @@ def update_dingtalk_webhook(req: DingtalkWebhookPrefsIn) -> dict:
         raise HTTPException(
             status_code=400,
             detail="Webhook 地址非法, 需为钉钉自定义机器人 Webhook 地址 "
-                   "(https://oapi.dingtalk.com/robot/send?access_token=... 或纯 access_token)",
+            "(https://oapi.dingtalk.com/robot/send?access_token=... 或纯 access_token)",
         )
     saved_url = preferences.set_dingtalk_webhook_url(url)
     if not saved_url:
@@ -1860,25 +1948,27 @@ def update_email_smtp(req: EmailSmtpPrefsIn) -> dict:
         if not recipients or any(not email_adapter.is_valid_email(item) for item in recipients):
             raise HTTPException(status_code=400, detail="请至少填写一个有效的收件人邮箱")
         effective_password = (
-            secrets_store.get_email_smtp_password()
-            if req.password is None
-            else req.password
+            secrets_store.get_email_smtp_password() if req.password is None else req.password
         )
         if username and not effective_password:
-            raise HTTPException(status_code=400, detail="已填写 SMTP 登录用户名, 请同时填写密码或授权码")
+            raise HTTPException(
+                status_code=400, detail="已填写 SMTP 登录用户名, 请同时填写密码或授权码"
+            )
     else:
         username = ""
         from_address = ""
         recipients = []
 
-    config = preferences.set_email_smtp_config({
-        "host": host,
-        "port": req.port,
-        "security": req.security,
-        "username": username,
-        "from_address": from_address,
-        "to_addresses": recipients,
-    })
+    config = preferences.set_email_smtp_config(
+        {
+            "host": host,
+            "port": req.port,
+            "security": req.security,
+            "username": username,
+            "from_address": from_address,
+            "to_addresses": recipients,
+        }
+    )
     if not host or not username:
         secrets_store.set_email_smtp_password("")
     elif req.password is not None:
@@ -2243,14 +2333,10 @@ def list_endpoints() -> dict:
             parsed = resp.json()
             eps = parsed.get("endpoints")
             # 校验:必须是列表且每项含必要字段,否则视为无效
-            if isinstance(eps, list) and all(
-                isinstance(e, dict) and "url" in e for e in eps
-            ):
+            if isinstance(eps, list) and all(isinstance(e, dict) and "url" in e for e in eps):
                 data = {
                     "version": parsed.get("version", 1),
-                    "description": parsed.get(
-                        "description", "TickFlow API 端点配置"
-                    ),
+                    "description": parsed.get("description", "TickFlow API 端点配置"),
                     "healthPath": parsed.get("healthPath", "/health"),
                     "testRounds": parsed.get("testRounds", 5),
                     "endpoints": eps,
@@ -2359,10 +2445,12 @@ class PipelineScheduleIn(BaseModel):
 def update_pipeline_schedule(req: PipelineScheduleIn, request: Request) -> dict:
     """保存盘后管道调度时间并立即 reschedule。"""
     from app.services import preferences
+
     sched = preferences.set_pipeline_schedule(req.hour, req.minute)
 
     # 动态 reschedule
     from apscheduler.triggers.cron import CronTrigger
+
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler:
         scheduler.reschedule_job(
@@ -2383,9 +2471,11 @@ def update_pipeline_schedule(req: PipelineScheduleIn, request: Request) -> dict:
 def update_instruments_schedule(req: PipelineScheduleIn, request: Request) -> dict:
     """保存盘前标的维表调度时间并立即 reschedule。"""
     from app.services import preferences
+
     sched = preferences.set_instruments_schedule(req.hour, req.minute)
 
     from apscheduler.triggers.cron import CronTrigger
+
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler:
         scheduler.reschedule_job(
@@ -2408,6 +2498,7 @@ class EnrichedBatchSizeIn(BaseModel):
 def update_enriched_batch_size(req: EnrichedBatchSizeIn) -> dict:
     """保存 enriched 全量计算批次大小。"""
     from app.services import preferences
+
     size = preferences.set_enriched_batch_size(req.size)
     return {"enriched_batch_size": size}
 
@@ -2420,6 +2511,7 @@ class IndexDailyBatchSizeIn(BaseModel):
 def update_index_daily_batch_size(req: IndexDailyBatchSizeIn) -> dict:
     """保存指数日 K 同步批次大小。"""
     from app.services import preferences
+
     size = preferences.set_index_daily_batch_size(req.size)
     return {"index_daily_batch_size": size}
 
@@ -2432,6 +2524,7 @@ class BatchSymbolsIn(BaseModel):
 def update_daily_batch_symbols(req: BatchSymbolsIn) -> dict:
     """保存 daily-batch 单请求标的数上限 (同时是前端分块大小)。"""
     from app.services import preferences
+
     return {"daily_batch_symbols": preferences.set_daily_batch_symbols(req.size)}
 
 
@@ -2439,10 +2532,12 @@ def update_daily_batch_symbols(req: BatchSymbolsIn) -> dict:
 def update_minute_batch_symbols(req: BatchSymbolsIn) -> dict:
     """保存 minute-batch 单请求标的数上限 (同时是前端分块大小)。"""
     from app.services import preferences
+
     return {"minute_batch_symbols": preferences.set_minute_batch_symbols(req.size)}
 
 
 # ── 五档盘口 sealed 配置 ──────────────────────────────
+
 
 class LimitLadderMonitorIn(BaseModel):
     enabled: bool
@@ -2452,6 +2547,7 @@ class LimitLadderMonitorIn(BaseModel):
 def update_limit_ladder_monitor(req: LimitLadderMonitorIn, request: Request) -> dict:
     """连板梯队 5 档监控开关。开启→启动 depth 轮询, 关闭→停止。"""
     from app.services import preferences
+
     preferences.save({"limit_ladder_monitor_enabled": req.enabled})
 
     # 立即应用: 启停 depth 轮询线程
@@ -2466,6 +2562,7 @@ def update_limit_ladder_monitor(req: LimitLadderMonitorIn, request: Request) -> 
 def run_limit_ladder_fix(request: Request) -> dict:
     """立即手动修正一次真假板(拉取五档盘口 + 更新缓存)。需 Pro+。"""
     from app.tickflow.capabilities import Cap
+
     capset = request.app.state.capabilities
     capset.require(Cap.DEPTH5_BATCH)  # 无能力抛 CapabilityDenied(403)
 
@@ -2476,6 +2573,7 @@ def run_limit_ladder_fix(request: Request) -> dict:
     # sealed 数据变了, 清看板总览缓存, 否则看板在 TTL 窗口内仍返回旧的 limit_up/fake 等
     if result.get("ok"):
         from app.api.overview import invalidate_overview_cache
+
         invalidate_overview_cache()
     return result
 
@@ -2488,9 +2586,11 @@ class DepthPollingIntervalIn(BaseModel):
 def update_depth_polling_interval(req: DepthPollingIntervalIn, request: Request) -> dict:
     """保存五档盘口盘中轮询间隔(秒)。需 Pro+。"""
     from app.tickflow.capabilities import Cap
+
     request.app.state.capabilities.require(Cap.DEPTH5_BATCH)
 
     from app.services import preferences
+
     interval = preferences.set_depth_polling_interval(req.interval)
     return {"depth_polling_interval": interval}
 
@@ -2504,12 +2604,15 @@ class DepthFinalizeTimeIn(BaseModel):
 def update_depth_finalize_time(req: DepthFinalizeTimeIn, request: Request) -> dict:
     """保存盘后 sealed 定版时间(范围15:01~18:00)并立即 reschedule。需 Pro+。"""
     from app.tickflow.capabilities import Cap
+
     request.app.state.capabilities.require(Cap.DEPTH5_BATCH)
 
     from app.services import preferences
+
     sched = preferences.set_depth_finalize_time(req.hour, req.minute)
 
     from apscheduler.triggers.cron import CronTrigger
+
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler:
         scheduler.reschedule_job(
@@ -2521,7 +2624,9 @@ def update_depth_finalize_time(req: DepthFinalizeTimeIn, request: Request) -> di
                 timezone="Asia/Shanghai",
             ),
         )
-        logger.info("depth_finalize rescheduled to %02d:%02d mon-fri", sched["hour"], sched["minute"])
+        logger.info(
+            "depth_finalize rescheduled to %02d:%02d mon-fri", sched["hour"], sched["minute"]
+        )
 
     return sched
 
@@ -2546,6 +2651,7 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
     if req.enabled:
         # 复盘必须有 AI Key, 否则每日报错刷日志
         from app import secrets_store
+
         if not secrets_store.get_ai_key():
             raise HTTPException(
                 status_code=400,
@@ -2556,11 +2662,14 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
 
     # 动态操作 APScheduler job
     from app.jobs.daily_pipeline import REVIEW_JOB_ID, _register_review_job
+
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler:
         if sched["enabled"]:
             _register_review_job(scheduler, request.app.state.repo, sched["hour"], sched["minute"])
-            logger.info("scheduled_review enabled @%02d:%02d mon-fri", sched["hour"], sched["minute"])
+            logger.info(
+                "scheduled_review enabled @%02d:%02d mon-fri", sched["hour"], sched["minute"]
+            )
         else:
             try:
                 scheduler.remove_job(REVIEW_JOB_ID)
@@ -2588,6 +2697,7 @@ def update_review_push(req: ReviewPushIn) -> dict:
     白名单外的渠道会被过滤掉, 白名单外的 mode 值回退 manual。
     """
     from app.services import preferences
+
     saved = preferences.set_review_push_channels(req.channels)
     mode = preferences.get_review_push_mode()
     if req.mode is not None:
@@ -2647,7 +2757,9 @@ def api_tokens_create(body: ApiTokenCreateIn, request: Request) -> dict:
     from app.services import api_tokens as svc
 
     try:
-        record, plaintext = svc.create_token(request.app.state.repo.store.data_dir, body.name, body.scopes)
+        record, plaintext = svc.create_token(
+            request.app.state.repo.store.data_dir, body.name, body.scopes
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"token": record, "plaintext": plaintext}
@@ -2669,9 +2781,14 @@ _SOUND_PACK_DIR = "sound_packs"
 _SOUND_PACK_MAX_BYTES = 4 * 1024 * 1024
 _SOUND_PACK_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".opus", ".webm"}
 _SOUND_PACK_MEDIA_TYPES = {
-    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
-    ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac",
-    ".opus": "audio/ogg", ".webm": "audio/webm",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".opus": "audio/ogg",
+    ".webm": "audio/webm",
 }
 
 
@@ -2696,11 +2813,13 @@ def sound_packs_list(request: Request) -> dict:
     if pack_dir.is_dir():
         for f in sorted(pack_dir.iterdir()):
             if f.is_file() and f.suffix.lower() in _SOUND_PACK_EXTS:
-                packs.append({
-                    "name": f.name,
-                    "size": f.stat().st_size,
-                    "ext": f.suffix.lower().lstrip("."),
-                })
+                packs.append(
+                    {
+                        "name": f.name,
+                        "size": f.stat().st_size,
+                        "ext": f.suffix.lower().lstrip("."),
+                    }
+                )
     return {"packs": packs}
 
 

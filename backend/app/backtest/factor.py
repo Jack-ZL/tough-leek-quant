@@ -2,6 +2,7 @@
 
 纯 Polars 向量化实现，无 pandas 依赖。
 """
+
 from __future__ import annotations
 
 import logging
@@ -210,7 +211,9 @@ class FactorBacktestService:
 
         if config.factor_name in FUNDAMENTAL_FACTOR_NAMES and self._fundamentals_missing():
             return self._error_result(
-                config, run_id, t0,
+                config,
+                run_id,
+                t0,
                 "本地没有财务数据: 请先在数据页同步财务数据后再使用财务因子",
             )
 
@@ -221,11 +224,7 @@ class FactorBacktestService:
             config,
             trading_dates=trading_dates,
         )
-        evaluate_kwargs = (
-            {"regime_by_date": regime_by_date}
-            if regime_by_date is not None
-            else {}
-        )
+        evaluate_kwargs = {"regime_by_date": regime_by_date} if regime_by_date is not None else {}
         return self._evaluate_panel(
             panel,
             config,
@@ -313,19 +312,19 @@ class FactorBacktestService:
             )
             meta = metadata.get(factor_name, {})
             if factor_name in FUNDAMENTAL_FACTOR_NAMES and fundamentals_missing:
-                items.append(FactorBatchItem(
-                    factor_name=factor_name,
-                    label=str(meta.get("label", factor_name)),
-                    group=str(meta.get("group", "")),
-                    elapsed_ms=round((time.perf_counter() - item_t0) * 1000, 1),
-                    error="本地没有财务数据: 请先在数据页同步财务数据后再使用财务因子",
-                ))
+                items.append(
+                    FactorBatchItem(
+                        factor_name=factor_name,
+                        label=str(meta.get("label", factor_name)),
+                        group=str(meta.get("group", "")),
+                        elapsed_ms=round((time.perf_counter() - item_t0) * 1000, 1),
+                        error="本地没有财务数据: 请先在数据页同步财务数据后再使用财务因子",
+                    )
+                )
                 continue
             try:
                 evaluate_kwargs = (
-                    {"regime_by_date": regime_by_date}
-                    if regime_by_date is not None
-                    else {}
+                    {"regime_by_date": regime_by_date} if regime_by_date is not None else {}
                 )
                 result = self._evaluate_panel(
                     panel,
@@ -340,44 +339,50 @@ class FactorBacktestService:
                 ic_values = [row.get("ic") for row in result.ic_series]
                 t_naive = stats_v2.naive_t(ic_values)
                 nw = stats_v2.newey_west_t(ic_values, lag=1)
-                items.append(FactorBatchItem(
-                    factor_name=factor_name,
-                    label=str(meta.get("label", factor_name)),
-                    group=str(meta.get("group", "")),
-                    ic_mean=result.ic_mean,
-                    ir=result.ir,
-                    ic_win_rate=result.ic_win_rate,
-                    long_short_return=long_short.get("total_return"),
-                    long_short_max_drawdown=long_short.get("max_drawdown"),
-                    methodology_version=result.methodology_version,
-                    coverage=result.coverage,
-                    turnover=result.turnover,
-                    long_short_sharpe=result.long_short_sharpe,
-                    yearly_ic=result.yearly_ic,
-                    ic_decay=result.ic_decay,
-                    regime_stats=result.regime_stats,
-                    n_symbols=result.n_symbols,
-                    n_dates=result.n_dates,
-                    elapsed_ms=result.elapsed_ms,
-                    error=result.error,
-                    t_naive=t_naive,
-                    t_newey_west=nw[0] if nw else None,
-                    nw_lag=1 if nw else None,
-                    p_value=(
-                        stats_v2.normal_two_sided_p(nw[0]) if nw
-                        else stats_v2.normal_two_sided_p(t_naive) if t_naive is not None
-                        else None
-                    ),
-                ))
+                items.append(
+                    FactorBatchItem(
+                        factor_name=factor_name,
+                        label=str(meta.get("label", factor_name)),
+                        group=str(meta.get("group", "")),
+                        ic_mean=result.ic_mean,
+                        ir=result.ir,
+                        ic_win_rate=result.ic_win_rate,
+                        long_short_return=long_short.get("total_return"),
+                        long_short_max_drawdown=long_short.get("max_drawdown"),
+                        methodology_version=result.methodology_version,
+                        coverage=result.coverage,
+                        turnover=result.turnover,
+                        long_short_sharpe=result.long_short_sharpe,
+                        yearly_ic=result.yearly_ic,
+                        ic_decay=result.ic_decay,
+                        regime_stats=result.regime_stats,
+                        n_symbols=result.n_symbols,
+                        n_dates=result.n_dates,
+                        elapsed_ms=result.elapsed_ms,
+                        error=result.error,
+                        t_naive=t_naive,
+                        t_newey_west=nw[0] if nw else None,
+                        nw_lag=1 if nw else None,
+                        p_value=(
+                            stats_v2.normal_two_sided_p(nw[0])
+                            if nw
+                            else stats_v2.normal_two_sided_p(t_naive)
+                            if t_naive is not None
+                            else None
+                        ),
+                    )
+                )
             except Exception as exc:  # 单因子失败不能中止整个筛选批次
                 logger.exception("factor batch item failed: %s", factor_name)
-                items.append(FactorBatchItem(
-                    factor_name=factor_name,
-                    label=str(meta.get("label", factor_name)),
-                    group=str(meta.get("group", "")),
-                    elapsed_ms=round((time.perf_counter() - item_t0) * 1000, 1),
-                    error=str(exc),
-                ))
+                items.append(
+                    FactorBatchItem(
+                        factor_name=factor_name,
+                        label=str(meta.get("label", factor_name)),
+                        group=str(meta.get("group", "")),
+                        elapsed_ms=round((time.perf_counter() - item_t0) * 1000, 1),
+                        error=str(exc),
+                    )
+                )
 
         n_symbols = max((item.n_symbols for item in items), default=0)
         n_dates = max((item.n_dates for item in items), default=0)
@@ -422,13 +427,17 @@ class FactorBacktestService:
         expected_generation: str | None = None,
     ) -> pl.DataFrame:
         panel_columns = [
-            "symbol", "date", "open", "high", "low", "close", "volume", "amount",
+            "symbol",
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "amount",
             "turnover_rate",
         ]
-        if any(
-            name in ("limit_up_count_20d", "limit_up_count_60d")
-            for name in factor_names
-        ):
+        if any(name in ("limit_up_count_20d", "limit_up_count_60d") for name in factor_names):
             panel_columns.append("consecutive_limit_ups")
         load_start = config.start
         if any(name != "turnover_rate" for name in factor_names):
@@ -535,16 +544,16 @@ class FactorBacktestService:
             strict=True,
         ):
             if len(all_dates) <= horizon:
-                base = base.with_columns(
-                    pl.lit(None).cast(pl.Float64).alias(return_column)
-                )
+                base = base.with_columns(pl.lit(None).cast(pl.Float64).alias(return_column))
                 continue
             target_column = f"_target_date_{horizon}d"
             target_close_column = f"_target_close_{horizon}d"
-            date_map = pl.DataFrame({
-                "date": all_dates[:-horizon],
-                target_column: all_dates[horizon:],
-            }).with_columns(
+            date_map = pl.DataFrame(
+                {
+                    "date": all_dates[:-horizon],
+                    target_column: all_dates[horizon:],
+                }
+            ).with_columns(
                 pl.col("date").cast(date_dtype),
                 pl.col(target_column).cast(date_dtype),
             )
@@ -567,9 +576,7 @@ class FactorBacktestService:
             )
 
         if config.rebalance == "daily":
-            base = base.with_columns(
-                pl.col("_forward_return_1d").alias("_next_return")
-            )
+            base = base.with_columns(pl.col("_forward_return_1d").alias("_next_return"))
         else:
             base = FactorBacktestService._calc_period_return(base, config.rebalance)
 
@@ -630,8 +637,7 @@ class FactorBacktestService:
         valid_ic_df = ic_df.filter(pl.col("ic").is_not_null() & pl.col("ic").is_finite())
         ic_rows = valid_ic_df.iter_rows(named=True)
         ic_series = [
-            {"date": str(row["date"]), "ic": round(float(row["ic"]), 4)}
-            for row in ic_rows
+            {"date": str(row["date"]), "ic": round(float(row["ic"]), 4)} for row in ic_rows
         ]
         ic_values = valid_ic_df["ic"].to_numpy() if not valid_ic_df.is_empty() else np.array([])
         ic_mean = float(np.mean(ic_values)) if ic_values.size else None
@@ -693,7 +699,9 @@ class FactorBacktestService:
         required = {"symbol", "date", "open", "high", "low", "close", "volume"}
         if not required.issubset(panel.columns):
             missing = sorted(required - set(panel.columns))
-            logger.warning("factors %s cannot be computed, missing columns: %s", factor_cols, missing)
+            logger.warning(
+                "factors %s cannot be computed, missing columns: %s", factor_cols, missing
+            )
             return panel
 
         # 扩展表因子 (ext_ base 条目) = 外部物化列, 指标补算管线不认识;
@@ -710,7 +718,8 @@ class FactorBacktestService:
         # custom/composite 因子走注册表→DSL/组合 的同一条物化路径 (P3, 与策略评分共用);
         # 其底层依赖 (如 change_pct/ma20) 先经内置补算路径物化, 再做 DSL/组合物化。
         registry_names = {
-            name for name in factor_cols
+            name
+            for name in factor_cols
             if (spec := get_factor(name)) is not None and spec.kind in ("custom", "composite")
         }
         if registry_names:
@@ -722,7 +731,9 @@ class FactorBacktestService:
             base_deps -= set(panel.columns) | registry_names
             if base_deps:
                 panel = FactorBacktestService._compute_missing_factors(
-                    panel, base_deps, assume_sorted=assume_sorted,
+                    panel,
+                    base_deps,
+                    assume_sorted=assume_sorted,
                 )
             panel = materialize_scoring_columns(panel, registry_names)
             factor_cols = factor_cols - registry_names
@@ -794,13 +805,15 @@ class FactorBacktestService:
         for row in yearly.iter_rows(named=True):
             mean = float(row["ic_mean"])
             std = float(row["ic_std"] or 0.0)
-            result.append({
-                "year": int(row["_year"]),
-                "ic_mean": round(mean, 4),
-                "ir": round(mean / std, 4) if std > 1e-8 else None,
-                "win_rate": round(float(row["win_rate"]), 4),
-                "n_dates": int(row["n_dates"]),
-            })
+            result.append(
+                {
+                    "year": int(row["_year"]),
+                    "ic_mean": round(mean, 4),
+                    "ir": round(mean / std, 4) if std > 1e-8 else None,
+                    "win_rate": round(float(row["win_rate"]), 4),
+                    "n_dates": int(row["n_dates"]),
+                }
+            )
         return result
 
     @staticmethod
@@ -814,26 +827,30 @@ class FactorBacktestService:
             return []
         decay_df = (
             panel.group_by("date")
-            .agg([
-                pl.corr(
-                    pl.col(factor_col).rank(method="average"),
-                    pl.col(return_column).rank(method="average"),
-                ).alias(f"ic_{horizon}d")
-                for horizon, return_column in columns
-            ])
+            .agg(
+                [
+                    pl.corr(
+                        pl.col(factor_col).rank(method="average"),
+                        pl.col(return_column).rank(method="average"),
+                    ).alias(f"ic_{horizon}d")
+                    for horizon, return_column in columns
+                ]
+            )
             .sort("date")
         )
         result: list[dict] = []
         for horizon, _ in columns:
             column = f"ic_{horizon}d"
-            values = decay_df.filter(
-                pl.col(column).is_not_null() & pl.col(column).is_finite()
-            )[column]
-            result.append({
-                "horizon": horizon,
-                "ic_mean": round(float(values.mean()), 4) if len(values) else None,
-                "n_dates": len(values),
-            })
+            values = decay_df.filter(pl.col(column).is_not_null() & pl.col(column).is_finite())[
+                column
+            ]
+            result.append(
+                {
+                    "horizon": horizon,
+                    "ic_mean": round(float(values.mean()), 4) if len(values) else None,
+                    "n_dates": len(values),
+                }
+            )
         return result
 
     @staticmethod
@@ -859,9 +876,7 @@ class FactorBacktestService:
         )
         if market_trading_dates:
             labels = tuple(
-                str(value)[:10]
-                for value in market_trading_dates
-                if value <= required_end
+                str(value)[:10] for value in market_trading_dates if value <= required_end
             )
         else:
             predecessor = max(
@@ -872,11 +887,7 @@ class FactorBacktestService:
                 ),
                 default=None,
             )
-            labels = (
-                (predecessor, *formal_labels)
-                if predecessor is not None
-                else formal_labels
-            )
+            labels = (predecessor, *formal_labels) if predecessor is not None else formal_labels
         aligned = align_regime_t_minus_one(
             labels,
             regime_by_date,
@@ -889,8 +900,7 @@ class FactorBacktestService:
             first_day_boundary_ok=True,
         )
         ic_by_date = {
-            str(row["date"])[:10]: float(row["ic"])
-            for row in ic_df.iter_rows(named=True)
+            str(row["date"])[:10]: float(row["ic"]) for row in ic_df.iter_rows(named=True)
         }
         grouped: dict[str, dict[str, list[float]]] = {}
         for label, point in zip(labels, aligned, strict=True):
@@ -913,19 +923,21 @@ class FactorBacktestService:
             scores = np.asarray(grouped[state]["scores"], dtype=np.float64)
             mean = float(np.mean(values)) if values.size else None
             std = float(np.std(values)) if values.size else None
-            result.append({
-                "state": state,
-                "ic_mean": round(mean, 4) if mean is not None else None,
-                "ir": (
-                    round(mean / std, 4)
-                    if mean is not None and std is not None and std > 1e-8
-                    else None
-                ),
-                "win_rate": round(float(np.mean(values > 0)), 4) if values.size else None,
-                "mean_score": round(float(np.mean(scores)), 2),
-                "n_dates": len(grouped[state]["dates"]),
-                "n_ic_dates": int(values.size),
-            })
+            result.append(
+                {
+                    "state": state,
+                    "ic_mean": round(mean, 4) if mean is not None else None,
+                    "ir": (
+                        round(mean / std, 4)
+                        if mean is not None and std is not None and std > 1e-8
+                        else None
+                    ),
+                    "win_rate": round(float(np.mean(values > 0)), 4) if values.size else None,
+                    "mean_score": round(float(np.mean(scores)), 2),
+                    "n_dates": len(grouped[state]["dates"]),
+                    "n_ic_dates": int(values.size),
+                }
+            )
         return result
 
     # ── 调仓期收益 ──
@@ -985,22 +997,17 @@ class FactorBacktestService:
         date_dtype = panel.schema["date"]
 
         # 调仓日 → 下一调仓日 的映射表 (向量化 JOIN, 替代 Python 逐行 price_map 循环)
-        rebal_df = pl.DataFrame(
-            {"date": reb_dates, "_next_reb_date": next_dates}
-        ).with_columns(
+        rebal_df = pl.DataFrame({"date": reb_dates, "_next_reb_date": next_dates}).with_columns(
             pl.col("date").cast(date_dtype),
             pl.col("_next_reb_date").cast(date_dtype),
         )
 
         # (symbol, 下一调仓日) → 该日 close 的查找表 (等价于原 price_map, 重复取 last)
-        price_lookup = (
-            panel.select(
-                pl.col("symbol"),
-                pl.col("date").alias("_next_reb_date"),
-                pl.col("close").alias("_next_close"),
-            )
-            .unique(subset=["symbol", "_next_reb_date"], keep="last")
-        )
+        price_lookup = panel.select(
+            pl.col("symbol"),
+            pl.col("date").alias("_next_reb_date"),
+            pl.col("close").alias("_next_close"),
+        ).unique(subset=["symbol", "_next_reb_date"], keep="last")
 
         # 只在调仓日标记行有效: 下一调仓日该股 close / 当日 close - 1; 缺价或非调仓日为 null
         panel = (
@@ -1036,23 +1043,15 @@ class FactorBacktestService:
                 (
                     pl.lit("Q")
                     + (
-                        (
-                            (pl.col("_factor_rank") - 1.0)
-                            * n_groups
-                            / pl.col("_factor_count")
-                        )
+                        ((pl.col("_factor_rank") - 1.0) * n_groups / pl.col("_factor_count"))
                         .floor()
                         .cast(pl.Int64)
                         + 1
                     )
                     .clip(1, n_groups)
                     .cast(pl.Utf8)
-                )
-                .alias("_group"),
-                (
-                    pl.col("_factor_rank")
-                    - (pl.col("_factor_count") + 1) / 2.0
-                )
+                ).alias("_group"),
+                (pl.col("_factor_rank") - (pl.col("_factor_count") + 1) / 2.0)
                 .abs()
                 .add(0.5)
                 .alias("_factor_strength"),
@@ -1074,20 +1073,13 @@ class FactorBacktestService:
     @staticmethod
     def _round_nav(group_nav: list[dict]) -> list[dict]:
         return [
-            {
-                key: value if key == "date" else round(float(value), 4)
-                for key, value in row.items()
-            }
+            {key: value if key == "date" else round(float(value), 4) for key, value in row.items()}
             for row in group_nav
         ]
 
     @staticmethod
     def _round_trip_cost(config: FactorConfig) -> float:
-        commission = (
-            config.commission_pct
-            if config.commission_pct is not None
-            else config.fees_pct
-        )
+        commission = config.commission_pct if config.commission_pct is not None else config.fees_pct
         stamp_tax = config.stamp_tax_pct or 0.0
         slippage = config.slippage_bps / 10_000.0
         return 2.0 * commission + stamp_tax + 2.0 * slippage
@@ -1109,8 +1101,7 @@ class FactorBacktestService:
                 .group_by(["date", "_group"])
                 .agg(
                     (
-                        (pl.col("_next_return") * pl.col("_weight")).sum()
-                        / pl.col("_weight").sum()
+                        (pl.col("_next_return") * pl.col("_weight")).sum() / pl.col("_weight").sum()
                     ).alias("group_return")
                 )
             )
@@ -1119,8 +1110,9 @@ class FactorBacktestService:
                 pl.col("_next_return").mean().alias("group_return")
             )
         group_ret = group_ret.with_columns(
-            (pl.col("group_return") - FactorBacktestService._round_trip_cost(config))
-            .alias("group_return")
+            (pl.col("group_return") - FactorBacktestService._round_trip_cost(config)).alias(
+                "group_return"
+            )
         )
 
         pivot = group_ret.pivot(
@@ -1136,7 +1128,10 @@ class FactorBacktestService:
             key=FactorBacktestService._group_sort_key,
         )
         nav_df = pivot.with_columns(
-            [(1.0 + pl.col(column).fill_null(0.0)).cum_prod().alias(column) for column in group_cols]
+            [
+                (1.0 + pl.col(column).fill_null(0.0)).cum_prod().alias(column)
+                for column in group_cols
+            ]
         )
         result: list[dict] = []
         for row in nav_df.iter_rows(named=True):
@@ -1171,8 +1166,7 @@ class FactorBacktestService:
         else:
             weights = weights.with_columns(pl.lit(1.0).alias("_raw_weight"))
         weights = weights.with_columns(
-            (pl.col("_raw_weight") / pl.col("_raw_weight").sum().over("date"))
-            .alias("_weight")
+            (pl.col("_raw_weight") / pl.col("_raw_weight").sum().over("date")).alias("_weight")
         )
 
         by_date: dict[object, dict[str, float]] = {}
@@ -1187,7 +1181,10 @@ class FactorBacktestService:
             current = by_date[current_date]
             symbols = previous.keys() | current.keys()
             turnovers.append(
-                0.5 * sum(abs(current.get(symbol, 0.0) - previous.get(symbol, 0.0)) for symbol in symbols)
+                0.5
+                * sum(
+                    abs(current.get(symbol, 0.0) - previous.get(symbol, 0.0)) for symbol in symbols
+                )
             )
         return float(np.mean(turnovers))
 
@@ -1195,7 +1192,9 @@ class FactorBacktestService:
 
     @staticmethod
     def _calc_group_stats(
-        group_nav: list[dict], start: date, end: date,
+        group_nav: list[dict],
+        start: date,
+        end: date,
         rebalance: str = "monthly",
     ) -> list[dict]:
         if not group_nav:
@@ -1231,22 +1230,25 @@ class FactorBacktestService:
                 rets = arr[1:] / prev - 1.0
             rets = rets[prev > 0]
             if rets.size:
-                std = float(np.std(rets))
+                # 样本标准差 (ddof=1), 与 engine 的 Sharpe 口径一致
+                std = float(np.std(rets, ddof=1))
                 sharpe = float(np.mean(rets) / std) * np.sqrt(_ann) if std > 0 else 0.0
                 win_rate = float(np.mean(rets > 0))
             else:
                 sharpe = 0.0
                 win_rate = 0.0
 
-            stats.append({
-                "group": i + 1,
-                "label": c,
-                "total_return": round(total_return, 4),
-                "annual_return": round(annual_return, 4),
-                "max_drawdown": round(max_dd, 4),
-                "sharpe": round(sharpe, 2),
-                "win_rate": round(win_rate, 4),
-            })
+            stats.append(
+                {
+                    "group": i + 1,
+                    "label": c,
+                    "total_return": round(total_return, 4),
+                    "annual_return": round(annual_return, 4),
+                    "max_drawdown": round(max_dd, 4),
+                    "sharpe": round(sharpe, 2),
+                    "win_rate": round(win_rate, 4),
+                }
+            )
 
         return stats
 
@@ -1254,7 +1256,8 @@ class FactorBacktestService:
 
     @staticmethod
     def _calc_long_short(
-        group_nav: list[dict], config: FactorConfig,
+        group_nav: list[dict],
+        config: FactorConfig,
     ) -> tuple[list[dict], dict]:
         """多空组合: 做多最高组 + 做空最低组。"""
         if not group_nav:
@@ -1287,9 +1290,8 @@ class FactorBacktestService:
         with np.errstate(divide="ignore", invalid="ignore"):
             top_ret = np.where(prev_top > 0, top / prev_top - 1.0, 0.0)
             bot_ret = np.where(prev_bot > 0, bot / prev_bot - 1.0, 0.0)
-        ls_ret = (
-            (top_ret - bot_ret) / 2.0
-            - FactorBacktestService._round_trip_cost(config)
+        ls_ret = (top_ret - bot_ret) / 2.0 - FactorBacktestService._round_trip_cost(
+            config
         )  # 50/50 理论多空两腿
         ls_value = np.cumprod(1.0 + ls_ret)
 
@@ -1301,12 +1303,8 @@ class FactorBacktestService:
             config.rebalance,
             252,
         )
-        ls_std = float(np.std(ls_ret))
-        sharpe = (
-            float(np.mean(ls_ret) / ls_std) * np.sqrt(ann_factor)
-            if ls_std > 1e-8
-            else 0.0
-        )
+        ls_std = float(np.std(ls_ret, ddof=1))  # 样本标准差, 与 engine 口径一致
+        sharpe = float(np.mean(ls_ret) / ls_std) * np.sqrt(ann_factor) if ls_std > 1e-8 else 0.0
         ls_nav = [
             {"date": group_nav[k]["date"], "value": round(float(ls_value[k]), 4)}
             for k in range(len(group_nav))

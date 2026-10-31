@@ -1,4 +1,5 @@
 """回测 API — 信号回测 + 因子回测 + 策略回测。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ from app.services.backtest import (
     BacktestService,
     VectorbtUnavailable,
 )
+from app.services.daily_health import DailyIntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ BACKTEST_SERVER_GUARD_MESSAGE = (
 def _get_engine(request: Request):
     """获取或创建 BacktestEngine (单例，PanelCache 跨请求生效)。"""
     from app.backtest.engine import BacktestEngine
+
     engine = getattr(request.app.state, "backtest_engine", None)
     if engine is None:
         engine = BacktestEngine(request.app.state.repo)
@@ -68,6 +71,7 @@ def _guard_server_backtest_range(start: date, end: date):
 # 状态
 # ================================================================
 
+
 @router.get("/status")
 def status():
     """前端可用此接口判断回测页是否要灰显。"""
@@ -77,6 +81,7 @@ def status():
 # ================================================================
 # 信号回测 (现有接口，保持不变)
 # ================================================================
+
 
 class BacktestRequest(BaseModel):
     symbols: list[str] = Field(..., min_length=1)
@@ -117,12 +122,13 @@ def run(req: BacktestRequest, request: Request):
         result = svc.run(cfg)
     except VectorbtUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    return asdict(result)
+    return _stamp_daily_data(result)
 
 
 # ================================================================
 # 因子回测
 # ================================================================
+
 
 class FactorColumnsResponse(BaseModel):
     columns: list[dict]
@@ -132,6 +138,7 @@ class FactorColumnsResponse(BaseModel):
 def factor_columns():
     """返回可用的因子列列表 (含运行期注册的自定义/复合因子)。"""
     from app.factors.registry import factor_columns_view
+
     return {"columns": factor_columns_view()}
 
 
@@ -184,13 +191,15 @@ def factor_run(req: FactorBacktestRequest, request: Request):
     )
     try:
         result = svc.run(cfg)
+    except DailyIntegrityError:
+        raise
     except EnrichedGenerationUnavailableError as exc:
         # 盘中实时刷新换新 generation, 重试后仍撞上发布 (api/mining.py 同款映射)
         raise HTTPException(
             status_code=400,
             detail="行情数据正在更新(盘中实时刷新), 请稍后重试",
         ) from exc
-    return asdict(result)
+    return _stamp_daily_data(result)
 
 
 class FactorBatchRequest(BaseModel):
@@ -233,29 +242,34 @@ def factor_batch(req: FactorBatchRequest, request: Request):
 
     svc = FactorBacktestService(_get_engine(request))
     try:
-        result = svc.run_batch(FactorBatchConfig(
-            factor_names=factor_names,
-            symbols=symbols,
-            start=start,
-            end=end,
-            n_groups=req.n_groups,
-            rebalance=req.rebalance,
-            weight=req.weight,
-            fees_pct=req.fees_pct,
-            slippage_bps=req.slippage_bps,
-            asset_type=req.asset_type,
-        ))
+        result = svc.run_batch(
+            FactorBatchConfig(
+                factor_names=factor_names,
+                symbols=symbols,
+                start=start,
+                end=end,
+                n_groups=req.n_groups,
+                rebalance=req.rebalance,
+                weight=req.weight,
+                fees_pct=req.fees_pct,
+                slippage_bps=req.slippage_bps,
+                asset_type=req.asset_type,
+            )
+        )
+    except DailyIntegrityError:
+        raise
     except EnrichedGenerationUnavailableError as exc:
         raise HTTPException(
             status_code=400,
             detail="行情数据正在更新(盘中实时刷新), 请稍后重试",
         ) from exc
-    return asdict(result)
+    return _stamp_daily_data(result)
 
 
 # ================================================================
 # 研究候选方案
 # ================================================================
+
 
 class CandidateCreateRequest(BaseModel):
     kind: Literal["factor", "strategy"]
@@ -336,6 +350,7 @@ def candidate_delete(candidate_id: str):
 # 策略回测
 # ================================================================
 
+
 class StrategyBacktestRequest(BaseModel):
     strategy_id: str
     symbols: list[str] | None = None
@@ -366,7 +381,10 @@ class StrategyBacktestRequest(BaseModel):
 
 
 def _guard_minute_strategy_backtest(
-    request: Request, strategy_id: str, start: date, asset_type: str,
+    request: Request,
+    strategy_id: str,
+    start: date,
+    asset_type: str,
 ) -> None:
     """分钟策略回测入口守卫: 仅 A 股 + 本地分钟K覆盖检查 (fail-fast)。"""
     engine = getattr(request.app.state, "strategy_engine", None)
@@ -406,9 +424,10 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     if req.position_sizing == "policy":
         from app.backtest import position_policies
 
-        if not req.position_policy or position_policies.get_policy(
-            settings.data_dir, req.position_policy
-        ) is None:
+        if (
+            not req.position_policy
+            or position_policies.get_policy(settings.data_dir, req.position_policy) is None
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"仓位策略不存在或不可用: {req.position_policy!r}",
@@ -443,27 +462,52 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     from app.services.heavy_job_limiter import shared_heavy_job_limiter
 
     with shared_heavy_job_limiter.slot("normal"):
-        return run_worker_task(task)
+        return _stamp_daily_data(run_worker_task(task))
 
 
 # ── SSE 流式回测 (实时进度 + 可取消 + 支持重连) ───────────────────
 
-import time
 import hashlib
+import time
+
+
+def _daily_data_revisions() -> dict[str, str]:
+    from app.services.daily_health import ASSET_LABELS, revision
+
+    return {asset: revision(settings.data_dir, asset) for asset in ASSET_LABELS}
+
+
+def _stamp_daily_data(result, revisions=None) -> dict:
+    payload = result if isinstance(result, dict) else asdict(result)
+    return {
+        **payload,
+        "daily_data_revisions": revisions if revisions is not None else _daily_data_revisions(),
+    }
 
 
 class _BacktestJob:
     """单个回测任务的状态, 存模块级供重连使用。"""
-    __slots__ = ("key", "cancel_event", "progress", "result", "error", "done", "finish_ts")
+
+    __slots__ = (
+        "key",
+        "cancel_event",
+        "progress",
+        "result",
+        "error",
+        "done",
+        "finish_ts",
+        "daily_data_revisions",
+    )
 
     def __init__(self, key: str):
         self.key = key
         self.cancel_event = threading.Event()
-        self.progress: list[dict] = []   # 进度历史 (新连接可回放)
-        self.result = None               # 完成后的结果
+        self.progress: list[dict] = []  # 进度历史 (新连接可回放)
+        self.result = None  # 完成后的结果
         self.error: str | None = None
         self.done = False
         self.finish_ts: float = 0.0
+        self.daily_data_revisions = _daily_data_revisions()
 
 
 # 模块级任务表: key -> _BacktestJob
@@ -475,15 +519,43 @@ _JOB_TTL = 300  # 完成后保留 5 分钟
 def _cleanup_stale_jobs():
     """清理过期任务 (完成超过 TTL 的)。全程持 _jobs_lock: 迭代+pop 与其他访问互斥。"""
     now = time.time()
+    revisions = _daily_data_revisions()
     with _jobs_lock:
-        stale = [k for k, j in _running_jobs.items() if j.done and now - j.finish_ts > _JOB_TTL]
+        stale = [
+            k
+            for k, j in _running_jobs.items()
+            if j.done and (now - j.finish_ts > _JOB_TTL or j.daily_data_revisions != revisions)
+        ]
         for k in stale:
             _running_jobs.pop(k, None)
+
+
+def _acquire_or_evict_job(job_key: str, *, force: bool) -> tuple[_BacktestJob, bool]:
+    """获取或创建任务, 返回 (job, is_new)。
+
+    force 强制重跑: 同 key 已完成任务 (5 分钟 TTL 内) 直接丢弃重建, 不回放旧
+    结果/旧报错 — force 任务自己的结果同样进任务缓存, 不丢弃的话 TTL 内重复
+    强制重跑只是重放上一次。运行中的任务仍允许订阅 (重连/取消按同 key 对齐,
+    语义不变); 非 force 连接保持既有缓存复用行为。
+    """
+    with _jobs_lock:
+        job = _running_jobs.get(job_key)
+        if job is not None and force and job.done:
+            _running_jobs.pop(job_key, None)
+            job = None
+        if job is None:
+            job = _BacktestJob(job_key)
+            _running_jobs[job_key] = job
+            return job, True
+        return job, False
 
 
 def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> None:
     """Publish the terminal state and proactively drop the reconnect entry after TTL."""
     finished_at = time.time()
+    if result is not None and job.daily_data_revisions != _daily_data_revisions():
+        result = None
+        error = "日K数据已修正, 请重新运行计算"
     with _jobs_lock:
         job.result = result
         job.error = error
@@ -502,20 +574,33 @@ def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> 
 
 
 def _make_job_key(
-    strategy_id: str, symbols: str | None, start: str | None, end: str | None,
-    matching: str, entry_fill: str | None, exit_fill: str | None,
-    fees_pct: float, slippage_bps: float,
-    max_positions: int, max_exposure_pct: float, initial_capital: float, position_sizing: str,
-    params: str | None, overrides: str | None,
-    mode: str = "position", holding_days: int = 5,
-    commission_pct: float | None = None, stamp_tax_pct: float | None = None,
+    strategy_id: str,
+    symbols: str | None,
+    start: str | None,
+    end: str | None,
+    matching: str,
+    entry_fill: str | None,
+    exit_fill: str | None,
+    fees_pct: float,
+    slippage_bps: float,
+    max_positions: int,
+    max_exposure_pct: float,
+    initial_capital: float,
+    position_sizing: str,
+    params: str | None,
+    overrides: str | None,
+    mode: str = "position",
+    holding_days: int = 5,
+    commission_pct: float | None = None,
+    stamp_tax_pct: float | None = None,
     asset_type: str = "stock",
     minute_fill: bool = False,
     regime_filter: str | None = None,
     position_policy: str | None = None,
     position_policy_params: str | None = None,
+    force: bool = False,
 ) -> str:
-    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}|{commission_pct}|{stamp_tax_pct}|{asset_type}|{minute_fill}|{regime_filter}|{position_policy}|{position_policy_params}"
+    raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}|{commission_pct}|{stamp_tax_pct}|{asset_type}|{minute_fill}|{regime_filter}|{position_policy}|{position_policy_params}|force={force}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
@@ -546,12 +631,16 @@ async def strategy_stream(
     asset_type: str = "stock",
     minute_fill: bool = False,
     regime_filter: str | None = None,
+    force: bool = False,
 ):
     """SSE 流式策略回测: 实时推送进度, 完成后推送结果, 支持重连 (刷新/切页后恢复)。
 
     - 相同参数的任务只启动一次, 多次连接订阅同一个任务
     - 断开连接不会取消任务 (除非显式调用 cancel)
     - 结果保留 5 分钟供重连
+    - force=1: 掺入 job_key 使其不命中普通 (非 force) 参数的结果缓存;
+      同 key 已完成的 force 任务也会被丢弃重建 — 5 分钟内重复强制重跑
+      都真正重算 (重连/取消仍按 qs 重算同一 key, 语义不变)
 
     事件类型:
       - progress: {day, total, date, equity}
@@ -580,30 +669,36 @@ async def strategy_stream(
             guard_violated = True
 
     job_key = _make_job_key(
-        strategy_id, symbols, start, end,
-        matching, entry_fill, exit_fill,
-        fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
-        params, overrides,
-        mode, holding_days,
-        commission_pct, stamp_tax_pct,
+        strategy_id,
+        symbols,
+        start,
+        end,
+        matching,
+        entry_fill,
+        exit_fill,
+        fees_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        params,
+        overrides,
+        mode,
+        holding_days,
+        commission_pct,
+        stamp_tax_pct,
         asset_type=asset_type,
         minute_fill=minute_fill,
         regime_filter=regime_filter,
         position_policy=position_policy,
         position_policy_params=position_policy_params,
+        force=force,
     )
 
     _cleanup_stale_jobs()
 
-    # 获取或创建任务
-    with _jobs_lock:
-        job = _running_jobs.get(job_key)
-        if job is None:
-            job = _BacktestJob(job_key)
-            _running_jobs[job_key] = job
-            is_new = True
-        else:
-            is_new = False
+    job, is_new = _acquire_or_evict_job(job_key, force=force)
 
     async def event_generator():
         # 范围保护: 直接报错
@@ -615,15 +710,20 @@ async def strategy_stream(
         if minute_fill:
             capset = request.app.state.capabilities
             from app.tickflow.capabilities import Cap
+
             if not capset.has(Cap.KLINE_MINUTE_BATCH):
                 yield f"event: error\ndata: {json.dumps({'message': '分钟K精确回测需要 Pro+ 权限 (kline.minute.batch)'}, ensure_ascii=False)}\n\n"
                 return
             # 检查本地分钟K历史是否覆盖回测区间
             repo = request.app.state.repo
-            earliest_minute = repo.earliest_minute_date() if hasattr(repo, "earliest_minute_date") else None
+            earliest_minute = (
+                repo.earliest_minute_date() if hasattr(repo, "earliest_minute_date") else None
+            )
             if earliest_minute is not None and start_date < earliest_minute:
-                msg = (f"本地分钟K历史最早到 {earliest_minute}, 无法覆盖回测起始日 {start_date}。"
-                       f"请先用「扩展分钟K历史」功能拉取更多数据, 或缩小回测区间。")
+                msg = (
+                    f"本地分钟K历史最早到 {earliest_minute}, 无法覆盖回测起始日 {start_date}。"
+                    f"请先用「扩展分钟K历史」功能拉取更多数据, 或缩小回测区间。"
+                )
                 yield f"event: error\ndata: {json.dumps({'message': msg}, ensure_ascii=False)}\n\n"
                 return
 
@@ -702,7 +802,7 @@ async def strategy_stream(
                         elif error:
                             yield f"event: error\ndata: {json.dumps({'message': error}, ensure_ascii=False)}\n\n"
                         else:
-                            payload = r if isinstance(r, dict) else asdict(r)
+                            payload = _stamp_daily_data(r, job.daily_data_revisions)
                             yield f"event: done\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
                     return
 
@@ -733,13 +833,22 @@ async def strategy_cancel(request: Request):
     qs = body.get("qs", "")
     # 解析 qs 得到参数
     from urllib.parse import parse_qs
+
     p = parse_qs(qs)
+
     def _get(key: str, default: str = "") -> str:
         return p.get(key, [default])[0]
+
     def _get_opt_float(key: str) -> float | None:
         # 可选成本参数: 缺省或空串 → None (与 stream 侧 float | None 口径一致, 保证 job_key 对齐)。
         v = _get(key)
         return float(v) if v else None
+
+    def _get_opt_bool(key: str) -> bool:
+        # 与 FastAPI/pydantic v2 查询参数 bool 解析口径一致 (真值别名集合),
+        # 否则 stream/cancel 两端算出不同 job_key, 停止按钮失效
+        return _get(key).lower() in ("1", "true", "on", "yes", "t", "y")
+
     job_key = _make_job_key(
         _get("strategy_id"),
         _get("symbols") or None,
@@ -761,8 +870,11 @@ async def strategy_cancel(request: Request):
         commission_pct=_get_opt_float("commission_pct"),
         stamp_tax_pct=_get_opt_float("stamp_tax_pct"),
         asset_type=_get("asset_type", "stock"),
+        minute_fill=_get_opt_bool("minute_fill"),
+        regime_filter=_get("regime_filter") or None,
         position_policy=_get("position_policy") or None,
         position_policy_params=_get("position_policy_params") or None,
+        force=_get_opt_bool("force"),
     )
     # 持锁读任务表: 与 _cleanup_stale_jobs 的 pop、stream 的写入互斥
     with _jobs_lock:
@@ -777,11 +889,13 @@ async def strategy_cancel(request: Request):
 # 参数网格优化器 — 复用 _BacktestJob SSE 框架 (多组参数并行回测 + 排序)
 # ══════════════════════════════════════════════════════════════
 
+
 def _json_safe(obj):
     """递归把 nan/inf 置 None —— json.dumps(default=str) 处理不了它们, 会输出非法 JSON
     字面量 NaN/Infinity 让前端 JSON.parse 崩。优化器/WF 结果嵌套深 (逐组/逐折的
     sortino 等零波动场景可能算出 nan), 序列化前统一清洗。"""
     import math
+
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
     if isinstance(obj, dict):
@@ -793,9 +907,17 @@ def _json_safe(obj):
 
 # 透传给每组回测的 StrategyBacktestConfig 字段 (作为 backtest_kwargs)。
 _OPT_BT_FIELDS = [
-    "matching", "fees_pct", "commission_pct", "stamp_tax_pct", "slippage_bps",
-    "max_positions", "max_exposure_pct", "initial_capital", "position_sizing",
-    "mode", "holding_days",
+    "matching",
+    "fees_pct",
+    "commission_pct",
+    "stamp_tax_pct",
+    "slippage_bps",
+    "max_positions",
+    "max_exposure_pct",
+    "initial_capital",
+    "position_sizing",
+    "mode",
+    "holding_days",
 ]
 
 
@@ -820,8 +942,17 @@ def _make_opt_job_key(
 
 
 def _opt_backtest_kwargs(
-    matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-    max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+    matching,
+    fees_pct,
+    commission_pct,
+    stamp_tax_pct,
+    slippage_bps,
+    max_positions,
+    max_exposure_pct,
+    initial_capital,
+    position_sizing,
+    mode,
+    holding_days,
 ) -> dict:
     return {
         "matching": matching,
@@ -890,7 +1021,9 @@ async def walkforward_preview(
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="结束日期不能早于起始日期")
     try:
-        folds = generate_folds(start_date, end_date, int(train_days), int(test_days), int(step_days))
+        folds = generate_folds(
+            start_date, end_date, int(train_days), int(test_days), int(step_days)
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     warnings: list[str] = []
@@ -961,6 +1094,7 @@ async def optimize_robust_stream(
     # 主目标白名单 (护栏): 稳健排名不容退化目标
     try:
         from app.backtest.guards import validate_primary_objective
+
         validate_primary_objective(objective)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -972,19 +1106,44 @@ async def optimize_robust_stream(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     guard_violated = False
-    if settings.backtest_range_guard and (end_date - start_date).days + 1 > BACKTEST_MAX_SERVER_DAYS:
+    if (
+        settings.backtest_range_guard
+        and (end_date - start_date).days + 1 > BACKTEST_MAX_SERVER_DAYS
+    ):
         guard_violated = True
 
     direction = direction or None
     bt_kwargs = _opt_backtest_kwargs(
-        matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-        max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+        matching,
+        fees_pct,
+        commission_pct,
+        stamp_tax_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        mode,
+        holding_days,
     )
     bt_sig = "|".join(f"{k}={bt_kwargs[k]}" for k in _OPT_BT_FIELDS)
-    job_key = "robust:" + _make_opt_job_key(
-        strategy_id, symbols, start, end, param_grid, objective, direction,
-        bt_sig, params, overrides, matrix_cache_max_mb,
-    ) + f"|k={int(k_segments)}|mt={int(min_trades_total)}|s2={int(stage2_top_n)}"
+    job_key = (
+        "robust:"
+        + _make_opt_job_key(
+            strategy_id,
+            symbols,
+            start,
+            end,
+            param_grid,
+            objective,
+            direction,
+            bt_sig,
+            params,
+            overrides,
+            matrix_cache_max_mb,
+        )
+        + f"|k={int(k_segments)}|mt={int(min_trades_total)}|s2={int(stage2_top_n)}"
+    )
 
     _cleanup_stale_jobs()
     with _jobs_lock:
@@ -1021,11 +1180,15 @@ async def optimize_robust_stream(
                 try:
                     ov = json.loads(overrides) if overrides else None
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("optimize-robust: overrides JSON 解析失败, 降级为 None: %r", overrides)
+                    logger.warning(
+                        "optimize-robust: overrides JSON 解析失败, 降级为 None: %r", overrides
+                    )
                     ov = None
                 rcfg = RobustOptimizeConfig(
                     strategy_id=strategy_id,
-                    symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+                    symbols=[s.strip() for s in symbols.split(",") if s.strip()]
+                    if symbols
+                    else None,
                     start=start_date,
                     end=end_date,
                     param_grid=grid,
@@ -1076,7 +1239,7 @@ async def optimize_robust_stream(
                     elif job.cancel_event.is_set():
                         yield f"event: error\ndata: {json.dumps({'message': '优化已取消'}, ensure_ascii=False)}\n\n"
                     elif job.result is not None:
-                        yield f"event: done\ndata: {json.dumps(_json_safe(job.result), ensure_ascii=False, default=str)}\n\n"
+                        yield f"event: done\ndata: {json.dumps(_json_safe(_stamp_daily_data(job.result, job.daily_data_revisions)), ensure_ascii=False, default=str)}\n\n"
                     return
                 tick += 1
                 if tick % 4 == 0 and await request.is_disconnected():
@@ -1125,8 +1288,8 @@ async def walkforward_stream(
     step_days: int = 63,
     max_workers: int = 4,
     matrix_cache_max_mb: int = 512,
-    params: str | None = None,       # JSON: 未扫描参数固定为用户当前值 (base_params)
-    overrides: str | None = None,    # JSON: 策略当前的 basic_filter/signals/风控等覆盖
+    params: str | None = None,  # JSON: 未扫描参数固定为用户当前值 (base_params)
+    overrides: str | None = None,  # JSON: 策略当前的 basic_filter/signals/风控等覆盖
     symbols: str | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -1169,8 +1332,17 @@ async def walkforward_stream(
         start_date = earliest or (end_date - timedelta(days=STRATEGY_DEFAULT_DAYS))
 
     bt_kwargs = _opt_backtest_kwargs(
-        matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-        max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+        matching,
+        fees_pct,
+        commission_pct,
+        stamp_tax_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        mode,
+        holding_days,
     )
     bt_sig = "|".join(f"{k}={bt_kwargs[k]}" for k in _OPT_BT_FIELDS)
     windows = f"{train_days}/{test_days}/{step_days}"
@@ -1235,11 +1407,15 @@ async def walkforward_stream(
                 try:
                     ov = json.loads(overrides) if overrides else None
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("walkforward: overrides JSON 解析失败, 降级为 None: %r", overrides)
+                    logger.warning(
+                        "walkforward: overrides JSON 解析失败, 降级为 None: %r", overrides
+                    )
                     ov = None
                 wf_cfg = WalkForwardConfig(
                     strategy_id=strategy_id,
-                    symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+                    symbols=[s.strip() for s in symbols.split(",") if s.strip()]
+                    if symbols
+                    else None,
                     start=start_date,
                     end=end_date,
                     param_grid=grid,
@@ -1290,7 +1466,7 @@ async def walkforward_stream(
                     elif job.cancel_event.is_set():
                         yield f"event: error\ndata: {json.dumps({'message': 'walk-forward 已取消'}, ensure_ascii=False)}\n\n"
                     elif job.result is not None:
-                        yield f"event: done\ndata: {json.dumps(_json_safe(job.result), ensure_ascii=False, default=str)}\n\n"
+                        yield f"event: done\ndata: {json.dumps(_json_safe(_stamp_daily_data(job.result, job.daily_data_revisions)), ensure_ascii=False, default=str)}\n\n"
                     return
                 tick += 1
                 if tick % 4 == 0 and await request.is_disconnected():
