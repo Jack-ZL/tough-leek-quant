@@ -261,6 +261,8 @@ export interface AiStockReport {
 	levels?: Record<LevelType, PriceLevel[]>
 	/** 研判卡 (ai_verdict): ok=false 表示 AI 未按格式交卡, 程序不猜 */
 	verdict?: AiVerdict | null
+	/** 数据体检快照 (P1-11): 报告生成时的数据质量评级, 历史回看可复现徽章 */
+	quality?: DataQuality | null
 	created_at: string
 }
 
@@ -269,6 +271,24 @@ export interface AiVerdict {
 	ok: boolean
 	direction?: string
 	reason?: string
+}
+
+/** P1-11 数据体检 — 单条问题 (code 供程序判断, message 是中文说明) */
+export interface DataQualityIssue {
+	code: string
+	severity: 'high' | 'medium' | 'low' | 'info'
+	message: string
+}
+
+/** P1-11 数据体检结果 — AI 分析前的数据质量打分 (A/B/C/D, D 级含硬伤可拦截) */
+export interface DataQuality {
+	version: number
+	symbol: string
+	score: number
+	grade: 'A' | 'B' | 'C' | 'D'
+	hard: boolean
+	issues: DataQualityIssue[]
+	checked_at: string
 }
 
 /** AI 研判记分卡 (P0-7 → P1-10 完整版) — 多周期 (T+1/3/5/10) 方向事后统计, 不是回测 */
@@ -335,6 +355,8 @@ export interface DebateStreamEvent {
 	close?: number | null
 	/** meta 事件: 各角色实际使用的模型 (展示用) */
 	roles?: Partial<Record<DebateRole, { model: string; custom_profile: boolean }>>
+	/** meta 事件: 数据体检结果 (P1-11) */
+	quality?: DataQuality | null
 	/** role_delta: 增量文本; role_done: 该角色最终全文 (重写过的为重写版) */
 	content?: string
 	/** role_done: 该角色是否被打回重写过 */
@@ -4776,6 +4798,7 @@ export const api = {
 		summary?: string; close?: number | null
 		levels?: Record<LevelType, PriceLevel[]>
 		verdict?: AiVerdict | null
+		quality?: DataQuality | null  // P1-11 数据体检快照随报告落库
 	}) =>
 		request<{ ok: boolean; report: AiStockReport }>('/api/stock-analysis/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -4867,6 +4890,8 @@ export const api = {
 		summary?: string
 		levels?: Record<LevelType, PriceLevel[]>
 		close?: number | null
+		/** meta 事件: 数据体检结果 (P1-11), 前端徽章 + 随报告落库 */
+		quality?: DataQuality | null
 		content?: string
 		message?: string
 		/** verdict 事件: 研判卡 (done 前下发; ok=false 表示 AI 未按格式交卡) */

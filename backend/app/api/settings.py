@@ -927,6 +927,8 @@ def get_preferences() -> dict:
         "screener_auto_run": preferences.get_screener_auto_run(),
         "assistant_auto_approve_actions": preferences.get_assistant_auto_approve_actions(),
         "assistant_mask_enabled": preferences.get_assistant_mask_enabled(),
+        # P1-11 数据体检门控 (默认关 = 只警示不拦截)
+        "ai_quality_block_enabled": preferences.get_ai_quality_block_enabled(),
         "limit_ladder_monitor_enabled": preferences.get_limit_ladder_monitor_enabled(),
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
@@ -1548,6 +1550,25 @@ def update_assistant_mask(req: AssistantMaskIn) -> dict:
 
     saved = preferences.set_assistant_mask_enabled(req.enabled)
     return {"assistant_mask_enabled": saved}
+
+
+class AiQualityBlockIn(BaseModel):
+    """P1-11 AI 数据体检门控开关。"""
+
+    enabled: bool
+
+
+@router.put("/preferences/ai-quality-block")
+def update_ai_quality_block(req: AiQualityBlockIn) -> dict:
+    """保存 AI 数据体检门控开关 (P1-11, 默认关闭)。
+
+    关闭 = 只警示: 体检结果注入 AI prompt 并在前端显示徽章, 不阻断分析;
+    开启 = D 级硬伤 (日K停更>5交易日 / 行数<30) 时拒绝个股分析与多空辩论。
+    """
+    from app.services import preferences
+
+    saved = preferences.set_ai_quality_block_enabled(req.enabled)
+    return {"ai_quality_block_enabled": saved}
 
 
 class WatchlistGroupsInNavPrefs(BaseModel):

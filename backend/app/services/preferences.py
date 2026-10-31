@@ -1321,6 +1321,20 @@ def set_assistant_mask_enabled(enabled: bool) -> bool:
     return get_assistant_mask_enabled()
 
 
+# ===== AI 数据体检门控 (P1-11) =====
+# 默认关闭 = 只警示不拦截: 体检结果注入 prompt 让 AI 降低置信度表述,
+# 但不阻断分析流程。开启后 D 级硬伤 (日K停更>5交易日 / 行数<30) 会拒绝分析。
+def get_ai_quality_block_enabled() -> bool:
+    """AI 分析数据体检门控: D 级硬伤是否拦截 (默认关, 只警示)。"""
+    return bool(load().get("ai_quality_block_enabled", False))
+
+
+def set_ai_quality_block_enabled(enabled: bool) -> bool:
+    """保存 AI 数据体检门控开关。"""
+    save({"ai_quality_block_enabled": bool(enabled)})
+    return bool(enabled)
+
+
 def get_strategy_monitor_ids() -> list[str]:
     """返回监控池中的策略 ID。"""
     return load().get("strategy_monitor_ids", [])

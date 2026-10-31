@@ -194,6 +194,9 @@ class SaveReportRequest(BaseModel):
     # 研判卡 (ai_verdict): {"ok": true, "direction": "看多", "reason": "…"}
     # 或 {"ok": false}; 随报告落库, 供历史回看与后续命中率统计 (P0-7) 使用
     verdict: dict | None = None
+    # 数据体检结果 (P1-11): {"score", "grade", "hard", "issues", ...}
+    # 随报告落库, 历史回看时徽章与问题清单可复现
+    quality: dict | None = None
 
 
 @router.get("/reports")
@@ -214,6 +217,7 @@ def save_report(request: Request, req: SaveReportRequest):
         "close": req.close,
         "levels": req.levels,
         "verdict": req.verdict,
+        "quality": req.quality,  # P1-11 数据体检快照
     })
     # P0-7 惰性结算: 新研判落库时顺手把老的到期条目结算进台账 (本地日 K 查询,
     # 毫秒级)。fail-open — 记分卡坏了绝不能让保存报告失败

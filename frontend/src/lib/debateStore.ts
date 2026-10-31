@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import {
   api, friendlyStreamError,
-  type AiVerdict, type DebateReport, type DebateRole, type LevelType, type PriceLevel,
+  type AiVerdict, type DataQuality, type DebateReport, type DebateRole, type LevelType, type PriceLevel,
 } from './api'
 
 /**
@@ -37,6 +37,8 @@ export interface DebateState {
     summary?: string
     levels?: Record<LevelType, PriceLevel[]>
     close?: number | null
+    /** 数据体检 (P1-11): meta 事件下发, 徽章展示 (辩论报告暂不落库该字段) */
+    quality?: DataQuality | null
   } | null
   /** 生效裁决: 终审 ruling 优先, 无重写时取初审 ruling */
   ruling: { ok: boolean; decision?: 'pass' | 'rewrite'; verdict?: AiVerdict | null; final?: boolean } | null
@@ -120,7 +122,8 @@ async function runDebate(symbol: string, name: string) {
       switch (ev.type) {
         case 'meta':
           roles = ev.roles ?? {}
-          meta = { summary: ev.summary, levels: ev.levels, close: ev.close ?? null }
+          // P1-11: quality 随 meta 下发 (体检失败时为 null, 徽章不显示)
+          meta = { summary: ev.summary, levels: ev.levels, close: ev.close ?? null, quality: ev.quality ?? null }
           patch({ roles, meta, name: ev.name || name })
           break
         case 'role_delta': {

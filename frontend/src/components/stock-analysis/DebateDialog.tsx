@@ -6,6 +6,8 @@ import { cn } from '@/lib/cn'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import { verdictTone } from '@/lib/stockAnalysisStore'
+// P1-11 数据体检徽章 (与个股分析对话框共用)
+import { QualityBadge } from './QualityBadge'
 import type { AiVerdict, DebateRole } from '@/lib/api'
 import {
   useDebateState, closeDebate, startDebate, toggleHistory, viewReport, backToLive,
@@ -264,6 +266,8 @@ export function DebateDialog() {
             </div>
           ) : (
             <div className="flex flex-col gap-3">
+              {/* P1-11 数据体检徽章: 备料时对同一份材料打分, 多方/空方/主管看到的一致 */}
+              {s.meta?.quality && <QualityBadge quality={s.meta.quality} />}
               {/* 双栏对抗: 多方(红) | 空方(绿) */}
               <div className="flex gap-3 items-stretch min-h-[200px]">
                 <RoleColumn role="bull" text={s.texts.bull} streaming={s.streaming.bull}
