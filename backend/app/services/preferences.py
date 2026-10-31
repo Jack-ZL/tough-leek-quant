@@ -1570,3 +1570,36 @@ def set_ui_prefs(updates: dict) -> dict:
         raise ValueError("ui_prefs 数据过大 (>16KB)")
     save({"ui_prefs": current})
     return current
+
+
+# ================================================================
+# 多空辩论 (P1-9): 角色 → 模型档案分配
+# ================================================================
+
+# 辩论角色键 (与 stock_debate.ROLES 一致; 此处独立定义避免循环依赖)
+DEBATE_ROLES = ("bull", "bear", "judge")
+
+
+def get_debate_role_profiles() -> dict:
+    """角色 → AI 模型档案 id 映射。空串/缺键 = 该角色用当前激活档案。"""
+    v = load().get("debate_role_profiles")
+    if not isinstance(v, dict):
+        return {}
+    return {str(k): str(v[k]) for k in DEBATE_ROLES if isinstance(v.get(k), str)}
+
+
+def set_debate_role_profiles(assignments: dict) -> dict:
+    """保存角色档案分配。只认 bull/bear/judge 三键, 值非字符串/空串一律置空。
+
+    档案 id 是否真实存在不在此校验 — stock_debate.resolve_role_profiles 对留空/失效
+    角色按轮转位自动分配档案; 这里只做结构清洗, 不让它成为写任意结构的入口
+    (同 ui_prefs 的白名单纪律)。
+    """
+    if not isinstance(assignments, dict):
+        raise ValueError("debate_role_profiles 需为对象")
+    cleaned = {}
+    for role in DEBATE_ROLES:
+        pid = assignments.get(role)
+        cleaned[role] = str(pid).strip() if isinstance(pid, str) and pid.strip() else ""
+    save({"debate_role_profiles": cleaned})
+    return cleaned

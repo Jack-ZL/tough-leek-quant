@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   X, Sparkles, Loader2, AlertTriangle, Copy, Check, RefreshCw,
-  Settings2, Send, Wand2, Minimize2, History, LineChart,
+  Settings2, Send, Wand2, Minimize2, History, LineChart, Swords,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { copyText } from '@/lib/clipboard'
+import { api, type AiScorecard } from '@/lib/api'
 import { toast } from '@/components/Toast'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import {
@@ -12,6 +13,7 @@ import {
   minimizeDialog, closeDialog, startAnalysis, verdictTone,
 } from '@/lib/stockAnalysisStore'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { openDebate } from '@/lib/debateStore'
 
 /**
  * AI 个股分析对话框 —— 蓝色主题,与财务分析对话框区分。
@@ -44,6 +46,8 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [focus, setFocus] = useState('')
   const [copied, setCopied] = useState(false)
+  // P0-7 记分卡: 对话框打开时拉一次 (后端顺手惰性结算); 失败静默 — 战绩是锦上添花不阻塞分析
+  const [scorecard, setScorecard] = useState<AiScorecard | null>(null)
 
   const phase = getPhase(task)
   const content = getContent(task)
@@ -63,6 +67,16 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
   useEffect(() => {
     setFocus(task && 'focus' in task ? task.focus : '')
   }, [task])
+
+  // 打开对话框时拉取记分卡 (每次打开都拉 — 后端惰性结算, 战绩随时间推进)
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    api.stockAnalysisScorecard()
+      .then((r) => { if (!cancelled && r.ok) setScorecard(r.scorecard) })
+      .catch(() => { /* 静默失败: 记分卡是辅助信息, 不影响分析主流程 */ })
+    return () => { cancelled = true }
+  }, [open])
 
   const handleStartNew = useCallback(async () => {
     if (!task) return
@@ -136,6 +150,12 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              {task && (
+                <button onClick={() => openDebate(task.symbol, task.name)} title="多空辩论 — 历史与发起入口"
+                  className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-orange-300 transition-colors">
+                  <Swords className="h-4 w-4" />
+                </button>
+              )}
               {content && !isWorking && (
                 <button onClick={handleCopy} title="复制全文"
                   className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-foreground transition-colors">
@@ -226,6 +246,25 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   <span>该报告生成时未记录研判卡, 点「重新生成」即可获取</span>
                 </div>
               ) : null}
+              {/* P0-7 记分卡徽章: 历史研判 T+5 命中率; 样本不足时明说, 不给误导百分比 */}
+              {scorecard && scorecard.settled > 0 && (
+                <div
+                  className="mb-3 flex items-center gap-2 rounded-lg border border-border/40 bg-elevated/20 px-3 py-1.5 text-xs text-muted"
+                  title={`方向事后统计(研判日起第 ${scorecard.horizon_days} 个交易日收盘对照), 不是回测; 中性研判按涨跌幅 ±${scorecard.neutral_band_pct}% 内算对`}
+                >
+                  <span className="shrink-0">📊 AI 历史战绩</span>
+                  {scorecard.insufficient || scorecard.hit_rate_pct == null ? (
+                    <span>样本不足 (仅 {scorecard.settled} 次结算, 满 {scorecard.min_sample} 次后统计命中率)</span>
+                  ) : (
+                    <span>
+                      T+{scorecard.horizon_days} 命中率{' '}
+                      <span className="font-semibold text-secondary">{scorecard.hit_rate_pct}%</span>
+                      {' '}({scorecard.settled} 次结算判对 {scorecard.hits} 次)
+                      <span className="ml-1 opacity-70">· 方向事后统计, 非回测</span>
+                    </span>
+                  )}
+                </div>
+              )}
               <MarkdownRenderer content={content} />
               {phase === 'streaming' && (
                 <span className="inline-block w-1.5 h-3.5 bg-sky-400 ml-0.5 align-middle animate-pulse rounded-sm" />

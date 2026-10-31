@@ -196,8 +196,13 @@ def _build_emotion_block(overview: dict) -> str:
 
 
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
-                       bench_context: str = "") -> str:
-    """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。"""
+                       bench_context: str = "", scorecard_context: str = "") -> str:
+    """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。
+
+    scorecard_context (P0-7): AI 历史战绩块, 由 ai_scorecard.prompt_line() 生成,
+    空串表示无已结算样本不注入。放用户提示词而非系统提示词 —— 系统提示词支持
+    用户自定义快照, 注入会被覆盖; 数字闸门白名单从 prompt 成品采集, 数字天然放行。
+    """
     as_of = overview.get("as_of") or "今日"
 
     parts: list[str] = [
@@ -257,6 +262,10 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
     focus_instruction = build_focus_instruction(focus, report_name="大盘复盘报告")
     if focus_instruction:
         parts.extend(["", focus_instruction])
+
+    # P0-7 历史战绩块 (自带 "## 你的历史战绩" 标题与前导空行, 空串则整段不出现)
+    if scorecard_context:
+        parts.append(scorecard_context)
 
     return "\n".join(parts)
 
@@ -342,7 +351,16 @@ async def recap_market_stream(
         from app.services import auction_benchmark as auction_benchmark_svc
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
-        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+
+        # P0-7 AI 历史战绩: 纯读台账不触发结算 (结算在 scorecard API / save_report 惰性做),
+        # 失败给空串 — 战绩注入不了不影响复盘主流程
+        from app.services import ai_scorecard
+        try:
+            scorecard_ctx = ai_scorecard.prompt_line()
+        except Exception:  # noqa: BLE001
+            scorecard_ctx = ""
+        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx,
+                                         scorecard_context=scorecard_ctx)
 
         # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化数据
         # (overview/news, 形态族双口径) + prompt 成品文本 (含龙虎榜/风向标上下文)。

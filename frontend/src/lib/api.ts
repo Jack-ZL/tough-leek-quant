@@ -271,6 +271,88 @@ export interface AiVerdict {
 	reason?: string
 }
 
+/** AI 研判记分卡 (P0-7) — 历史研判 T+5 结算后的命中率统计 */
+export interface AiScorecard {
+	/** 已结算条数 (expired 不计) */
+	settled: number
+	hits: number
+	/** 命中率 %; 样本不足 (settled < min_sample) 时为 null — 前端显示"样本不足" */
+	hit_rate_pct: number | null
+	insufficient: boolean
+	min_sample: number
+	horizon_days: number
+	neutral_band_pct: number
+	by_direction: Record<string, { settled: number; hits: number }>
+	/** 有方向但未结算的报告数 (等待 T+5 到期) */
+	pending: number
+	recent: {
+		report_id?: string
+		symbol?: string
+		name?: string
+		direction?: string
+		analysis_date?: string
+		pct?: number
+		hit?: boolean | null
+		expired?: boolean
+	}[]
+}
+
+// ===== 多空辩论 (P1-9) =====
+
+/** 辩论角色 */
+export type DebateRole = 'bull' | 'bear' | 'judge'
+
+/** 辩论流事件 (NDJSON, 与后端 stock_debate.debate_stream 协议一一对应) */
+export interface DebateStreamEvent {
+	type: 'meta' | 'role_delta' | 'role_done' | 'rewrite' | 'ruling' | 'error' | 'done' | 'ping'
+	/** role_delta / role_done / rewrite 事件带角色 */
+	role?: DebateRole
+	symbol?: string
+	name?: string
+	summary?: string
+	levels?: Record<LevelType, PriceLevel[]>
+	close?: number | null
+	/** meta 事件: 各角色实际使用的模型 (展示用) */
+	roles?: Partial<Record<DebateRole, { model: string; custom_profile: boolean }>>
+	/** role_delta: 增量文本; role_done: 该角色最终全文 (重写过的为重写版) */
+	content?: string
+	/** role_done: 该角色是否被打回重写过 */
+	rewritten?: boolean
+	/** ruling: 解析是否成功 (false = AI 未按格式交裁决, fail-honest) */
+	ok?: boolean
+	/** ruling: pass=通过 / rewrite=打回重写 */
+	decision?: 'pass' | 'rewrite'
+	/** ruling: 终审裁决卡 (direction/reason); 解析失败为 null */
+	verdict?: AiVerdict | null
+	/** ruling: 是否终审 (终审必须给出方向) */
+	final?: boolean
+	/** rewrite 事件: 打回理由 (展示在被重写方栏顶) */
+	reason?: string
+	message?: string
+}
+
+/** 一条历史辩论记录 */
+export interface DebateReport {
+	id: string
+	symbol: string
+	name: string
+	focus: string
+	bull_text: string
+	bear_text: string
+	judge_text: string
+	verdict?: AiVerdict | null
+	rewritten?: boolean
+	/** 各角色使用的模型名 (展示用) */
+	roles?: Partial<Record<DebateRole, string>>
+	summary?: string
+	close?: number | null
+	levels?: Record<LevelType, PriceLevel[]>
+	created_at: string
+}
+
+/** 角色模型分配 (空串 = 用当前激活档案) */
+export type DebateRoleAssignments = Record<DebateRole, string>
+
 // ===== Kline =====
 export interface MinuteKlineRow {
 	datetime: string
@@ -4707,6 +4789,79 @@ export const api = {
 
 	stockAnalysisReportDelete: (reportId: string) =>
 		request<{ ok: boolean }>(`/api/stock-analysis/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+	/** AI 研判记分卡 (P0-7): 后端先惰性结算到期研判再返回统计; 失败不阻塞页面 */
+	stockAnalysisScorecard: () =>
+		request<{ ok: boolean; scorecard: AiScorecard }>('/api/stock-analysis/scorecard'),
+
+	// ===== 多空辩论 (P1-9) =====
+
+	/**
+	 * 发起一场多空辩论 — NDJSON 流式 (事件带 role 字段, 前端路由到双栏)。
+	 * 协议与 stockAnalyzeStream 同款: fetch + reader 逐行 JSON.parse。
+	 */
+	async* debateStream(symbol: string, name?: string, focus?: string): AsyncGenerator<DebateStreamEvent> {
+		const res = await fetch('/api/stock-debate/analyze', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ symbol, name: name ?? '', focus: focus ?? '' }),
+		})
+		if (!res.ok) {
+			let detail = ''
+			try {
+				const j = JSON.parse(await res.text())
+				detail = j.detail ?? j.message ?? ''
+			} catch { /* ignore */ }
+			const msg = detail || `${res.status} ${res.statusText}`
+			toast(msg, 'error')
+			throw new Error(msg)
+		}
+		if (!res.body) throw new Error('响应无 body')
+
+		const reader = res.body.getReader()
+		const decoder = new TextDecoder()
+		let buf = ''
+		for (; ;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			buf += decoder.decode(value, { stream: true })
+			const lines = buf.split('\n')
+			buf = lines.pop() ?? ''
+			for (const line of lines) {
+				const s = line.trim()
+				if (!s) continue
+				try {
+					yield JSON.parse(s) as DebateStreamEvent
+				} catch { /* ignore */ }
+			}
+		}
+	},
+
+	debateReportsList: () =>
+		request<{ reports: DebateReport[] }>('/api/stock-debate/reports'),
+
+	debateReportSave: (report: Omit<DebateReport, 'id' | 'created_at'>) =>
+		request<{ ok: boolean; report: DebateReport }>('/api/stock-debate/reports', {
+			method: 'POST',
+			body: JSON.stringify(report),
+		}),
+
+	debateReportDelete: (reportId: string) =>
+		request<{ ok: boolean }>(`/api/stock-debate/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+	debateRoleProfilesGet: () =>
+		request<{
+			ok: boolean
+			assignments: Partial<DebateRoleAssignments>
+			profiles: { id: string; name: string; model: string }[]
+			active_profile_id: string
+		}>('/api/stock-debate/role-profiles'),
+
+	debateRoleProfilesSet: (assignments: DebateRoleAssignments) =>
+		request<{ ok: boolean; assignments: DebateRoleAssignments }>('/api/stock-debate/role-profiles', {
+			method: 'PUT',
+			body: JSON.stringify(assignments),
+		}),
 
 	/**
 	 * AI 个股四维分析 — 流式调用(NDJSON,与财务分析同协议)。

@@ -1178,6 +1178,9 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 								</div>
 							</section>
 
+							{/* 多空辩论角色模型分配 (P1-9) — 自包含小组件, 独立拉取/保存 */}
+							<DebateRoleSection />
+
 							{/* 操作卡: 安全说明 + 保存/清空 + 配置文件入口。独立成卡让「保存」始终在视觉收尾处, 不必滚过长表单才找到。 */}
 							<section className="overflow-hidden rounded-card border border-border bg-surface">
 								<div className="flex flex-col gap-3 px-5 py-4">
@@ -1324,5 +1327,106 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
 		>
 			<span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-[18px]' : 'translate-x-[3px]'}`} />
 		</button>
+	)
+}
+
+// ===== 多空辩论: 角色模型分配 (P1-9) =====
+
+/**
+ * 给辩论三角色 (多方/空方/风控主管) 各指定一个模型档案。
+ * 自包含: 独立拉取 /api/stock-debate/role-profiles, 不依赖本页表单状态,
+ * 保存也走独立端点 — 与上方"保存配置"互不干扰。
+ *
+ * 留空 = 自动轮转: 按 多→空→主管 顺序依次取档案列表, 取完从头循环
+ * (2 个档案时: 多=A 空=B 主管=A), 保证多空尽量落在不同模型上。
+ */
+function DebateRoleSection() {
+	type ProfileItem = { id: string; name: string; model: string }
+	const [profiles, setProfiles] = useState<ProfileItem[]>([])
+	const [activeId, setActiveId] = useState('')
+	const [saved, setSaved] = useState<Record<string, string>>({ bull: '', bear: '', judge: '' })
+	const [draft, setDraft] = useState<Record<string, string>>({ bull: '', bear: '', judge: '' })
+	const [saving, setSaving] = useState(false)
+	const [justSaved, setJustSaved] = useState(false)
+
+	useEffect(() => {
+		let cancelled = false
+		api.debateRoleProfilesGet().then(res => {
+			if (cancelled) return
+			setProfiles(res.profiles ?? [])
+			setActiveId(res.active_profile_id ?? '')
+			const a = {
+				bull: res.assignments?.bull ?? '',
+				bear: res.assignments?.bear ?? '',
+				judge: res.assignments?.judge ?? '',
+			}
+			setSaved(a)
+			setDraft(a)
+		}).catch(() => { /* 静默: 拉不到就保持默认 (全跟随激活档案) */ })
+		return () => { cancelled = true }
+	}, [])
+
+	const dirty = draft.bull !== saved.bull || draft.bear !== saved.bear || draft.judge !== saved.judge
+
+	const saveRoles = async () => {
+		setSaving(true)
+		try {
+			const res = await api.debateRoleProfilesSet(draft as { bull: string; bear: string; judge: string })
+			setSaved(res.assignments ?? draft)
+			setJustSaved(true)
+			setTimeout(() => setJustSaved(false), 2000)
+		} catch { /* request 内部已 toast */ } finally {
+			setSaving(false)
+		}
+	}
+
+	const roleFields: { key: 'bull' | 'bear' | 'judge'; label: string; hint: string }[] = [
+		{ key: 'bull', label: '多方辩手', hint: '论证看多; 建议与空方用不同厂商' },
+		{ key: 'bear', label: '空方辩手', hint: '论证看空; 建议与多方用不同厂商' },
+		{ key: 'judge', label: '风控主管', hint: '审阅双方并拍板; 可与任一方同厂商' },
+	]
+
+	return (
+		<section className="overflow-hidden rounded-card border border-border bg-surface">
+			<div className="px-5 py-3.5 border-b border-border/50">
+				<div className="flex items-center gap-2">
+					<span className="text-xs font-medium text-secondary">多空辩论 · 角色模型分配</span>
+					<span className="text-[10px] text-muted">个股分析对话框 ⚔️ 按钮发起</span>
+				</div>
+				<p className="text-[10px] text-muted/70 mt-1">
+					留空 = 自动轮转: 按 多→空→主管 顺序依次取模型档案, 取完从头循环 (2 个档案时主管与多方同模型)。手动指定可覆盖轮转位。
+				</p>
+			</div>
+			<div className="grid grid-cols-1 gap-4 px-5 py-4 md:grid-cols-3">
+				{roleFields.map(f => (
+					<Field key={f.key} label={f.label} hint={f.hint}>
+						<select
+							value={draft[f.key]}
+							onChange={e => setDraft(d => ({ ...d, [f.key]: e.target.value }))}
+							className={INPUT_CLS}
+						>
+							<option value="">自动 (轮转分配)</option>
+							{profiles.map(p => (
+								<option key={p.id} value={p.id}>
+									{p.name || p.model || p.id}{p.model && p.name ? ` · ${p.model}` : ''}{p.id === activeId ? ' (当前激活)' : ''}
+								</option>
+							))}
+						</select>
+					</Field>
+				))}
+			</div>
+			<div className="flex items-center gap-2 px-5 pb-4">
+				<button onClick={() => void saveRoles()} disabled={!dirty || saving}
+					className="h-8 px-4 rounded-lg bg-accent text-white text-xs font-medium flex items-center gap-1.5 hover:bg-accent/90 disabled:opacity-40 transition-all">
+					{saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+					保存分配
+				</button>
+				{justSaved && (
+					<span className="inline-flex items-center gap-1 text-[10px] text-bear">
+						<CheckCircle2 className="h-3 w-3" />已保存
+					</span>
+				)}
+			</div>
+		</section>
 	)
 }

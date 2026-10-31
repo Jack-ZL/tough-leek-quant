@@ -849,6 +849,44 @@ function MarketSummaryBar({ data }: { data: OverviewMarket }) {
 }
 
 // ================================================================
+// AI 历史战绩徽章 (P0-7)
+// ================================================================
+
+/**
+ * 复盘报告头部的记分卡徽章: AI 过往个股研判的 T+5 命中率。
+ *
+ * 自包含查询 (5 分钟 staleTime, 失败静默不重试) —— 战绩是辅助信息,
+ * 拉不到就不显示, 绝不影响复盘主流程。样本不足 (settled < min_sample)
+ * 时只显示"样本不足", 不给小样本命中率误导用户。
+ */
+function ScorecardBadge() {
+	const { data } = useQuery({
+		queryKey: ['aiScorecard'],
+		queryFn: () => api.stockAnalysisScorecard(),
+		staleTime: 300_000,
+		retry: false,
+	})
+	const sc = data?.ok ? data.scorecard : null
+	if (!sc || sc.settled <= 0) return null
+	const tip = `方向事后统计(AI 个股研判 vs T+${sc.horizon_days} 收盘价对照), 不是回测; 中性研判按涨跌幅 ±${sc.neutral_band_pct}% 内算对`
+	return (
+		<span
+			className="ml-1 inline-flex items-center gap-1 rounded-full border border-border/60 bg-elevated/40 px-2 py-0.5 text-[10px] text-muted"
+			title={tip}
+		>
+			📊
+			{sc.insufficient || sc.hit_rate_pct == null ? (
+				<span>战绩样本不足(仅 {sc.settled} 次)</span>
+			) : (
+				<span>
+					T+{sc.horizon_days} 命中率 <span className="font-semibold text-secondary">{sc.hit_rate_pct}%</span>（{sc.settled} 次已结算）
+				</span>
+			)}
+		</span>
+	)
+}
+
+// ================================================================
 // 报告面板(流式 + 错误 + 历史/完成态)
 // ================================================================
 function ReportPanel({
@@ -943,6 +981,8 @@ function ReportPanel({
 					<span className="text-xs font-medium text-foreground">
 						{showViewingTag ? `历史复盘 · ${viewing!.as_of}` : isGenerating ? 'AI 正在复盘…' : '复盘报告'}
 					</span>
+					{/* P0-7: AI 历史战绩徽章 — 提醒用户这份复盘的作者过去准不准 */}
+					<ScorecardBadge />
 				</div>
 				{showActions && (
 					<div className="flex items-center gap-1">
