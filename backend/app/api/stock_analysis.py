@@ -8,6 +8,7 @@
   GET  /reports                历史报告列表
   POST /reports                保存一条报告
   DELETE /reports/{report_id}  删除一条报告
+  GET  /scorecard              AI 研判记分卡(P0-7: T+5 历史命中率)
 """
 from __future__ import annotations
 
@@ -214,7 +215,30 @@ def save_report(request: Request, req: SaveReportRequest):
         "levels": req.levels,
         "verdict": req.verdict,
     })
+    # P0-7 惰性结算: 新研判落库时顺手把老的到期条目结算进台账 (本地日 K 查询,
+    # 毫秒级)。fail-open — 记分卡坏了绝不能让保存报告失败
+    if isinstance(req.verdict, dict) and req.verdict.get("ok"):
+        try:
+            from app.services import ai_scorecard
+            ai_scorecard.settle_due(request.app.state.repo)
+        except Exception:  # noqa: BLE001
+            logger.warning("[scorecard] save_report 惰性结算失败", exc_info=True)
     return {"ok": True, "report": report}
+
+
+@router.get("/scorecard")
+def get_scorecard(request: Request):
+    """AI 研判记分卡 (P0-7): 先惰性结算到期研判, 再返回汇总战绩。
+
+    结算 fail-open: K 线不可用时返回旧台账统计 (pending 偏多但不出错);
+    样本不足 (<10 次已结算) 时 hit_rate_pct 为 null, 前端显示"样本不足"。
+    """
+    from app.services import ai_scorecard
+    try:
+        ai_scorecard.settle_due(request.app.state.repo)
+    except Exception:  # noqa: BLE001 — 结算失败仍返回已有台账的统计
+        logger.warning("[scorecard] 结算失败, 返回现有台账", exc_info=True)
+    return {"ok": True, "scorecard": ai_scorecard.stats()}
 
 
 @router.delete("/reports/{report_id}")

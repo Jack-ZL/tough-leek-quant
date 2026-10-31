@@ -272,11 +272,14 @@ def _build_user_prompt(
     paper_positions: list[dict] | None = None,
     raw_close: float | None = None,
     web_search: bool = False,
+    scorecard_context: str = "",
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
     asset_type 用于区分无财务数据时的文案:指数/ETF 无财务是常态,不走 Free 文案。
     web_search 与系统提示词第 5 节变体保持一致(联网时消息面提示改为结合搜索结果)。
+    scorecard_context (P0-7): AI 历史战绩块, 空串不注入; 放用户提示词的原因同
+    market_recap._build_user_prompt (自定义系统提示词快照会覆盖注入)。
     """
     news_hint = (
         "消息面维度可结合联网检索到的相关新闻/公告与价量异动交叉验证。"
@@ -332,6 +335,9 @@ def _build_user_prompt(
     paper_part = _paper_position_part(paper_positions or [], close, raw_close)
     if paper_part:
         parts.extend(["", paper_part])
+    # P0-7 历史战绩块 (自带 "## 你的历史战绩" 标题与前导空行, 空串则整段不出现)
+    if scorecard_context:
+        parts.append(scorecard_context)
     return "\n".join(parts)
 
 
@@ -426,9 +432,16 @@ async def analyze_stock_stream(
 
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         system_prompt = _build_system_prompt(search_on)
+        # P0-7 AI 历史战绩: 纯读台账不触发结算, 失败给空串 — 注入不了不影响分析主流程
+        from app.services import ai_scorecard
+        try:
+            scorecard_ctx = ai_scorecard.prompt_line()
+        except Exception:  # noqa: BLE001
+            scorecard_ctx = ""
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
-                                         raw_close=raw_close, web_search=search_on)
+                                         raw_close=raw_close, web_search=search_on,
+                                         scorecard_context=scorecard_ctx)
         # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
         user_content = user_prompt + length_hint
 
