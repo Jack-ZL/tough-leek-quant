@@ -444,6 +444,8 @@ def test_system_notifications_delivered_off_calling_thread(monkeypatch):
     from app.services import preferences, quote_service as qs_mod
 
     monkeypatch.setattr(preferences, "get_system_notify_enabled", lambda: True)
+    # 夜间免打扰 (P0-4) 走真实偏好 + 墙钟, 测试须固定为允许投递, 否则窗口内必挂
+    monkeypatch.setattr("app.services.notify_policy.allow_push", lambda now=None: True)
 
     delivered = threading.Event()
     records: list[tuple[str, str, str]] = []
