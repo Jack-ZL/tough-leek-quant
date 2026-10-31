@@ -1,13 +1,15 @@
-"""AI 研判记分卡 (P0-7) 测试 — 结算规则 / 台账 / 统计 / 提示词注入 / API。
+"""AI 研判记分卡 (P0-7 → P1-10 完整版) 测试 — 多周期结算 / 台账 / 统计 / 提示词注入 / API。
 
 覆盖 ai_scorecard 的核心契约:
-  - T+5 结算: 看多/偏多涨了对, 看空/偏空跌了对, 中性 |涨跌幅|≤2% 对
-  - 数据不足 6 行 → pending 不入账 (fail-open, 绝不用残缺数据结算)
-  - 超 90 天仍凑不齐 → expired 终态 (hit=None, 不计入统计)
-  - 无答题卡 / ok=false 的报告不入账
-  - 台账只结算一次 (幂等)
-  - 样本 <10 不给命中率 (insufficient), ≥10 才算 hit_rate_pct
-  - prompt_line: 空台账不注入; 样本不足/充足两种文案
+  - T+1/3/5/10 每周期独立结算: 看多/偏多涨了对, 看空/偏空跌了对,
+    中性 |涨跌幅| ≤ 该周期容差带对 (±1/1.5/2/3%)
+  - 数据够一个周期结一个: 不足 2 行 → pending 不入账; 部分结算后数据增长可补齐
+  - 超 90 天仍凑不齐 → expired 终态, 已结算周期保留并计入统计
+  - alpha: 有沪深300 序列算 bench_pct/alpha_pct; 缺基准只降级指标不阻塞结算
+  - 旧台账 (P0-7 单周期格式) 读取时自动迁移进 horizons["5"]
+  - 无答题卡 / ok=false 的报告不入账; 终态条目不再复查 K 线 (幂等)
+  - 每周期独立 MIN_SAMPLE=20 护栏; 顶层兼容字段 = T+5 口径
+  - prompt_line: 空台账不注入; 分周期命中率/样本不足两种文案
   - 台账损坏 fail-open; 单条 K 线查询异常不影响其他条目
   - API: GET /scorecard 先结算再统计, 结算抛错仍返回旧台账
 """
@@ -74,21 +76,23 @@ def env(tmp_path, monkeypatch):
 # ================================================================
 
 def test_bull_hit_and_miss(env):
-    """看多: T5 > T0 记对; T5 < T0 记错。T0=第一行收盘, T5=第 6 行收盘。"""
+    """看多: T+h > T0 记对; T+h < T0 记错。6 行数据结清 T+1/3/5, T+10 待补。"""
     start = date.today() - timedelta(days=20)
     repo = env(
         [_report("sar_up", "600001.SH", "看多"), _report("sar_dn", "600002.SH", "看多")],
-        _Repo({"600001.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0],   # +10% → 对
-               "600002.SH": [10.0, 9.8, 9.6, 9.4, 9.2, 9.0]}, start),  # -10% → 错
+        _Repo({"600001.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0],   # T+5 +10% → 对
+               "600002.SH": [10.0, 9.8, 9.6, 9.4, 9.2, 9.0]}, start),  # T+5 -10% → 错
     )
     assert ai_scorecard.settle_due(repo) == 2
     ledger = ai_scorecard._load_ledger()
-    assert ledger["sar_up"]["hit"] is True
-    assert ledger["sar_up"]["pct"] == 10.0
+    h5 = ledger["sar_up"]["horizons"]["5"]
+    assert h5["hit"] is True
+    assert h5["pct"] == 10.0
+    assert h5["t_close"] == 11.0
     assert ledger["sar_up"]["t0_close"] == 10.0
-    assert ledger["sar_up"]["t5_close"] == 11.0
-    assert ledger["sar_up"]["horizon"] == 5
-    assert ledger["sar_dn"]["hit"] is False
+    # 6 行只够 T+1/3/5, T+10 尚未结算 (非终态, 后续可补)
+    assert set(ledger["sar_up"]["horizons"]) == {"1", "3", "5"}
+    assert ledger["sar_dn"]["horizons"]["5"]["hit"] is False
 
 
 def test_bear_and_lean_directions(env):
@@ -101,30 +105,44 @@ def test_bear_and_lean_directions(env):
     )
     ai_scorecard.settle_due(repo)
     ledger = ai_scorecard._load_ledger()
-    assert ledger["sar_bear"]["hit"] is True
-    assert ledger["sar_lean"]["hit"] is True
+    assert ledger["sar_bear"]["horizons"]["5"]["hit"] is True
+    assert ledger["sar_lean"]["horizons"]["5"]["hit"] is True
 
 
 def test_neutral_band(env):
-    """中性: |涨跌幅| ≤ 2% 记对, 超出容差带记错 (无论涨跌方向)。"""
+    """中性: T+5 |涨跌幅| ≤ 2% 记对, 超出容差带记错 (无论涨跌方向)。"""
     start = date.today() - timedelta(days=20)
     repo = env(
         [_report("sar_n_ok", "600005.SH", "中性"), _report("sar_n_bad", "600006.SH", "中性")],
-        _Repo({"600005.SH": [10.0, 10.0, 10.05, 10.1, 10.1, 10.15],  # +1.5% → 对
-               "600006.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]}, start),  # +10% → 错
+        _Repo({"600005.SH": [10.0, 10.0, 10.05, 10.1, 10.1, 10.15],  # T+5 +1.5% → 对
+               "600006.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]}, start),  # T+5 +10% → 错
     )
     ai_scorecard.settle_due(repo)
     ledger = ai_scorecard._load_ledger()
-    assert ledger["sar_n_ok"]["hit"] is True
-    assert ledger["sar_n_bad"]["hit"] is False
+    assert ledger["sar_n_ok"]["horizons"]["5"]["hit"] is True
+    assert ledger["sar_n_bad"]["horizons"]["5"]["hit"] is False
+
+
+def test_neutral_bands_scale_per_horizon(env):
+    """中性容差带按周期缩放: 同一条 +1.5% 在 T+1 (±1%) 判错, T+3/5 (±1.5/2%) 判对。"""
+    start = date.today() - timedelta(days=20)
+    repo = env(
+        [_report("sar_band", "600016.SH", "中性")],
+        _Repo({"600016.SH": [10.0, 10.15, 10.15, 10.15, 10.15, 10.15]}, start),
+    )
+    ai_scorecard.settle_due(repo)
+    hz = ai_scorecard._load_ledger()["sar_band"]["horizons"]
+    assert hz["1"]["hit"] is False   # +1.5% 超出 T+1 的 ±1%
+    assert hz["3"]["hit"] is True    # 恰好在 T+3 的 ±1.5% 边界内
+    assert hz["5"]["hit"] is True
 
 
 def test_insufficient_rows_stays_pending(env):
-    """不足 6 行 (新研判/停牌/数据滞后) → 不入账, 下次触发可重试。"""
+    """不足 2 行 (连 T+1 都结不了: 新研判/停牌/数据滞后) → 不入账, 下次触发可重试。"""
     start = date.today() - timedelta(days=20)
     repo = env(
         [_report("sar_new", "600007.SH", "看多", days_ago=2)],
-        _Repo({"600007.SH": [10.0, 10.1, 10.2]}, start),  # 只有 3 行
+        _Repo({"600007.SH": [10.0]}, start),  # 只有 1 行
     )
     assert ai_scorecard.settle_due(repo) == 0
     assert ai_scorecard._load_ledger() == {}
@@ -133,20 +151,50 @@ def test_insufficient_rows_stays_pending(env):
     assert s["settled"] == 0
 
 
+def test_partial_settlement_backfills_longer_horizons(env):
+    """数据够一个周期结一个: 3 行先结 T+1, 补到 6 行结 T+3/5, 11 行结清 T+10 达终态。"""
+    start = date.today() - timedelta(days=20)
+    reports = [_report("sar_part", "600017.SH", "看多")]
+    series = {"600017.SH": [10.0, 10.1, 10.2]}
+    repo = env(reports, _Repo(series, start))
+    assert ai_scorecard.settle_due(repo) == 1
+    assert set(ai_scorecard._load_ledger()["sar_part"]["horizons"]) == {"1"}
+    # 部分结算 ≠ 终态: 仍算 pending, 等更长周期
+    assert ai_scorecard.stats()["pending"] == 1
+
+    series["600017.SH"] = [10.0, 10.1, 10.2, 10.3, 10.4, 10.5]
+    assert ai_scorecard.settle_due(repo) == 1  # 有新进展 → 计入更新数
+    assert set(ai_scorecard._load_ledger()["sar_part"]["horizons"]) == {"1", "3", "5"}
+
+    series["600017.SH"] = [10.0 + 0.1 * i for i in range(11)]
+    assert ai_scorecard.settle_due(repo) == 1
+    entry = ai_scorecard._load_ledger()["sar_part"]
+    assert set(entry["horizons"]) == {"1", "3", "5", "10"}
+    # 已结算周期只增不改: T+1 仍是当初的 +1%
+    assert entry["horizons"]["1"]["pct"] == 1.0
+
+    # 终态: 不再复查 K 线
+    repo2 = env(reports, _Repo(series, start))
+    assert ai_scorecard.settle_due(repo2) == 0
+    assert repo2.calls == []
+
+
 def test_expired_after_90_days(env):
-    """研判日超 90 天仍凑不齐数据 → expired 终态 (hit=None, 不计入统计)。"""
+    """研判日超 90 天仍凑不齐 → expired 终态; 已结算周期保留并计入统计。"""
     start = date.today() - timedelta(days=200)
     repo = env(
         [_report("sar_old", "600008.SH", "看多", days_ago=120)],
-        _Repo({"600008.SH": [10.0, 10.1]}, start),  # 长期停牌只有 2 行
+        _Repo({"600008.SH": [10.0, 10.1]}, start),  # 长期停牌只有 2 行 → 只够 T+1
     )
     assert ai_scorecard.settle_due(repo) == 1
     entry = ai_scorecard._load_ledger()["sar_old"]
     assert entry["expired"] is True
-    assert entry["hit"] is None
+    assert entry["horizons"]["1"]["hit"] is True   # 已结周期保留
+    assert "5" not in entry["horizons"]            # 凑不齐的周期不再等
     s = ai_scorecard.stats()
-    assert s["settled"] == 0  # expired 不算已结算
-    assert s["pending"] == 0  # 已入台账, 不再算 pending
+    assert s["settled"] == 0               # T+5 口径: expired 未结不算已结算
+    assert s["horizons"]["1"]["settled"] == 1  # T+1 口径: 保留的周期计入
+    assert s["pending"] == 0               # 已入台账终态, 不再算 pending
 
 
 def test_skip_invalid_verdict(env):
@@ -165,14 +213,16 @@ def test_skip_invalid_verdict(env):
 
 
 def test_settle_is_idempotent(env):
-    """已入台账的条目不重复结算 (台账只增不改)。"""
+    """四周期结清的终态条目不重复结算 (已结周期只增不改)。"""
     start = date.today() - timedelta(days=20)
     reports = [_report("sar_once", "600010.SH", "看多")]
-    repo = env(reports, _Repo({"600010.SH": [10.0, 10.1, 10.2, 10.3, 10.4, 11.0]}, start))
+    full = [10.0 + 0.1 * i for i in range(11)]  # 11 行 → 一次结清 T+1/3/5/10
+    repo = env(reports, _Repo({"600010.SH": full}, start))
     assert ai_scorecard.settle_due(repo) == 1
     first = ai_scorecard._load_ledger()["sar_once"]
-    # 第二次: 报告还在, 但台账已有 → 不再查 K 线也不再写
-    repo2 = env(reports, _Repo({"600010.SH": [10.0] * 6}, start))
+    assert set(first["horizons"]) == {"1", "3", "5", "10"}
+    # 第二次: 报告还在, 但台账已终态 → 不再查 K 线也不再写
+    repo2 = env(reports, _Repo({"600010.SH": [10.0] * 11}, start))
     assert ai_scorecard.settle_due(repo2) == 0
     assert ai_scorecard._load_ledger()["sar_once"] == first
     assert repo2.calls == []
@@ -195,7 +245,61 @@ def test_kline_error_does_not_block_others(env, monkeypatch):
     assert ai_scorecard.settle_due(repo) == 1
     ledger = ai_scorecard._load_ledger()
     assert "sar_boom" not in ledger
-    assert ledger["sar_fine"]["hit"] is True
+    assert ledger["sar_fine"]["horizons"]["5"]["hit"] is True
+
+
+# ================================================================
+# alpha (对沪深300超额) 与旧台账迁移
+# ================================================================
+
+def test_alpha_vs_benchmark(env):
+    """有沪深300 序列 → 按交易日对齐算 bench_pct/alpha_pct, 并进周期聚合。"""
+    start = date.today() - timedelta(days=20)
+    repo = env(
+        [_report("sar_a", "600018.SH", "看多")],
+        _Repo({"600018.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0],   # T+5 +10%
+               "000300.SH": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]}, start),  # T+5 +5%
+    )
+    ai_scorecard.settle_due(repo)
+    h5 = ai_scorecard._load_ledger()["sar_a"]["horizons"]["5"]
+    assert h5["pct"] == 10.0
+    assert h5["bench_pct"] == 5.0
+    assert h5["alpha_pct"] == 5.0
+    s = ai_scorecard.stats()
+    assert s["horizons"]["5"]["avg_alpha_pct"] == 5.0
+    assert s["horizons"]["5"]["alpha_samples"] == 1
+    assert s["benchmark"] == {"symbol": "000300.SH", "name": "沪深300"}
+
+
+def test_alpha_missing_benchmark_does_not_block(env):
+    """基准序列缺失 → alpha 记 None, 结算照常 (不学 astock 北交所票永久 pending)。"""
+    start = date.today() - timedelta(days=20)
+    repo = env(
+        [_report("sar_nb", "600019.SH", "看多")],
+        _Repo({"600019.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]}, start),  # 无 000300.SH
+    )
+    assert ai_scorecard.settle_due(repo) == 1
+    h5 = ai_scorecard._load_ledger()["sar_nb"]["horizons"]["5"]
+    assert h5["hit"] is True
+    assert h5["bench_pct"] is None and h5["alpha_pct"] is None
+    assert ai_scorecard.stats()["horizons"]["5"]["avg_alpha_pct"] is None
+
+
+def test_old_ledger_format_migrated(env):
+    """P0-7 旧格式台账读取时自动迁移: 已结算 → horizons["5"], expired 保留。"""
+    env([])
+    old_hit = {"report_id": "o1", "symbol": "600000.SH", "name": "x", "direction": "看多",
+               "analysis_date": "2026-01-05", "t0_close": 10.0, "t5_close": 10.5,
+               "pct": 5.0, "hit": True, "horizon": 5, "settled_at": "2026-01-12T10:00:00"}
+    old_exp = dict(old_hit, report_id="o2", hit=None, expired=True)
+    ai_scorecard._save_ledger({"o1": old_hit, "o2": old_exp})
+    ledger = ai_scorecard._load_ledger()
+    assert ledger["o1"]["horizons"]["5"]["hit"] is True
+    assert ledger["o1"]["horizons"]["5"]["pct"] == 5.0
+    assert ledger["o2"]["expired"] is True and ledger["o2"]["horizons"] == {}
+    # 旧战绩计入 T+5 口径统计
+    s = ai_scorecard.stats()
+    assert s["settled"] == 1 and s["hits"] == 1
 
 
 # ================================================================
@@ -207,40 +311,79 @@ def _seed_ledger(entries: dict) -> None:
 
 
 def _entry(rid: str, direction: str, hit: bool) -> dict:
+    """旧格式 (P0-7) 条目 — 统计路径经自动迁移后与新旧台账无差别。"""
     return {"report_id": rid, "symbol": "600000.SH", "name": "", "direction": direction,
             "analysis_date": "2026-01-05", "t0_close": 10.0, "t5_close": 10.5,
             "pct": 5.0, "hit": hit, "horizon": 5, "settled_at": "2026-01-12T10:00:00"}
 
 
+def _entry_h(rid: str, direction: str, horizons: dict) -> dict:
+    """新格式 (P1-10) 条目; horizons key 为 "1"/"3"/"5"/"10"。"""
+    return {"report_id": rid, "symbol": "600000.SH", "name": "", "direction": direction,
+            "analysis_date": "2026-01-05", "t0_close": 10.0, "horizons": horizons,
+            "settled_at": "2026-01-12T10:00:00"}
+
+
+def _hz(pct: float, hit: bool, alpha: float | None = None) -> dict:
+    return {"t_close": 10.0 * (1 + pct / 100), "pct": pct, "hit": hit,
+            "bench_pct": None if alpha is None else round(pct - alpha, 2),
+            "alpha_pct": alpha, "settled_at": "2026-01-12T10:00:00"}
+
+
 def test_stats_insufficient_sample(env):
-    """结算样本 <10 → hit_rate_pct 为 None, insufficient=True (不给误导数字)。"""
+    """T+5 结算样本 <20 → hit_rate_pct 为 None, insufficient=True (不给误导数字)。"""
     env([])
-    _seed_ledger({f"sar_{i}": _entry(f"sar_{i}", "看多", i % 2 == 0) for i in range(9)})
+    _seed_ledger({f"sar_{i}": _entry(f"sar_{i}", "看多", i % 2 == 0) for i in range(19)})
     s = ai_scorecard.stats()
-    assert s["settled"] == 9
+    assert s["settled"] == 19
     assert s["insufficient"] is True
     assert s["hit_rate_pct"] is None
-    assert s["min_sample"] == 10
+    assert s["min_sample"] == 20
 
 
 def test_stats_hit_rate_and_by_direction(env):
-    """≥10 条 → 命中率与分方向统计正确。"""
+    """≥20 条 → 命中率与分方向统计正确 (顶层兼容字段 = T+5 口径)。"""
     env([])
     entries = {}
-    # 看多 8 条: 6 对 2 错; 中性 4 条: 2 对 2 错 → 总 12 条 8 对 = 66.7%
+    # 看多 20 条: 14 对 6 错; 中性 8 条: 4 对 4 错 → 总 28 条 18 对 = 64.3%
+    for i in range(20):
+        entries[f"b{i}"] = _entry(f"b{i}", "看多", i < 14)
     for i in range(8):
-        entries[f"b{i}"] = _entry(f"b{i}", "看多", i < 6)
-    for i in range(4):
-        entries[f"n{i}"] = _entry(f"n{i}", "中性", i < 2)
+        entries[f"n{i}"] = _entry(f"n{i}", "中性", i < 4)
     _seed_ledger(entries)
     s = ai_scorecard.stats()
-    assert s["settled"] == 12
-    assert s["hits"] == 8
-    assert s["hit_rate_pct"] == 66.7
+    assert s["settled"] == 28
+    assert s["hits"] == 18
+    assert s["hit_rate_pct"] == 64.3
     assert s["insufficient"] is False
-    assert s["by_direction"]["看多"] == {"settled": 8, "hits": 6}
-    assert s["by_direction"]["中性"] == {"settled": 4, "hits": 2}
+    assert s["by_direction"]["看多"] == {"settled": 20, "hits": 14}
+    assert s["by_direction"]["中性"] == {"settled": 8, "hits": 4}
+    assert s["horizons"]["5"]["avg_pct"] == 5.0  # 迁移条目的 pct 保留
     assert len(s["recent"]) == 10  # 最近明细截断到 10 条
+    assert "不是回测" in s["disclaimer"]
+
+
+def test_stats_min_sample_per_horizon(env):
+    """MIN_SAMPLE 护栏按周期独立: T+1 满 20 出命中率, T+5 只有 5 条仍样本不足。"""
+    env([])
+    entries = {}
+    for i in range(20):
+        entries[f"h1_{i}"] = _entry_h(f"h1_{i}", "看多", {"1": _hz(1.0, True)})
+    for i in range(5):
+        entries[f"h5_{i}"] = _entry_h(f"h5_{i}", "看多", {"5": _hz(2.0, i < 3)})
+    _seed_ledger(entries)
+    s = ai_scorecard.stats()
+    assert s["horizons"]["1"]["settled"] == 20
+    assert s["horizons"]["1"]["hit_rate_pct"] == 100.0
+    assert s["horizons"]["1"]["insufficient"] is False
+    assert s["horizons"]["5"]["settled"] == 5
+    assert s["horizons"]["5"]["hit_rate_pct"] is None
+    assert s["horizons"]["5"]["insufficient"] is True
+    assert s["horizons"]["1"]["neutral_band_pct"] == 1.0
+    assert s["horizons"]["10"]["neutral_band_pct"] == 3.0
+    # 未结算过的周期结构完整但全零
+    assert s["horizons"]["3"]["settled"] == 0
+    assert s["horizons"]["3"]["avg_pct"] is None
 
 
 def test_corrupt_ledger_fail_open(env):
@@ -268,21 +411,36 @@ def test_prompt_line_insufficient_sample(env):
     _seed_ledger({f"sar_{i}": _entry(f"sar_{i}", "看多", True) for i in range(3)})
     line = ai_scorecard.prompt_line()
     assert "## 你的历史战绩" in line
-    assert "3 次" in line
-    assert "样本不足" in line
+    assert "样本不足 (3/20)" in line
     assert "100" not in line  # 3/3 也不能显示 100% 命中率
 
 
 def test_prompt_line_with_hit_rate(env):
     """样本充足文案: 含结算数/判对数/命中率, 并要求按战绩校准置信度。"""
     env([])
-    entries = {f"sar_{i}": _entry(f"sar_{i}", "看多", i < 6) for i in range(12)}
+    entries = {f"sar_{i}": _entry(f"sar_{i}", "看多", i < 10) for i in range(20)}
     _seed_ledger(entries)
     line = ai_scorecard.prompt_line()
-    assert "12 次" in line
-    assert "判对 6 次" in line
+    assert "20 次结算判对 10 次" in line
     assert "50.0%" in line
     assert "置信度校准" in line
+    assert "而非回测" in line  # 表头自带免责声明
+
+
+def test_prompt_line_multi_horizon(env):
+    """分周期各一行: 充足的给命中率+平均涨跌+超额, 不足的明说不足。"""
+    env([])
+    entries = {}
+    for i in range(20):
+        entries[f"m1_{i}"] = _entry_h(f"m1_{i}", "看多",
+                                      {"1": _hz(1.0, i % 2 == 0, alpha=0.5)})
+    for i in range(3):
+        entries[f"m5_{i}"] = _entry_h(f"m5_{i}", "看多", {"5": _hz(2.0, True)})
+    _seed_ledger(entries)
+    line = ai_scorecard.prompt_line()
+    assert "- T+1: 命中率 50.0% (20 次结算判对 10 次), 平均涨跌 1.0%, 对沪深300平均超额 0.5%" in line
+    assert "- T+5: 样本不足 (3/20)" in line
+    assert "- T+3" not in line and "- T+10" not in line  # 无样本周期不占行
 
 
 def test_prompt_injection_into_user_prompts(env):
@@ -326,6 +484,10 @@ def test_scorecard_endpoint_settles_then_stats(env):
     assert resp["ok"] is True
     assert resp["scorecard"]["settled"] == 1
     assert resp["scorecard"]["hits"] == 1
+    # P1-10: 分周期结构 + 免责声明随响应下发
+    assert resp["scorecard"]["horizons"]["1"]["settled"] == 1
+    assert resp["scorecard"]["horizons"]["10"]["settled"] == 0
+    assert "不是回测" in resp["scorecard"]["disclaimer"]
 
 
 def test_scorecard_endpoint_survives_settle_error(env, monkeypatch):
@@ -376,7 +538,7 @@ def test_save_report_triggers_lazy_settle(env, monkeypatch):
 
 
 def test_ledger_file_is_valid_json_after_settle(env):
-    """台账落盘为合法 JSON (原子写), 结构为 {report_id: entry}。"""
+    """台账落盘为合法 JSON (原子写), 结构为 {report_id: entry(多周期)}。"""
     start = date.today() - timedelta(days=20)
     repo = env(
         [_report("sar_json", "600015.SH", "偏空")],
@@ -385,4 +547,5 @@ def test_ledger_file_is_valid_json_after_settle(env):
     ai_scorecard.settle_due(repo)
     raw = json.loads(ai_scorecard._ledger_path().read_text(encoding="utf-8"))
     assert raw["sar_json"]["direction"] == "偏空"
-    assert raw["sar_json"]["hit"] is True
+    assert raw["sar_json"]["horizons"]["5"]["hit"] is True
+    assert raw["sar_json"]["horizons"]["5"]["pct"] == -6.0

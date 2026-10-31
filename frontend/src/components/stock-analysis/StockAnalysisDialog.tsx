@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   X, Sparkles, Loader2, AlertTriangle, Copy, Check, RefreshCw,
-  Settings2, Send, Wand2, Minimize2, History, LineChart, Swords,
+  Settings2, Send, Wand2, Minimize2, History, LineChart, Swords, ChevronDown,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { copyText } from '@/lib/clipboard'
@@ -48,6 +48,8 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
   const [copied, setCopied] = useState(false)
   // P0-7 记分卡: 对话框打开时拉一次 (后端顺手惰性结算); 失败静默 — 战绩是锦上添花不阻塞分析
   const [scorecard, setScorecard] = useState<AiScorecard | null>(null)
+  // P1-10: chip 点击展开多周期战绩面板
+  const [scorecardOpen, setScorecardOpen] = useState(false)
 
   const phase = getPhase(task)
   const content = getContent(task)
@@ -246,23 +248,28 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   <span>该报告生成时未记录研判卡, 点「重新生成」即可获取</span>
                 </div>
               ) : null}
-              {/* P0-7 记分卡徽章: 历史研判 T+5 命中率; 样本不足时明说, 不给误导百分比 */}
-              {scorecard && scorecard.settled > 0 && (
-                <div
-                  className="mb-3 flex items-center gap-2 rounded-lg border border-border/40 bg-elevated/20 px-3 py-1.5 text-xs text-muted"
-                  title={`方向事后统计(研判日起第 ${scorecard.horizon_days} 个交易日收盘对照), 不是回测; 中性研判按涨跌幅 ±${scorecard.neutral_band_pct}% 内算对`}
-                >
-                  <span className="shrink-0">📊 AI 历史战绩</span>
-                  {scorecard.insufficient || scorecard.hit_rate_pct == null ? (
-                    <span>样本不足 (仅 {scorecard.settled} 次结算, 满 {scorecard.min_sample} 次后统计命中率)</span>
-                  ) : (
-                    <span>
-                      T+{scorecard.horizon_days} 命中率{' '}
-                      <span className="font-semibold text-secondary">{scorecard.hit_rate_pct}%</span>
-                      {' '}({scorecard.settled} 次结算判对 {scorecard.hits} 次)
-                      <span className="ml-1 opacity-70">· 方向事后统计, 非回测</span>
-                    </span>
-                  )}
+              {/* P1-10 记分卡: chip 摘要 (T+5 口径) 点击展开多周期战绩面板; 样本不足明说, 不给误导百分比 */}
+              {scorecard && Object.values(scorecard.horizons).some(h => h.settled > 0) && (
+                <div className="mb-3">
+                  <button
+                    onClick={() => setScorecardOpen(v => !v)}
+                    className="flex w-full items-center gap-2 rounded-lg border border-border/40 bg-elevated/20 px-3 py-1.5 text-xs text-muted transition-colors hover:text-secondary"
+                    title={`方向事后统计(研判日起第 1/3/5/10 个交易日收盘对照), 不是回测; 点击${scorecardOpen ? '收起' : '展开'}多周期战绩`}
+                  >
+                    <span className="shrink-0">📊 AI 历史战绩</span>
+                    {scorecard.insufficient || scorecard.hit_rate_pct == null ? (
+                      <span className="truncate">T+{scorecard.horizon_days} 样本不足 (已结算 {scorecard.settled} 次, 满 {scorecard.min_sample} 次后统计命中率)</span>
+                    ) : (
+                      <span className="truncate">
+                        T+{scorecard.horizon_days} 命中率{' '}
+                        <span className="font-semibold text-secondary">{scorecard.hit_rate_pct}%</span>
+                        {' '}({scorecard.settled} 次结算判对 {scorecard.hits} 次)
+                        <span className="ml-1 opacity-70">· 方向事后统计, 非回测</span>
+                      </span>
+                    )}
+                    <ChevronDown className={cn('ml-auto h-3.5 w-3.5 shrink-0 transition-transform', scorecardOpen && 'rotate-180')} />
+                  </button>
+                  {scorecardOpen && <ScorecardPanel sc={scorecard} />}
                 </div>
               )}
               <MarkdownRenderer content={content} />
@@ -333,4 +340,71 @@ function fmtRelative(iso: string): string {
     if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
     return new Date(iso).toLocaleDateString('zh-CN')
   } catch { return '' }
+}
+
+/** P1-10 多周期战绩面板: T+1/3/5/10 命中率 + 平均涨跌/超额 + 最近明细; "不是回测"固定展示 */
+function ScorecardPanel({ sc }: { sc: AiScorecard }) {
+  const keys = Object.keys(sc.horizons).sort((a, b) => Number(a) - Number(b))
+  const fmtPct = (v: number | null | undefined) => v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`
+  const pctCls = (v: number | null | undefined) => v == null ? 'text-muted' : v > 0 ? 'text-bull' : v < 0 ? 'text-bear' : 'text-muted'
+  return (
+    <div className="mt-1.5 rounded-lg border border-border/40 bg-elevated/20 px-3 py-2 text-xs">
+      <table className="w-full">
+        <thead>
+          <tr className="text-[10px] text-muted">
+            <th className="py-0.5 text-left font-normal">周期</th>
+            <th className="py-0.5 text-right font-normal">命中率</th>
+            <th className="py-0.5 text-right font-normal">结算数</th>
+            <th className="py-0.5 text-right font-normal">平均涨跌</th>
+            <th className="py-0.5 text-right font-normal" title={`相对 ${sc.benchmark.name} 的平均超额`}>平均超额</th>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.map(k => {
+            const h = sc.horizons[k]
+            return (
+              <tr key={k} className="border-t border-border/30">
+                <td className="py-1 text-secondary">T+{k}</td>
+                <td className="py-1 text-right">
+                  {h.insufficient || h.hit_rate_pct == null
+                    ? <span className="text-[10px] text-muted">样本不足 {h.settled}/{sc.min_sample}</span>
+                    : <span className="font-semibold text-secondary">{h.hit_rate_pct}%</span>}
+                </td>
+                <td className="py-1 text-right text-muted">{h.settled}</td>
+                <td className={`py-1 text-right ${pctCls(h.avg_pct)}`}>{fmtPct(h.avg_pct)}</td>
+                <td className={`py-1 text-right ${pctCls(h.avg_alpha_pct)}`}
+                  title={h.alpha_samples < h.settled ? `${h.settled - h.alpha_samples} 条缺基准数据未计入` : undefined}>
+                  {fmtPct(h.avg_alpha_pct)}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      <p className="mt-1.5 border-t border-border/30 pt-1.5 text-[10px] leading-relaxed text-muted">
+        ⚠️ {sc.disclaimer}中性研判按涨跌幅在各周期容差带内算对 (T+1 ±1% … T+10 ±3%)。
+      </p>
+      {sc.recent.length > 0 && (
+        <div className="mt-1.5 border-t border-border/30 pt-1.5">
+          <div className="mb-0.5 text-[10px] text-muted">最近结算 (最多 10 条)</div>
+          {sc.recent.map((r, i) => (
+            <div key={r.report_id ?? i} className="flex items-center gap-2 py-0.5 text-[10px]">
+              <span className="shrink-0 text-muted">{r.analysis_date}</span>
+              <span className="max-w-24 truncate text-secondary">{r.name || r.symbol}</span>
+              <span className="shrink-0 text-muted">{r.direction}</span>
+              <span className="ml-auto flex shrink-0 gap-1.5">
+                {Object.entries(r.horizons ?? {}).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, hz]) => (
+                  <span key={k} className={hz.hit ? 'text-bull' : 'text-bear'}
+                    title={`T+${k} ${hz.hit ? '判对' : '判错'}${hz.alpha_pct != null ? `, 超额 ${hz.alpha_pct > 0 ? '+' : ''}${hz.alpha_pct}%` : ''}`}>
+                    {fmtPct(hz.pct)}
+                  </span>
+                ))}
+                {r.expired && <span className="text-muted">已过期</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }

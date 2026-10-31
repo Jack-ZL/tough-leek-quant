@@ -271,19 +271,41 @@ export interface AiVerdict {
 	reason?: string
 }
 
-/** AI 研判记分卡 (P0-7) — 历史研判 T+5 结算后的命中率统计 */
-export interface AiScorecard {
-	/** 已结算条数 (expired 不计) */
+/** AI 研判记分卡 (P0-7 → P1-10 完整版) — 多周期 (T+1/3/5/10) 方向事后统计, 不是回测 */
+export interface AiScorecardHorizon {
+	horizon_days: number
+	/** 该周期已结算条数 (expired 未结周期不计) */
 	settled: number
 	hits: number
-	/** 命中率 %; 样本不足 (settled < min_sample) 时为 null — 前端显示"样本不足" */
+	/** 命中率 %; 样本不足 (settled < min_sample=20) 时为 null — 前端显示"样本不足" */
+	hit_rate_pct: number | null
+	insufficient: boolean
+	/** 该周期平均涨跌幅 % (无样本时 null) */
+	avg_pct: number | null
+	/** 对沪深300 平均超额 %; 基准数据缺失的条目不计入 (alpha_samples < settled) */
+	avg_alpha_pct: number | null
+	alpha_samples: number
+	/** 中性研判"没大动"容差 ±% (按周期缩放: 1/1.5/2/3) */
+	neutral_band_pct: number
+	by_direction: Record<string, { settled: number; hits: number }>
+}
+
+export interface AiScorecard {
+	/** 分周期聚合, key 为 "1"/"3"/"5"/"10" — P1-10 主体 */
+	horizons: Record<string, AiScorecardHorizon>
+	/** 顶层兼容字段 = T+5 主周期口径 (chip 摘要用) */
+	settled: number
+	hits: number
 	hit_rate_pct: number | null
 	insufficient: boolean
 	min_sample: number
 	horizon_days: number
 	neutral_band_pct: number
 	by_direction: Record<string, { settled: number; hits: number }>
-	/** 有方向但未结算的报告数 (等待 T+5 到期) */
+	benchmark: { symbol: string; name: string }
+	/** "不是回测"免责声明 (面板固定展示) */
+	disclaimer: string
+	/** 有方向但未达终态的报告数 (含部分周期已结、等更长周期的) */
 	pending: number
 	recent: {
 		report_id?: string
@@ -291,9 +313,8 @@ export interface AiScorecard {
 		name?: string
 		direction?: string
 		analysis_date?: string
-		pct?: number
-		hit?: boolean | null
 		expired?: boolean
+		horizons?: Record<string, { pct?: number; hit?: boolean; alpha_pct?: number | null }>
 	}[]
 }
 

@@ -8,7 +8,7 @@
   GET  /reports                历史报告列表
   POST /reports                保存一条报告
   DELETE /reports/{report_id}  删除一条报告
-  GET  /scorecard              AI 研判记分卡(P0-7: T+5 历史命中率)
+  GET  /scorecard              AI 研判记分卡(P1-10: T+1/3/5/10 多周期命中率)
 """
 from __future__ import annotations
 
@@ -228,10 +228,10 @@ def save_report(request: Request, req: SaveReportRequest):
 
 @router.get("/scorecard")
 def get_scorecard(request: Request):
-    """AI 研判记分卡 (P0-7): 先惰性结算到期研判, 再返回汇总战绩。
+    """AI 研判记分卡 (P1-10): 先惰性结算到期研判, 再返回汇总战绩。
 
     结算 fail-open: K 线不可用时返回旧台账统计 (pending 偏多但不出错);
-    样本不足 (<10 次已结算) 时 hit_rate_pct 为 null, 前端显示"样本不足"。
+    每周期独立样本护栏 (<20 次已结算) 时 hit_rate_pct 为 null, 前端显示"样本不足"。
     """
     from app.services import ai_scorecard
     try:
