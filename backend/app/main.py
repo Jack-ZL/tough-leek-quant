@@ -54,6 +54,7 @@ from app.api import settings as settings_api
 from app.api import upgrade_guard as upgrade_guard_api
 from app.api.routes import router as core_router
 from app.config import settings
+from app.data_providers.base import ProviderRequestError
 from app.enriched_generation import EnrichedGenerationUnavailableError
 from app.extensions.loader import (
     configure_backend_extensions,
@@ -61,6 +62,7 @@ from app.extensions.loader import (
     start_backend_extensions,
 )
 from app.jobs import daily_pipeline
+from app.services.daily_health import DailyIntegrityError
 from app.services.matrix_prewarm_owner import MatrixCachePrewarmOwner
 from app.services.mining_process_lock import MiningProcessLock, MiningProcessLockError
 from app.services.quote_service import QuoteService
@@ -529,7 +531,7 @@ async def _application_lifespan(app: FastAPI):
         # webhook 投递线程池: 放弃排队投递并关闭, 避免通知静默丢失在 daemon 线程里
         from app.services.quote_service import shutdown_webhook_executor
 
-        shutdown_webhook_executor()
+        shutdown_delivery_executors()
         logger.info("shutdown")
 
 
