@@ -392,6 +392,17 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             className="space-y-4"
           >
+            {/* P0-6 回测检查员: 计划警告 (区间太短/数据不覆盖起点等) */}
+            {(result.preflight_warnings?.length ?? 0) > 0 && (
+              <div className="rounded-card border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-secondary">
+                <span className="font-medium text-amber-300">回测计划提醒：</span>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {result.preflight_warnings!.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {/* IC/IR 指标 */}
             <div className="rounded-card border border-border bg-surface p-4">
               <div className="flex items-center justify-between mb-3">

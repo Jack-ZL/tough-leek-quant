@@ -338,6 +338,8 @@ class WecomBotService:
 				pass
 			try:
 				loop.close()
+			except Exception:  # noqa: BLE001
+				pass
 	
 	async def _connect_loop(self) -> None:
 		"""主连接循环: 连接 → 鉴权 → 心跳保活 → 断开 → 退避重连。"""

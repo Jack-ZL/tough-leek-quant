@@ -674,6 +674,17 @@ function BatchDiscovery({
         )}
         {results && !results.error && (
           <div>
+            {/* P0-6 回测检查员: 计划警告 (区间太短/数据不覆盖起点等) */}
+            {(results.preflight_warnings?.length ?? 0) > 0 && (
+              <div className="mx-4 mt-3 rounded-card border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-secondary">
+                <span className="font-medium text-amber-300">回测计划提醒：</span>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {results.preflight_warnings!.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">

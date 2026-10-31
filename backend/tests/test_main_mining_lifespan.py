@@ -142,3 +142,42 @@ def test_lifespan_degrades_instead_of_failing_when_lock_held(
     assert "挖掘锁" in caplog.text
     assert "降级" in caplog.text
     assert app.state.mining_lock_acquired is False
+
+
+def test_all_main_imports_resolve() -> None:
+    """main.py 里每个 `from X import Y` 的 Y 都必须真实存在于 X。
+
+    回归防护: shutdown 分支曾 `from app.services.quote_service import
+    shutdown_webhook_executor`, 但该模块只有 shutdown_delivery_executors —
+    名字对不上, 只在应用真正关闭、执行到那行时才 ImportError, 平时导入
+    main 不会触发。这里静态遍历 AST 逐个解析, 把这类"惰性坏导入"挡在测试里。
+    """
+    import ast
+    import importlib
+    from pathlib import Path
+
+    src = Path(main_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        # 只查绝对导入 (level==0); 相对导入在本模块内不出现
+        if not isinstance(node, ast.ImportFrom) or node.level != 0 or not node.module:
+            continue
+        try:
+            mod = importlib.import_module(node.module)
+        except Exception:  # noqa: BLE001
+            # 可选依赖/平台相关模块导入失败不算坏名字, 跳过
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            if hasattr(mod, alias.name):
+                continue
+            # 允许 `from pkg import submodule` 形式 (属性未预加载时再试导入)
+            try:
+                importlib.import_module(f"{node.module}.{alias.name}")
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+            raise AssertionError(
+                f"main.py L{node.lineno}: {node.module}.{alias.name} 不存在 (坏导入)"
+            )

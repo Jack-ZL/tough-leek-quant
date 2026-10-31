@@ -22,6 +22,7 @@ from app.services.backtest import (
     BacktestService,
     VectorbtUnavailable,
 )
+from app.backtest.preflight import attach_warnings, enforce_plan
 from app.services.daily_health import DailyIntegrityError
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,17 @@ def run(req: BacktestRequest, request: Request):
     end = req.end or cn_today()
     start = req.start or (end - timedelta(days=365 * 3))
 
+    # P0-6 回测检查员: 跑前体检 — error 直接 400 拒绝 (附"怎么改"), warning 随结果返回
+    pf_warnings = enforce_plan(
+        start=start,
+        end=end,
+        repo=repo,
+        symbols=req.symbols,
+        asset_type=req.asset_type,
+        fees_pct=req.fees_pct,
+        slippage_bps=req.slippage_bps,
+    )
+
     cfg = BacktestConfig(
         symbols=req.symbols,
         start=start,
@@ -122,7 +134,7 @@ def run(req: BacktestRequest, request: Request):
         result = svc.run(cfg)
     except VectorbtUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    return _stamp_daily_data(result)
+    return attach_warnings(_stamp_daily_data(result), pf_warnings)
 
 
 # ================================================================
@@ -177,6 +189,17 @@ def factor_run(req: FactorBacktestRequest, request: Request):
             detail=f"指定标的最多支持 {FACTOR_MAX_SYMBOLS} 只，请缩小标的范围。",
         )
 
+    # P0-6 回测检查员: 日期/数据/费率体检 (error → 400, warning → 随结果返回)
+    pf_warnings = enforce_plan(
+        start=start,
+        end=end,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=symbols,
+        asset_type=req.asset_type,
+        fees_pct=req.fees_pct,
+        slippage_bps=req.slippage_bps,
+    )
+
     cfg = FactorConfig(
         factor_name=req.factor_name,
         symbols=symbols,
@@ -199,7 +222,7 @@ def factor_run(req: FactorBacktestRequest, request: Request):
             status_code=400,
             detail="行情数据正在更新(盘中实时刷新), 请稍后重试",
         ) from exc
-    return _stamp_daily_data(result)
+    return attach_warnings(_stamp_daily_data(result), pf_warnings)
 
 
 class FactorBatchRequest(BaseModel):
@@ -240,6 +263,17 @@ def factor_batch(req: FactorBatchRequest, request: Request):
             detail=f"指定标的最多支持 {FACTOR_MAX_SYMBOLS} 只, 请缩小标的范围。",
         )
 
+    # P0-6 回测检查员: 批量因子回测同样先体检 (error → 400, warning → 随结果返回)
+    pf_warnings = enforce_plan(
+        start=start,
+        end=end,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=symbols,
+        asset_type=req.asset_type,
+        fees_pct=req.fees_pct,
+        slippage_bps=req.slippage_bps,
+    )
+
     svc = FactorBacktestService(_get_engine(request))
     try:
         result = svc.run_batch(
@@ -263,7 +297,7 @@ def factor_batch(req: FactorBatchRequest, request: Request):
             status_code=400,
             detail="行情数据正在更新(盘中实时刷新), 请稍后重试",
         ) from exc
-    return _stamp_daily_data(result)
+    return attach_warnings(_stamp_daily_data(result), pf_warnings)
 
 
 # ================================================================
@@ -421,6 +455,23 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     _guard_server_backtest_range(start, end)
     _guard_minute_strategy_backtest(request, req.strategy_id, start, req.asset_type)
 
+    # P0-6 回测检查员: 全参数体检 (日期/数据/费率/资金/持仓), error → 400 拒绝
+    pf_warnings = enforce_plan(
+        start=start,
+        end=end,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=req.symbols if req.symbols else None,
+        asset_type=req.asset_type,
+        fees_pct=req.fees_pct,
+        commission_pct=req.commission_pct,
+        stamp_tax_pct=req.stamp_tax_pct,
+        slippage_bps=req.slippage_bps,
+        initial_capital=req.initial_capital,
+        max_positions=req.max_positions,
+        holding_days=req.holding_days,
+        max_exposure_pct=req.max_exposure_pct,
+    )
+
     if req.position_sizing == "policy":
         from app.backtest import position_policies
 
@@ -462,7 +513,7 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     from app.services.heavy_job_limiter import shared_heavy_job_limiter
 
     with shared_heavy_job_limiter.slot("normal"):
-        return _stamp_daily_data(run_worker_task(task))
+        return attach_warnings(_stamp_daily_data(run_worker_task(task)), pf_warnings)
 
 
 # ── SSE 流式回测 (实时进度 + 可取消 + 支持重连) ───────────────────
@@ -661,6 +712,24 @@ async def strategy_stream(
         start_date = earliest or (end_date - timedelta(days=FACTOR_DEFAULT_DAYS))
     _guard_minute_strategy_backtest(request, strategy_id, start_date, asset_type)
 
+    # P0-6 回测检查员: SSE 入口同样先体检。前端在打开 EventSource 前会先 fetch 预检,
+    # 400 的 detail (问题+建议清单) 能直接展示给用户; warning 挂到 done 事件的结果里。
+    pf_warnings = enforce_plan(
+        start=start_date,
+        end=end_date,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+        asset_type=asset_type,
+        fees_pct=fees_pct,
+        commission_pct=commission_pct,
+        stamp_tax_pct=stamp_tax_pct,
+        slippage_bps=slippage_bps,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        holding_days=holding_days,
+        max_exposure_pct=max_exposure_pct,
+    )
+
     # 服务端范围保护
     guard_violated = False
     if settings.backtest_range_guard:
@@ -802,7 +871,10 @@ async def strategy_stream(
                         elif error:
                             yield f"event: error\ndata: {json.dumps({'message': error}, ensure_ascii=False)}\n\n"
                         else:
-                            payload = _stamp_daily_data(r, job.daily_data_revisions)
+                            payload = attach_warnings(
+                                _stamp_daily_data(r, job.daily_data_revisions),
+                                pf_warnings,
+                            )
                             yield f"event: done\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
                     return
 
@@ -1091,6 +1163,23 @@ async def optimize_robust_stream(
         earliest = request.app.state.repo.earliest_daily_date()
         start_date = earliest or (end_date - timedelta(days=FACTOR_DEFAULT_DAYS))
 
+    # P0-6 回测检查员: 稳健优化跑一次代价很高 (K 段 × 网格数), 更要在跑前把计划体检清楚。
+    # error → 400 (前端 fetch 预检会直接展示 detail); warning → 挂到 done 结果。
+    pf_warnings = enforce_plan(
+        start=start_date,
+        end=end_date,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+        fees_pct=fees_pct,
+        commission_pct=commission_pct,
+        stamp_tax_pct=stamp_tax_pct,
+        slippage_bps=slippage_bps,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        holding_days=holding_days,
+        max_exposure_pct=max_exposure_pct,
+    )
+
     # 主目标白名单 (护栏): 稳健排名不容退化目标
     try:
         from app.backtest.guards import validate_primary_objective
@@ -1239,7 +1328,11 @@ async def optimize_robust_stream(
                     elif job.cancel_event.is_set():
                         yield f"event: error\ndata: {json.dumps({'message': '优化已取消'}, ensure_ascii=False)}\n\n"
                     elif job.result is not None:
-                        yield f"event: done\ndata: {json.dumps(_json_safe(_stamp_daily_data(job.result, job.daily_data_revisions)), ensure_ascii=False, default=str)}\n\n"
+                        payload = attach_warnings(
+                            _stamp_daily_data(job.result, job.daily_data_revisions),
+                            pf_warnings,
+                        )
+                        yield f"event: done\ndata: {json.dumps(_json_safe(payload), ensure_ascii=False, default=str)}\n\n"
                     return
                 tick += 1
                 if tick % 4 == 0 and await request.is_disconnected():
@@ -1330,6 +1423,23 @@ async def walkforward_stream(
     if start_date is None:
         earliest = request.app.state.repo.earliest_daily_date()
         start_date = earliest or (end_date - timedelta(days=STRATEGY_DEFAULT_DAYS))
+
+    # P0-6 回测检查员: walk-forward 每折都是一次完整回测, 跑前先把计划体检清楚。
+    # error → 400 (前端 fetch 预检会直接展示 detail); warning → 挂到 done 结果。
+    pf_warnings = enforce_plan(
+        start=start_date,
+        end=end_date,
+        repo=getattr(request.app.state, "repo", None),
+        symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+        fees_pct=fees_pct,
+        commission_pct=commission_pct,
+        stamp_tax_pct=stamp_tax_pct,
+        slippage_bps=slippage_bps,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        holding_days=holding_days,
+        max_exposure_pct=max_exposure_pct,
+    )
 
     bt_kwargs = _opt_backtest_kwargs(
         matching,
@@ -1466,7 +1576,11 @@ async def walkforward_stream(
                     elif job.cancel_event.is_set():
                         yield f"event: error\ndata: {json.dumps({'message': 'walk-forward 已取消'}, ensure_ascii=False)}\n\n"
                     elif job.result is not None:
-                        yield f"event: done\ndata: {json.dumps(_json_safe(_stamp_daily_data(job.result, job.daily_data_revisions)), ensure_ascii=False, default=str)}\n\n"
+                        payload = attach_warnings(
+                            _stamp_daily_data(job.result, job.daily_data_revisions),
+                            pf_warnings,
+                        )
+                        yield f"event: done\ndata: {json.dumps(_json_safe(payload), ensure_ascii=False, default=str)}\n\n"
                     return
                 tick += 1
                 if tick % 4 == 0 and await request.is_disconnected():

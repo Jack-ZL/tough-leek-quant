@@ -21,6 +21,20 @@ def repo(tmp_path):
     return KlineRepository(DataStore(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _force_tickflow_provider(monkeypatch):
+    """本用例只验证 tickflow 路径(经 sync_daily_batch)的 failed_out/0 行透传。
+
+    sync_and_persist_daily_batch 会先读 preferences.get_daily_data_provider():
+    若本机配置了自定义日K源(如 fuyao), 会改走真实取数分支, 绕过被 patch 的
+    sync_daily_batch(拉入脏数据/触网)导致断言失败。这里强制 tickflow, 保证
+    测试密封且命中 patch 路径。
+    """
+    monkeypatch.setattr(
+        kline_sync.preferences, "get_daily_data_provider", lambda: "tickflow",
+    )
+
+
 def test_accepts_failed_out_and_surfaces_failed_symbols(monkeypatch, repo):
     def fake_sync_daily_batch(symbols, **kwargs):
         # 模拟分块拉取失败: 内部经由 failed_out 出参上报失败标的
