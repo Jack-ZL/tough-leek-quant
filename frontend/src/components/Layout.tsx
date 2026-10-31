@@ -522,102 +522,102 @@ export function Layout() {
 		prevSyncingRef.current = isDataSyncing
 	}, [isDataSyncing])
 
-  const qc = useQueryClient()
-  const latestDataJob = pipelineJobs?.jobs?.[0]
-  const refreshedMinuteJob = useRef<string | null>(null)
-  useEffect(() => {
-    if (!latestDataJob || !['succeeded', 'failed'].includes(latestDataJob.status)) return
-    if (latestDataJob.result?.minute_rows == null && !['sync_minute', 'extend_minute'].includes(latestDataJob.stage)) return
-    if (refreshedMinuteJob.current === latestDataJob.id) return
-    refreshedMinuteJob.current = latestDataJob.id
-    // 复用常驻的任务轮询, 离开数据页后补拉结束也会刷新; 取消/失败可能已写入部分数据。
-    qc.invalidateQueries({ predicate: q => MINUTE_DATA_QUERY_PREFIXES.has(String(q.queryKey[0])) })
-    qc.invalidateQueries({ queryKey: QK.dataStatus })
-  }, [latestDataJob?.id, latestDataJob?.status, qc])
-  const navigate = useNavigate()
-  const version = versionData?.version
-  const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
-  // 自选实时模式限制提示: 可手动关闭, 不持久化 (刷新后恢复显示)
-  const [dismissFreeHint, setDismissFreeHint] = useState(false)
-  // 开启实时行情时若存在排队中的挖掘任务 → 确认弹窗 (实时落盘会让排队任务开跑即失败)
-  const [miningQueuedWarning, setMiningQueuedWarning] = useState<number | null>(null)
-  const miningWarnBackdrop = useDialogBackdrop(() => setMiningQueuedWarning(null))
-  // ===== 侧边栏 AI 模型一键切换 (档案库下拉, 参考 dev 项目交互) =====
-  const [aiDropdownOpen, setAiDropdownOpen] = useState(false)
-  const [aiActivating, setAiActivating] = useState<string | null>(null)
-  const aiButtonRef = useRef<HTMLButtonElement>(null)
-  const [aiMenuStyle, setAiMenuStyle] = useState<Record<string, string | number>>({})
-  const aiProfiles = settingsState?.ai_profiles ?? []
-  const aiCanSwitch = !!settingsState?.ai_configured && aiProfiles.length > 0
-  // 下拉用 portal 渲染到 body (侧边栏 overflow 会裁剪), 跟随按钮定位
-  useEffect(() => {
-    if (!aiDropdownOpen || !aiButtonRef.current) return
-    const updatePosition = () => {
-      if (!aiButtonRef.current) return
-      const rect = aiButtonRef.current.getBoundingClientRect()
-      // 从按钮正下方弹出 (左对齐), 宽度与按钮一致
-      setAiMenuStyle({ position: 'fixed', left: rect.left, top: rect.bottom + 6, width: rect.width, zIndex: 99999 })
-    }
-    updatePosition()
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-    return () => {
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
-    }
-  }, [aiDropdownOpen])
-  // 点击外部关闭
-  useEffect(() => {
-    if (!aiDropdownOpen) return
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('[data-ai-dropdown]') && !aiButtonRef.current?.contains(target)) {
-        setAiDropdownOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [aiDropdownOpen])
-  const handleAiActivate = useCallback(async (id: string) => {
-    setAiActivating(id)
-    try {
-      const result = await api.activateAiProfile(id)
-      // 乐观更新缓存 → 侧边栏/状态立即反映新模型, 再后台 invalidate 兜底
-      qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
-        ...prev,
-        ai_provider: result.ai_provider ?? prev.ai_provider,
-        ai_model: result.ai_model ?? prev.ai_model,
-        ai_openai_model: result.ai_openai_model ?? prev.ai_openai_model,
-        ai_reasoning_effort: result.ai_reasoning_effort ?? prev.ai_reasoning_effort,
-        ai_codex_model: result.ai_codex_model ?? prev.ai_codex_model,
-        ai_codex_command: result.ai_codex_command ?? prev.ai_codex_command,
-        ai_codex_reasoning_effort: result.ai_codex_reasoning_effort ?? prev.ai_codex_reasoning_effort,
-        ai_configured: result.ai_configured ?? prev.ai_configured,
-        ai_max_output_tokens: result.ai_max_output_tokens ?? prev.ai_max_output_tokens,
-        ai_context_window: result.ai_context_window ?? prev.ai_context_window,
-        ai_web_search: result.ai_web_search ?? prev.ai_web_search,
-        ai_active_profile: result.ai_active_profile ?? id,
-      } : prev)
-      void qc.invalidateQueries({ queryKey: QK.settings })
-    } catch {
-      toast('模型切换失败', 'error')
-    } finally {
-      setAiActivating(null)
-      setAiDropdownOpen(false)
-    }
-  }, [qc])
-  // 两态切换 (仅桌面): 展开 <-> 图标条
-  const toggleNavCollapsed = () => {
-    setNavStatePersist(navState === 'expanded' ? 'rail' : 'expanded')
-  }
-  // 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示
-  const sidebarIndexes = CORE_INDEXES
-  const { data: sidebarIndexQuotes } = useQuery({
-    queryKey: [...QK.indexQuotes, 'sidebar', 'core'] as const,
-    queryFn: () => api.indexQuotes(sidebarIndexes.map(p => p.symbol)),
-    enabled: sidebarIndexes.length > 0,
-    placeholderData: (prev) => prev,
-  })
+	const qc = useQueryClient()
+	const latestDataJob = pipelineJobs?.jobs?.[0]
+	const refreshedMinuteJob = useRef<string | null>(null)
+	useEffect(() => {
+		if (!latestDataJob || !['succeeded', 'failed'].includes(latestDataJob.status)) return
+		if (latestDataJob.result?.minute_rows == null && !['sync_minute', 'extend_minute'].includes(latestDataJob.stage)) return
+		if (refreshedMinuteJob.current === latestDataJob.id) return
+		refreshedMinuteJob.current = latestDataJob.id
+		// 复用常驻的任务轮询, 离开数据页后补拉结束也会刷新; 取消/失败可能已写入部分数据。
+		qc.invalidateQueries({ predicate: q => MINUTE_DATA_QUERY_PREFIXES.has(String(q.queryKey[0])) })
+		qc.invalidateQueries({ queryKey: QK.dataStatus })
+	}, [latestDataJob?.id, latestDataJob?.status, qc])
+	const navigate = useNavigate()
+	const version = versionData?.version
+	const realtimeEnabled = prefs?.realtime_quotes_enabled ?? false
+	// 自选实时模式限制提示: 可手动关闭, 不持久化 (刷新后恢复显示)
+	const [dismissFreeHint, setDismissFreeHint] = useState(false)
+	// 开启实时行情时若存在排队中的挖掘任务 → 确认弹窗 (实时落盘会让排队任务开跑即失败)
+	const [miningQueuedWarning, setMiningQueuedWarning] = useState<number | null>(null)
+	const miningWarnBackdrop = useDialogBackdrop(() => setMiningQueuedWarning(null))
+	// ===== 侧边栏 AI 模型一键切换 (档案库下拉, 参考 dev 项目交互) =====
+	const [aiDropdownOpen, setAiDropdownOpen] = useState(false)
+	const [aiActivating, setAiActivating] = useState<string | null>(null)
+	const aiButtonRef = useRef<HTMLButtonElement>(null)
+	const [aiMenuStyle, setAiMenuStyle] = useState<Record<string, string | number>>({})
+	const aiProfiles = settingsState?.ai_profiles ?? []
+	const aiCanSwitch = !!settingsState?.ai_configured && aiProfiles.length > 0
+	// 下拉用 portal 渲染到 body (侧边栏 overflow 会裁剪), 跟随按钮定位
+	useEffect(() => {
+		if (!aiDropdownOpen || !aiButtonRef.current) return
+		const updatePosition = () => {
+			if (!aiButtonRef.current) return
+			const rect = aiButtonRef.current.getBoundingClientRect()
+			// 从按钮正下方弹出 (左对齐), 宽度与按钮一致
+			setAiMenuStyle({ position: 'fixed', left: rect.left, top: rect.bottom + 6, width: rect.width, zIndex: 99999 })
+		}
+		updatePosition()
+		window.addEventListener('resize', updatePosition)
+		window.addEventListener('scroll', updatePosition, true)
+		return () => {
+			window.removeEventListener('resize', updatePosition)
+			window.removeEventListener('scroll', updatePosition, true)
+		}
+	}, [aiDropdownOpen])
+	// 点击外部关闭
+	useEffect(() => {
+		if (!aiDropdownOpen) return
+		const handler = (e: MouseEvent) => {
+			const target = e.target as HTMLElement
+			if (!target.closest('[data-ai-dropdown]') && !aiButtonRef.current?.contains(target)) {
+				setAiDropdownOpen(false)
+			}
+		}
+		document.addEventListener('mousedown', handler)
+		return () => document.removeEventListener('mousedown', handler)
+	}, [aiDropdownOpen])
+	const handleAiActivate = useCallback(async (id: string) => {
+		setAiActivating(id)
+		try {
+			const result = await api.activateAiProfile(id)
+			// 乐观更新缓存 → 侧边栏/状态立即反映新模型, 再后台 invalidate 兜底
+			qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
+				...prev,
+				ai_provider: result.ai_provider ?? prev.ai_provider,
+				ai_model: result.ai_model ?? prev.ai_model,
+				ai_openai_model: result.ai_openai_model ?? prev.ai_openai_model,
+				ai_reasoning_effort: result.ai_reasoning_effort ?? prev.ai_reasoning_effort,
+				ai_codex_model: result.ai_codex_model ?? prev.ai_codex_model,
+				ai_codex_command: result.ai_codex_command ?? prev.ai_codex_command,
+				ai_codex_reasoning_effort: result.ai_codex_reasoning_effort ?? prev.ai_codex_reasoning_effort,
+				ai_configured: result.ai_configured ?? prev.ai_configured,
+				ai_max_output_tokens: result.ai_max_output_tokens ?? prev.ai_max_output_tokens,
+				ai_context_window: result.ai_context_window ?? prev.ai_context_window,
+				ai_web_search: result.ai_web_search ?? prev.ai_web_search,
+				ai_active_profile: result.ai_active_profile ?? id,
+			} : prev)
+			void qc.invalidateQueries({ queryKey: QK.settings })
+		} catch {
+			toast('模型切换失败', 'error')
+		} finally {
+			setAiActivating(null)
+			setAiDropdownOpen(false)
+		}
+	}, [qc])
+	// 两态切换 (仅桌面): 展开 <-> 图标条
+	const toggleNavCollapsed = () => {
+		setNavStatePersist(navState === 'expanded' ? 'rail' : 'expanded')
+	}
+	// 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示
+	const sidebarIndexes = CORE_INDEXES
+	const { data: sidebarIndexQuotes } = useQuery({
+		queryKey: [...QK.indexQuotes, 'sidebar', 'core'] as const,
+		queryFn: () => api.indexQuotes(sidebarIndexes.map(p => p.symbol)),
+		enabled: sidebarIndexes.length > 0,
+		placeholderData: (prev) => prev,
+	})
 
 	// SSE: 行情更新时自动刷新相关 queries + 告警通知
 	useQuoteStream(realtimeEnabled, prefs?.sse_refresh_pages)
