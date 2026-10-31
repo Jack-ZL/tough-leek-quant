@@ -327,6 +327,11 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
   - `client.py` — 原生层封装(lib 私有物化 + token 注入双 ini + `TDX_AI_DATA_LIB` 指向、空闲首连 "Invalid server response" 重试包装、股票池 12h 缓存)
   - `provider.py` — Provider 实现(快照昨收=LastClose/高低=Max/Min 字段映射、涨跌幅 (Now-LastClose)/LastClose 小数制、RefreshTime 北京墙钟→epoch ms、软失败)
   - `probe.py` — 候选 Key 探测的独立子进程(原生 DLL 每进程单 Key): 分阶段进度留痕定位原生层死点; 服务端明确拒绝凭据或额度时不保存。因 TDX 会话按 IP 复用(错误 Key 在活跃会话下也能拉数), 通过探测仅代表格式与连通性检查通过, 不保证所有数据接口均有权限。
+- **`backend/app/plugins/eastmoney/`** — 东方财富公开行情接口(runtime: none, 纯 HTTP 零依赖; 免 Key 开箱即用, 清单无 `api_key_env` → 设置页卡片即装即亮, P1-12)
+  - 提供 `realtime`(全市场快照分页批拉约 6 页/轮, 含名称/振幅/换手率/市值; 指数快照独立 clist `fs=i:` 端点, `get_realtime_indices` 映射)、`daily`(逐标的原始价日K `fqt=0`, 股票/ETF/指数同端点同 secid 规则, `iter_daily` 流式)、`adj_factor`(datacenter 分红明细一窗全量 × 交易所公式推导单事件比值, 同日多事件合并, 涨跌停自检; 每 10 股口径 ÷10; 配股事件该报表不覆盖 → allot 恒空)、`depth5`(stock/get 逐标的五档, 仅适合连板梯队等小规模监控); minute/financial 未声明 → 自动回退 TickFlow
+  - `client.py` — httpx 客户端(按主机令牌桶 3 QPS + 随机抖动 + 指数退避重试 + 连续失败熔断冷却 300s; 实测短时突发会触发 push2 系主机 IP 级临时封禁, datacenter 为独立封禁池; 请求一律不带 ut token, 带 ut 反而返回空)
+  - `provider.py` — Provider 实现(clist 字段映射 f2最新价/f3涨跌幅%/f12代码/f13市场(1沪,0深京)/f124秒戳→ms、百分数→小数制、volume 手/amount 元透传、kline CSV 列序陷阱"日期,开,**收**,高,低"、secid 前缀 1=SH/0=SZ与BJ、停牌 "-"→None 不伪造、软失败)
+  - `tests/test_eastmoney_provider.py` — 50 个契约测试(实测录制样例离线回放 + 虚拟时钟验证限速/熔断节奏 + loader 注册与能力矩阵注入)
 
 TdxQuant 在 SDK 清理响应前检查服务端错误, 保留错误原因并脱敏; 明确的凭据/额度拒绝不重试, 实时分钟轮立即熔断。历史分钟请求失败会通过 `app.data_providers.base.ProviderRequestError` 传递到任务层并标记失败, 不转换成成功的 0 行或跨源重试; 其他插件也可用该异常显式声明请求失败。带时区的分钟请求窗口在插件边界归一为北京墙钟, 再与原生分钟列比较。正常停牌、休市或窗口内无数据的空结果保留原语义。
 

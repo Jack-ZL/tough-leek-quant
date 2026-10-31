@@ -1,0 +1,20 @@
+# 东方财富 — 内置免费公开行情插件 (P1-12: 开箱即用免 Key 数据源)
+# 纯 HTTP 公开接口, 无额外依赖 (runtime: none), 无需 API Key — 卡片即装即亮。
+# 限速纪律: 内置令牌桶(3 QPS) + 随机抖动 + 指数退避 + 熔断冷却;
+# 实测短时突发请求会触发 push2 主机 IP 级临时封禁, 严禁绕过 client 直接打接口。
+
+name: eastmoney
+display_name: "东方财富"
+runtime: none
+entry: app.plugins.eastmoney.provider:EastmoneyProvider
+check: app.plugins.eastmoney.provider:availability
+datasets: [realtime, daily, adj_factor, depth5]
+description: "东方财富公开行情接口(免 Key)。提供全市场实时快照、指数快照、日K(原始价)、除权因子(分红事件推导)、标的维表与五档盘口;分钟线与财务未接入,自动回退 TickFlow。"
+install_hint: "无需配置, 开箱即用: 在数据源卡片把对应能力切换到「东方财富」即可"
+homepage: "https://quote.eastmoney.com"
+usage_notes:
+  - "免费公开接口, 无需 Key; 内置 3 QPS 令牌桶限速 + 熔断冷却, 连续失败自动快速失败等待恢复"
+  - "全市场快照分页批拉(约 6 页/轮), 含名称/振幅/换手率/市值, 实时轮询与同步任务共享限速额度"
+  - "日K逐标的拉取: 首次全量历史回填约 1 小时(5000+ 标的), 日常增量只补缺口标的"
+  - "除权因子 = 东财分红明细 × 交易所公式推导(单事件比值, 与 TickFlow 口径一致); 配股事件暂不覆盖"
+  - "五档盘口为逐标的接口, 仅适合连板梯队等小规模监控场景"
