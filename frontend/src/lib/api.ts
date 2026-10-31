@@ -3180,329 +3180,297 @@ export const api = {
 			last_error?: string | null
 		}>('/api/settings/minute-refresh/status'),
 
-	/** 分钟数据缺口体检: 列出本地分区中分钟 K 不完整的 (标的, 交易日)。
-	 *  只发现不补齐 — 超出上游历史窗口的缺口补不回来, 前端据此标注。 */
-	minuteGaps: (params?: { symbols?: string[]; dates?: string[]; limit?: number }) => {
-		const q = new URLSearchParams()
-		if (params?.symbols?.length) q.set('symbols', params.symbols.join(','))
-		if (params?.dates?.length) q.set('dates', params.dates.join(','))
-		if (params?.limit) q.set('limit', String(params.limit))
-		const qs = q.toString()
-		return request<{
-			status: string
-			scanned_dates: number
-			scanned_symbols: number
-			complete_dates: string[]
-			gaps: MinuteGapRow[]
-			summary_by_date: { date: string; gap_symbols: number; missing_bars: number; expected_bars: number }[]
-			truncated: boolean
-			limit?: number
-		}>(`/api/kline/minute-gaps${qs ? `?${qs}` : ''}`)
-	},
-	updatePipelinePullTypes: (cfg: Partial<Pick<Preferences, 'pipeline_pull_a_share' | 'pipeline_pull_etf' | 'pipeline_pull_index'>>) =>
-		request<{
-			pipeline_pull_a_share: boolean
-			pipeline_pull_etf: boolean
-			pipeline_pull_index: boolean
-		}>('/api/settings/preferences/pipeline-pull-types', {
-			method: 'PUT',
-			body: JSON.stringify(cfg),
-		}),
-	updatePipelineRegimeEnabled: (enabled: boolean) =>
-		request<{ pipeline_regime_enabled: boolean }>('/api/settings/preferences/pipeline-regime-enabled', {
-			method: 'PUT',
-			body: JSON.stringify({ pipeline_regime_enabled: enabled }),
-		}),
-	updateRegimeBatchParams: (params: { batch_days?: number; warmup_days?: number }) =>
-		request<{
-			regime_batch_days: number;
-			regime_warmup_days: number
-		}>('/api/settings/preferences/regime-batch-params', {
-			method: 'PUT',
-			body: JSON.stringify(params),
-		}),
-	updatePipelineIndexSymbols: (symbols: string) =>
-		request<{ pipeline_index_symbols: string }>('/api/settings/preferences/pipeline-index-symbols', {
-			method: 'PUT',
-			body: JSON.stringify({ symbols }),
-		}),
-	updateRealtimeQuotes: (enabled: boolean) =>
-		request<{
-			realtime_quotes_enabled: boolean;
-			realtime_allowed?: boolean;
-			mode?: string;
-			error?: string
-		}>('/api/settings/preferences/realtime-quotes', {
-			method: 'PUT',
-			body: JSON.stringify({ realtime_quotes_enabled: enabled }),
-		}),
-	updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf'>>) =>
-		request<Partial<Preferences>>('/api/settings/preferences/realtime-quote-scope', {
-			method: 'PUT',
-			body: JSON.stringify(cfg),
-		}),
-	updateWatchlistGroupsInNav: (enabled: boolean) =>
-		request<{ watchlist_groups_in_nav: boolean }>('/api/settings/preferences/watchlist-groups-in-nav', {
-			method: 'PUT',
-			body: JSON.stringify({ watchlist_groups_in_nav: enabled }),
-		}),
-	quoteStatus: () =>
-		request<{
-			enabled: boolean
-			running: boolean
-			paused?: boolean
-			mode?: 'none' | 'watchlist' | 'full_market'
-			realtime_allowed?: boolean
-			interval_s: number
-			symbol_count: number
-			watchlist_symbol_count?: number
-			index_symbol_count?: number
-			etf_symbol_count?: number
-			quote_age_ms: number | null
-			is_trading_hours: boolean
-			is_polling_window?: boolean
-			market_phase?: string
-			final_sync_done?: boolean
-			final_sync_failed?: string | null
-			last_fetch_ms: number | null
-		}>('/api/intraday/status'),
-	quoteInterval: () =>
-		request<{ interval: number; min_interval: number; max_interval: number }>(
-			'/api/settings/preferences/quote-interval',
-		),
-	updateQuoteInterval: (interval: number) =>
-		request<{ interval: number; min_interval: number; max_interval: number }>(
-			'/api/settings/preferences/quote-interval',
-			{ method: 'PUT', body: JSON.stringify({ interval }) },
-		),
-	intradayRefresh: () => request<{ status: string }>('/api/intraday/refresh', { method: 'POST' }),
-	indexQuotes: (symbols?: string[]) =>
-		request<{ rows: IndexQuote[]; count: number }>(
-			`/api/intraday/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
-		),
-	updateRealtimeMonitorConfig: (cfg: {
-		sse_refresh_pages?: Record<string, boolean>
-		strategy_monitor_enabled?: boolean
-		strategy_monitor_ids?: string[]
-		screener_auto_run?: boolean
-		minute_intraday_refresh?: boolean
-		minute_intraday_refresh_interval?: number
-		monitor_ext_fields?: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
-	}) =>
-		request<{
-			sse_refresh_pages: Record<string, boolean>
-			strategy_monitor_enabled: boolean
-			strategy_monitor_ids: string[]
-			screener_auto_run: boolean
-			minute_intraday_refresh: boolean
-			minute_intraday_refresh_interval: number
-			monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
-		}>('/api/settings/preferences/realtime-monitor', {
-			method: 'PUT',
-			body: JSON.stringify(cfg),
-		}),
-	updateSystemNotify: (enabled: boolean) =>
-		request<{ system_notify_enabled: boolean }>('/api/settings/preferences/system-notify', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	/** 夜间免打扰窗口 (P0-4): enabled 总开关 + HH:MM 起止 (支持跨天) */
-	updateNotifyQuiet: (cfg: { enabled: boolean; start: string; end: string }) =>
-		request<{ notify_quiet_enabled: boolean; notify_quiet_start: string; notify_quiet_end: string }>(
-			'/api/settings/preferences/notify-quiet',
-			{ method: 'PUT', body: JSON.stringify(cfg) },
-		),
-	/** AI 助手「动作工具免确认」开关 (默认关闭) */
-	updateAssistantAutoApprove: (enabled: boolean) =>
-		request<{ assistant_auto_approve_actions: boolean }>('/api/settings/preferences/assistant-auto-approve', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	/** AI 助手「毛玻璃遮罩」开关 (默认开启) */
-	updateAssistantMask: (enabled: boolean) =>
-		request<{ assistant_mask_enabled: boolean }>('/api/settings/preferences/assistant-mask', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	updateFeishuWebhook: (url: string, secret: string = '') =>
-		request<{
-			feishu_webhook_url: string;
-			feishu_webhook_secret: string
-		}>('/api/settings/preferences/feishu-webhook', {
-			method: 'PUT',
-			body: JSON.stringify({ url, secret }),
-		}),
-	updateWecomWebhook: (url: string) =>
-		request<{ wecom_webhook_url: string }>('/api/settings/preferences/wecom-webhook', {
-			method: 'PUT',
-			body: JSON.stringify({ url }),
-		}),
-	updateDingtalkWebhook: (url: string, secret?: string) =>
-		request<{
-			dingtalk_webhook_url: string;
-			dingtalk_webhook_secret: string
-		}>('/api/settings/preferences/dingtalk-webhook', {
-			method: 'PUT',
-			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
-		}),
-	updateCustomWebhook: (url: string, secret?: string) =>
-		request<{
-			custom_webhook_url: string;
-			custom_webhook_secret_set: boolean
-		}>('/api/settings/preferences/custom-webhook', {
-			method: 'PUT',
-			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
-		}),
-	updateEmailSmtp: (config: EmailSmtpConfig, password?: string) =>
-		request<{
-			email_smtp_config: EmailSmtpConfig;
-			email_smtp_password_set: boolean
-		}>('/api/settings/preferences/email-smtp', {
-			method: 'PUT',
-			body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
-		}),
-	sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
-		request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
-			method: 'POST',
-			body: JSON.stringify({ channel }),
-		}),
-	updateWecomBot: (botId: string, secret: string, enabled: boolean = true) =>
-		request<{
-			wecom_bot_id: string
-			wecom_bot_secret: string
-			wecom_bot_enabled: boolean
-			wecom_bot_status: WecomBotStatus
-		}>('/api/settings/preferences/wecom-bot', {
-			method: 'PUT',
-			body: JSON.stringify({ bot_id: botId, secret, enabled }),
-		}),
-	toggleWecomBot: (enabled: boolean) =>
-		request<{
-			wecom_bot_enabled: boolean;
-			wecom_bot_status: WecomBotStatus
-		}>('/api/settings/preferences/wecom-bot-toggle', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
-		request<{
-			dingtalk_bot_id: string
-			dingtalk_bot_secret: string
-			dingtalk_bot_enabled: boolean
-			dingtalk_bot_status: DingtalkBotStatus
-		}>('/api/settings/preferences/dingtalk-bot', {
-			method: 'PUT',
-			body: JSON.stringify({ bot_id: botId, secret, enabled }),
-		}),
-	toggleDingtalkBot: (enabled: boolean) =>
-		request<{
-			dingtalk_bot_enabled: boolean;
-			dingtalk_bot_status: DingtalkBotStatus
-		}>('/api/settings/preferences/dingtalk-bot-toggle', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	updateWebhookDefault: (enabled: boolean) =>
-		request<{ webhook_enabled_default: boolean }>('/api/settings/preferences/webhook-enabled-default', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	updateWebhookDefaultChannels: (channels: string[]) =>
-		request<{ webhook_default_channels: string[] }>('/api/settings/preferences/webhook-default-channels', {
-			method: 'PUT',
-			body: JSON.stringify({ channels }),
-		}),
-	updatePipelineSchedule: (hour: number, minute: number) =>
-		request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {
-			method: 'PUT',
-			body: JSON.stringify({ hour, minute }),
-		}),
-	updateReviewSchedule: (enabled: boolean, hour: number, minute: number) =>
-		request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled, hour, minute }),
-		}),
-	updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
-		request<{
-			review_push_channels: string[];
-			review_push_mode: 'auto' | 'manual'
-		}>('/api/settings/preferences/review-push', {
-			method: 'PUT',
-			body: JSON.stringify({ channels, mode: mode ?? null }),
-		}),
-	/** 复盘系统提示词: 自定义值 + 内置默认全文(按需拉取, 供「填入默认模板」) */
-	getMarketRecapPrompt: () =>
-		request<{
-			custom: string;
-			default: string;
-			customized: boolean
-		}>('/api/settings/preferences/market-recap-prompt'),
-	/** 保存自定义复盘系统提示词; 空串 = 恢复内置默认模板 */
-	updateMarketRecapPrompt: (prompt: string) =>
-		request<{ custom: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt', {
-			method: 'PUT',
-			body: JSON.stringify({ prompt }),
-		}),
-	updateDepthPollingInterval: (interval: number) =>
-		request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {
-			method: 'PUT',
-			body: JSON.stringify({ interval }),
-		}),
-	updateLimitLadderMonitor: (enabled: boolean) =>
-		request<{ limit_ladder_monitor_enabled: boolean }>('/api/settings/preferences/limit-ladder-monitor', {
-			method: 'PUT',
-			body: JSON.stringify({ enabled }),
-		}),
-	runLimitLadderFix: () =>
-		request<{ ok: boolean; count: number; msg: string }>('/api/settings/preferences/limit-ladder-monitor/run', {
-			method: 'POST',
-		}),
-	updateDepthFinalizeTime: (hour: number, minute: number) =>
-		request<{ hour: number; minute: number }>('/api/settings/preferences/depth-finalize-time', {
-			method: 'PUT',
-			body: JSON.stringify({ hour, minute }),
-		}),
-	saveNavOrder: (nav_order: string[]) =>
-		request<{ nav_order: string[] }>('/api/settings/preferences/nav-order', {
-			method: 'PUT',
-			body: JSON.stringify({ nav_order }),
-		}),
-	saveNavHidden: (nav_hidden: string[]) =>
-		request<{ nav_hidden: string[] }>('/api/settings/preferences/nav-hidden', {
-			method: 'PUT',
-			body: JSON.stringify({ nav_hidden }),
-		}),
-	/** 保存看板自定义布局; layout=null 恢复默认布局 */
-	saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
-		request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
-			method: 'PUT',
-			body: JSON.stringify({ layout }),
-		}),
-	updateInstrumentsSchedule: (hour: number, minute: number) =>
-		request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
-			method: 'PUT',
-			body: JSON.stringify({ hour, minute }),
-		}),
-	updateEnrichedBatchSize: (size: number) =>
-		request<{ enriched_batch_size: number }>('/api/settings/preferences/enriched-batch-size', {
-			method: 'PUT',
-			body: JSON.stringify({ size }),
-		}),
-	updateIndexDailyBatchSize: (size: number) =>
-		request<{ index_daily_batch_size: number }>('/api/settings/preferences/index-daily-batch-size', {
-			method: 'PUT',
-			body: JSON.stringify({ size }),
-		}),
-	updateDailyBatchSymbols: (size: number) =>
-		request<{ daily_batch_symbols: number }>('/api/settings/preferences/daily-batch-symbols', {
-			method: 'PUT',
-			body: JSON.stringify({ size }),
-		}),
-	updateMinuteBatchSymbols: (size: number) =>
-		request<{ minute_batch_symbols: number }>('/api/settings/preferences/minute-batch-symbols', {
-			method: 'PUT',
-			body: JSON.stringify({ size }),
-		}),
+  /** 分钟数据缺口体检: 列出本地分区中分钟 K 不完整的 (标的, 交易日)。
+   *  只发现不补齐 — 超出上游历史窗口的缺口补不回来, 前端据此标注。 */
+  minuteGaps: (params?: { symbols?: string[]; dates?: string[]; limit?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.symbols?.length) q.set('symbols', params.symbols.join(','))
+    if (params?.dates?.length) q.set('dates', params.dates.join(','))
+    if (params?.limit) q.set('limit', String(params.limit))
+    const qs = q.toString()
+    return request<{
+      status: string
+      scanned_dates: number
+      scanned_symbols: number
+      complete_dates: string[]
+      inactive_symbol_days?: number
+      gaps: MinuteGapRow[]
+      summary_by_date: { date: string; gap_symbols: number; missing_bars: number; expected_bars: number }[]
+      truncated: boolean
+      limit?: number
+    }>(`/api/kline/minute-gaps${qs ? `?${qs}` : ''}`)
+  },
+  updatePipelinePullTypes: (cfg: Partial<Pick<Preferences, 'pipeline_pull_a_share' | 'pipeline_pull_etf' | 'pipeline_pull_index'>>) =>
+    request<{
+      pipeline_pull_a_share: boolean
+      pipeline_pull_etf: boolean
+      pipeline_pull_index: boolean
+    }>('/api/settings/preferences/pipeline-pull-types', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+  updatePipelineRegimeEnabled: (enabled: boolean) =>
+    request<{ pipeline_regime_enabled: boolean }>('/api/settings/preferences/pipeline-regime-enabled', {
+      method: 'PUT',
+      body: JSON.stringify({ pipeline_regime_enabled: enabled }),
+    }),
+  updateRegimeBatchParams: (params: { batch_days?: number; warmup_days?: number }) =>
+    request<{ regime_batch_days: number; regime_warmup_days: number }>('/api/settings/preferences/regime-batch-params', {
+      method: 'PUT',
+      body: JSON.stringify(params),
+    }),
+  updatePipelineIndexSymbols: (symbols: string) =>
+    request<{ pipeline_index_symbols: string }>('/api/settings/preferences/pipeline-index-symbols', {
+      method: 'PUT',
+      body: JSON.stringify({ symbols }),
+    }),
+  updateRealtimeQuotes: (enabled: boolean) =>
+    request<{ realtime_quotes_enabled: boolean; realtime_allowed?: boolean; mode?: string; error?: string }>('/api/settings/preferences/realtime-quotes', {
+      method: 'PUT',
+      body: JSON.stringify({ realtime_quotes_enabled: enabled }),
+    }),
+  updateRealtimeQuoteScope: (cfg: Partial<Pick<Preferences, 'realtime_pull_stock' | 'realtime_pull_etf'>>) =>
+    request<Partial<Preferences>>('/api/settings/preferences/realtime-quote-scope', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+  updateWatchlistGroupsInNav: (enabled: boolean) =>
+    request<{ watchlist_groups_in_nav: boolean }>('/api/settings/preferences/watchlist-groups-in-nav', {
+      method: 'PUT',
+      body: JSON.stringify({ watchlist_groups_in_nav: enabled }),
+    }),
+  quoteStatus: () =>
+    request<{
+      enabled: boolean
+      running: boolean
+      paused?: boolean
+      mode?: 'none' | 'watchlist' | 'full_market'
+      realtime_allowed?: boolean
+      interval_s: number
+      symbol_count: number
+      watchlist_symbol_count?: number
+      index_symbol_count?: number
+      etf_symbol_count?: number
+      quote_age_ms: number | null
+      is_trading_hours: boolean
+      is_polling_window?: boolean
+      market_phase?: string
+      final_sync_done?: boolean
+      final_sync_failed?: string | null
+      last_fetch_ms: number | null
+    }>('/api/intraday/status'),
+  quoteInterval: () =>
+    request<{ interval: number; min_interval: number; max_interval: number }>(
+      '/api/settings/preferences/quote-interval',
+    ),
+  updateQuoteInterval: (interval: number) =>
+    request<{ interval: number; min_interval: number; max_interval: number }>(
+      '/api/settings/preferences/quote-interval',
+      { method: 'PUT', body: JSON.stringify({ interval }) },
+    ),
+  intradayRefresh: () => request<{ status: string }>('/api/intraday/refresh', { method: 'POST' }),
+  indexQuotes: (symbols?: string[]) =>
+    request<{ rows: IndexQuote[]; count: number }>(
+      `/api/intraday/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
+    ),
+  updateRealtimeMonitorConfig: (cfg: {
+    sse_refresh_pages?: Record<string, boolean>
+    strategy_monitor_enabled?: boolean
+    strategy_monitor_ids?: string[]
+    screener_auto_run?: boolean
+    minute_intraday_refresh?: boolean
+    minute_intraday_refresh_interval?: number
+    monitor_ext_fields?: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
+  }) =>
+    request<{
+      sse_refresh_pages: Record<string, boolean>
+      strategy_monitor_enabled: boolean
+      strategy_monitor_ids: string[]
+      screener_auto_run: boolean
+      minute_intraday_refresh: boolean
+      minute_intraday_refresh_interval: number
+      monitor_ext_fields: { concept: MonitorExtFieldItem | null; industry: MonitorExtFieldItem | null }
+    }>('/api/settings/preferences/realtime-monitor', {
+      method: 'PUT',
+      body: JSON.stringify(cfg),
+    }),
+  updateSystemNotify: (enabled: boolean) =>
+    request<{ system_notify_enabled: boolean }>('/api/settings/preferences/system-notify', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  /** 夜间免打扰窗口 (P0-4): enabled 总开关 + HH:MM 起止 (支持跨天) */
+  updateNotifyQuiet: (cfg: { enabled: boolean; start: string; end: string }) =>
+    request<{ notify_quiet_enabled: boolean; notify_quiet_start: string; notify_quiet_end: string }>(
+      '/api/settings/preferences/notify-quiet',
+      { method: 'PUT', body: JSON.stringify(cfg) },
+    ),
+  /** AI 助手「动作工具免确认」开关 (默认关闭) */
+  updateAssistantAutoApprove: (enabled: boolean) =>
+    request<{ assistant_auto_approve_actions: boolean }>('/api/settings/preferences/assistant-auto-approve', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  /** AI 助手「毛玻璃遮罩」开关 (默认开启) */
+  updateAssistantMask: (enabled: boolean) =>
+    request<{ assistant_mask_enabled: boolean }>('/api/settings/preferences/assistant-mask', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updateFeishuWebhook: (url: string, secret: string = '') =>
+    request<{ feishu_webhook_url: string; feishu_webhook_secret: string }>('/api/settings/preferences/feishu-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url, secret }),
+    }),
+  updateWecomWebhook: (url: string) =>
+    request<{ wecom_webhook_url: string }>('/api/settings/preferences/wecom-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url }),
+    }),
+  updateDingtalkWebhook: (url: string, secret?: string) =>
+    request<{ dingtalk_webhook_url: string; dingtalk_webhook_secret: string }>('/api/settings/preferences/dingtalk-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
+    }),
+  updateCustomWebhook: (url: string, secret?: string) =>
+    request<{ custom_webhook_url: string; custom_webhook_secret_set: boolean }>('/api/settings/preferences/custom-webhook', {
+      method: 'PUT',
+      body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
+    }),
+  updateEmailSmtp: (config: EmailSmtpConfig, password?: string) =>
+    request<{ email_smtp_config: EmailSmtpConfig; email_smtp_password_set: boolean }>('/api/settings/preferences/email-smtp', {
+      method: 'PUT',
+      body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
+    }),
+  sendTestWebhook: (channel: 'feishu' | 'wecom' | 'dingtalk' | 'custom' | 'email') =>
+    request<{ ok: boolean; detail: string }>('/api/settings/preferences/webhook-test', {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
+    }),
+  updateWecomBot: (botId: string, secret: string, enabled: boolean = true) =>
+    request<{
+      wecom_bot_id: string
+      wecom_bot_secret: string
+      wecom_bot_enabled: boolean
+      wecom_bot_status: WecomBotStatus
+    }>('/api/settings/preferences/wecom-bot', {
+      method: 'PUT',
+      body: JSON.stringify({ bot_id: botId, secret, enabled }),
+    }),
+  toggleWecomBot: (enabled: boolean) =>
+    request<{ wecom_bot_enabled: boolean; wecom_bot_status: WecomBotStatus }>('/api/settings/preferences/wecom-bot-toggle', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updateDingtalkBot: (botId: string, secret: string, enabled: boolean = true) =>
+    request<{
+      dingtalk_bot_id: string
+      dingtalk_bot_secret: string
+      dingtalk_bot_enabled: boolean
+      dingtalk_bot_status: DingtalkBotStatus
+    }>('/api/settings/preferences/dingtalk-bot', {
+      method: 'PUT',
+      body: JSON.stringify({ bot_id: botId, secret, enabled }),
+    }),
+  toggleDingtalkBot: (enabled: boolean) =>
+    request<{ dingtalk_bot_enabled: boolean; dingtalk_bot_status: DingtalkBotStatus }>(
+      '/api/settings/preferences/dingtalk-bot-toggle',
+      { method: 'PUT', body: JSON.stringify({ enabled }) },
+    ),
+  updateWebhookDefault: (enabled: boolean) =>
+    request<{ webhook_enabled_default: boolean }>('/api/settings/preferences/webhook-enabled-default', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  updateWebhookDefaultChannels: (channels: string[]) =>
+    request<{ webhook_default_channels: string[] }>('/api/settings/preferences/webhook-default-channels', {
+      method: 'PUT',
+      body: JSON.stringify({ channels }),
+    }),
+  updatePipelineSchedule: (hour: number, minute: number) =>
+    request<{ hour: number; minute: number }>('/api/settings/preferences/pipeline-schedule', {
+      method: 'PUT',
+      body: JSON.stringify({ hour, minute }),
+    }),
+  updateReviewSchedule: (enabled: boolean, hour: number, minute: number) =>
+    request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, hour, minute }),
+    }),
+  updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
+    request<{ review_push_channels: string[]; review_push_mode: 'auto' | 'manual' }>('/api/settings/preferences/review-push', {
+      method: 'PUT',
+      body: JSON.stringify({ channels, mode: mode ?? null }),
+    }),
+  /** 复盘系统提示词: 自定义值 + 内置默认全文(按需拉取, 供「填入默认模板」) */
+  getMarketRecapPrompt: () =>
+    request<{ custom: string; default: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt'),
+  /** 保存自定义复盘系统提示词; 空串 = 恢复内置默认模板 */
+  updateMarketRecapPrompt: (prompt: string) =>
+    request<{ custom: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt', {
+      method: 'PUT',
+      body: JSON.stringify({ prompt }),
+    }),
+  updateDepthPollingInterval: (interval: number) =>
+    request<{ depth_polling_interval: number }>('/api/settings/preferences/depth-polling-interval', {
+      method: 'PUT',
+      body: JSON.stringify({ interval }),
+    }),
+  updateLimitLadderMonitor: (enabled: boolean) =>
+    request<{ limit_ladder_monitor_enabled: boolean }>('/api/settings/preferences/limit-ladder-monitor', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  runLimitLadderFix: () =>
+    request<{ ok: boolean; count: number; msg: string }>('/api/settings/preferences/limit-ladder-monitor/run', {
+      method: 'POST',
+    }),
+  updateDepthFinalizeTime: (hour: number, minute: number) =>
+    request<{ hour: number; minute: number }>('/api/settings/preferences/depth-finalize-time', {
+      method: 'PUT',
+      body: JSON.stringify({ hour, minute }),
+    }),
+  saveNavOrder: (nav_order: string[]) =>
+    request<{ nav_order: string[] }>('/api/settings/preferences/nav-order', {
+      method: 'PUT',
+      body: JSON.stringify({ nav_order }),
+    }),
+  saveNavHidden: (nav_hidden: string[]) =>
+    request<{ nav_hidden: string[] }>('/api/settings/preferences/nav-hidden', {
+      method: 'PUT',
+      body: JSON.stringify({ nav_hidden }),
+    }),
+  /** 保存看板自定义布局; layout=null 恢复默认布局 */
+  saveDashboardLayout: (layout: Preferences['dashboard_layout']) =>
+    request<{ dashboard_layout: Preferences['dashboard_layout'] }>('/api/settings/preferences/dashboard-layout', {
+      method: 'PUT',
+      body: JSON.stringify({ layout }),
+    }),
+  updateInstrumentsSchedule: (hour: number, minute: number) =>
+    request<{ hour: number; minute: number }>('/api/settings/preferences/instruments-schedule', {
+      method: 'PUT',
+      body: JSON.stringify({ hour, minute }),
+    }),
+  updateEnrichedBatchSize: (size: number) =>
+    request<{ enriched_batch_size: number }>('/api/settings/preferences/enriched-batch-size', {
+      method: 'PUT',
+      body: JSON.stringify({ size }),
+    }),
+  updateIndexDailyBatchSize: (size: number) =>
+    request<{ index_daily_batch_size: number }>('/api/settings/preferences/index-daily-batch-size', {
+      method: 'PUT',
+      body: JSON.stringify({ size }),
+    }),
+  updateDailyBatchSymbols: (size: number) =>
+    request<{ daily_batch_symbols: number }>('/api/settings/preferences/daily-batch-symbols', {
+      method: 'PUT',
+      body: JSON.stringify({ size }),
+    }),
+  updateMinuteBatchSymbols: (size: number) =>
+    request<{ minute_batch_symbols: number }>('/api/settings/preferences/minute-batch-symbols', {
+      method: 'PUT',
+      body: JSON.stringify({ size }),
+    }),
 
 	// 声效语音包 (自定义提示音, data/sound_packs)
 	listSoundPacks: () =>
@@ -3579,104 +3547,109 @@ export const api = {
 			`/api/kline/instruments/search?q=${encodeURIComponent(q)}&limit=${limit}${assetTypes ? `&asset_types=${encodeURIComponent(assetTypes)}` : ''}`,
 		),
 
-	/** 批量查股票名称 (传入 symbol 列表, 返回 {symbol: name}) */
-	instrumentNames: (symbols: string[]) =>
-		request<{ names: Record<string, string> }>('/api/kline/instruments/names', {
-			method: 'POST',
-			body: JSON.stringify(symbols),
-		}),
-	klineMinute: (symbol: string, date?: string, live?: boolean) =>
-		request<{
-			symbol: string
-			name?: string
-			stock_info?: { name?: string; total_shares?: number; float_shares?: number }
-			date: string | null
-			rows: MinuteKlineRow[]
-			/** local=完整; local_partial=本地有但不完整(见 expected/actual); live=源实时; none=无数据 */
-			source?: 'local' | 'local_partial' | 'live' | 'none'
-			/** local_partial 时: 该交易日应有根数 / 实有根数 */
-			expected?: number
-			actual?: number
-			asset_type?: 'stock' | 'etf' | 'index'
-			price_limit?: PriceLimitInfo | null
-			prev_close?: number | null
-		}>(
-			`/api/kline/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}${live ? '&live=1' : ''}`,
-		),
-	klineMinuteRange: (symbol: string, days = 10) =>
-		request<{
-			symbol: string
-			name?: string
-			asset_type: 'stock' | 'etf' | 'index'
-			requested_days: number
-			sessions: MinuteKlineSession[]
-			source: 'local' | 'none'
-		}>(
-			`/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}`,
-		),
-	indexDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>
-		request<{
-			symbol: string
-			name?: string
-			index_info?: IndexInstrument
-			rows: KlineRow[]
-			source?: string
-		}>(
-			dateRange
-				? `/api/index/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
-				: `/api/index/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`,
-		),
-	indexMinute: (symbol: string, date?: string) =>
-		request<{
-			symbol: string
-			name?: string
-			date: string | null
-			rows: MinuteKlineRow[]
-			source?: string
-		}>(
-			`/api/index/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}`,
-		),
-	syncIndexInstruments: () =>
-		request<{ status: string; count: number }>('/api/index/sync_instruments', { method: 'POST' }),
-	syncIndexDaily: (days = 365) =>
-		request<{ status: string; index_count: number; rows_written: number }>(
-			`/api/index/sync_daily?days=${days}`,
-			{ method: 'POST' },
-		),
-	syncSymbol: (symbol: string, days = 250) =>
-		request<{ symbol: string; rows_written: number }>(
-			`/api/kline/sync?symbol=${encodeURIComponent(symbol)}&days=${days}`,
-			{ method: 'POST' },
-		),
-	syncMinute: (days?: number, extend?: boolean) =>
-		request<{ status: string; job_id: string }>('/api/kline/sync_minute', {
-			method: 'POST',
-			body: JSON.stringify({ ...(days ? { days } : {}), ...(extend ? { extend: true } : {}) }),
-		}),
-	syncMinuteSingle: (symbol: string, days?: number) =>
-		request<{ status: string; symbol: string; rows: number }>('/api/kline/sync_minute_single', {
-			method: 'POST',
-			body: JSON.stringify({ symbol, ...(days != null ? { days } : {}) }),
-		}),
-	clearMinute: () =>
-		request<{ status: string; removed: number }>('/api/kline/clear_minute', {
-			method: 'POST',
-			body: JSON.stringify({ confirm: true }),
-		}),
-	extendHistory: (value: number, unit: 'day' | 'month' | 'year') =>
-		request<{ status: string; job_id: string }>('/api/kline/extend_history', {
-			method: 'POST',
-			body: JSON.stringify({ value, unit }),
-		}),
-	repairDaily: (startDate: string) =>
-		request<{ status: string; job_id: string }>('/api/kline/repair_daily', {
-			method: 'POST',
-			body: JSON.stringify({ start_date: startDate }),
-		}),
-	rebuildEnriched: () =>
-		request<{ status: string; job_id: string }>('/api/kline/rebuild_enriched', {
-			method: 'POST',
-		}),
+  /** 批量查股票名称 (传入 symbol 列表, 返回 {symbol: name}) */
+  instrumentNames: (symbols: string[]) =>
+    request<{ names: Record<string, string> }>('/api/kline/instruments/names', {
+      method: 'POST',
+      body: JSON.stringify(symbols),
+    }),
+  klineMinute: (symbol: string, date?: string, live?: boolean) =>
+    request<{
+      symbol: string
+      name?: string
+      stock_info?: { name?: string; total_shares?: number; float_shares?: number }
+      date: string | null
+      rows: MinuteKlineRow[]
+      /** local=完整; local_partial=本地有但不完整(见 expected/actual); live=源实时; none=无数据 */
+      source?: 'local' | 'local_partial' | 'live' | 'none'
+      /** local_partial 时: 该交易日应有根数 / 实有根数 */
+      expected?: number
+      actual?: number
+      asset_type?: 'stock' | 'etf' | 'index'
+      price_limit?: PriceLimitInfo | null
+      prev_close?: number | null
+    }>(
+      `/api/kline/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}${live ? '&live=1' : ''}`,
+    ),
+  klineMinuteRange: (symbol: string, days = 10) =>
+    request<{
+      symbol: string
+      name?: string
+      asset_type: 'stock' | 'etf' | 'index'
+      requested_days: number
+      sessions: MinuteKlineSession[]
+      source: 'local' | 'none'
+    }>(
+      `/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+    ),
+  indexDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>
+    request<{
+      symbol: string
+      name?: string
+      index_info?: IndexInstrument
+      rows: KlineRow[]
+      source?: string
+    }>(
+      dateRange
+        ? `/api/index/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`
+        : `/api/index/daily?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+    ),
+  indexMinute: (symbol: string, date?: string) =>
+    request<{
+      symbol: string
+      name?: string
+      date: string | null
+      rows: MinuteKlineRow[]
+      source?: string
+    }>(
+      `/api/index/minute?symbol=${encodeURIComponent(symbol)}${date ? `&date=${date}` : ''}`,
+    ),
+  syncIndexInstruments: () =>
+    request<{ status: string; count: number }>('/api/index/sync_instruments', { method: 'POST' }),
+  syncIndexDaily: (days = 365) =>
+    request<{ status: string; index_count: number; rows_written: number }>(
+      `/api/index/sync_daily?days=${days}`,
+      { method: 'POST' },
+    ),
+  syncSymbol: (symbol: string, days = 250) =>
+    request<{ symbol: string; rows_written: number }>(
+      `/api/kline/sync?symbol=${encodeURIComponent(symbol)}&days=${days}`,
+      { method: 'POST' },
+    ),
+  syncMinute: (days?: number, extend?: boolean) =>
+    request<{ status: string; job_id: string }>('/api/kline/sync_minute', {
+      method: 'POST',
+      body: JSON.stringify({ ...(days ? { days } : {}), ...(extend ? { extend: true } : {}) }),
+    }),
+  syncMinuteSingle: (symbol: string, days?: number) =>
+    request<{ status: string; symbol: string; rows: number }>('/api/kline/sync_minute_single', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, ...(days != null ? { days } : {}) }),
+    }),
+  repairMinuteGaps: (symbols: string[]) =>
+    request<{ status: string; job_id: string }>('/api/kline/repair_minute_gaps', {
+      method: 'POST',
+      body: JSON.stringify({ symbols }),
+    }),
+  clearMinute: () =>
+    request<{ status: string; removed: number }>('/api/kline/clear_minute', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }),
+  extendHistory: (value: number, unit: 'day' | 'month' | 'year') =>
+    request<{ status: string; job_id: string }>('/api/kline/extend_history', {
+      method: 'POST',
+      body: JSON.stringify({ value, unit }),
+    }),
+  repairDaily: (startDate: string) =>
+    request<{ status: string; job_id: string }>('/api/kline/repair_daily', {
+      method: 'POST',
+      body: JSON.stringify({ start_date: startDate }),
+    }),
+  rebuildEnriched: () =>
+    request<{ status: string; job_id: string }>('/api/kline/rebuild_enriched', {
+      method: 'POST',
+    }),
 
 	watchlistList: () => request<{ symbols: WatchlistEntry[] }>('/api/watchlist'),
 	watchlistAdd: (symbol: string, note = '', groupId?: string | null) =>

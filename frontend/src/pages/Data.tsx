@@ -1241,16 +1241,13 @@ export function Data() {
 				)}
 			</AnimatePresence>
 
-			<AnimatePresence>
-				{openSettings === 'minute' && (
-					<SettingsModal title="分钟 K · 同步设置" onClose={() => setOpenSettings(null)}>
-						<MinuteSyncConfig hasCap={hasMinuteCap} onJobStart={(jobId) => {
-							setActiveJobId(jobId);
-							setOpenSettings(null)
-						}} />
-					</SettingsModal>
-				)}
-			</AnimatePresence>
+      <AnimatePresence>
+        {openSettings === 'minute' && (
+          <SettingsModal title="分钟 K · 同步设置" width="max-w-4xl" contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden" onClose={() => setOpenSettings(null)}>
+            <MinuteSyncConfig hasCap={hasMinuteCap} onClose={() => setOpenSettings(null)} onJobStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }} />
+          </SettingsModal>
+        )}
+      </AnimatePresence>
 
 			<AnimatePresence>
 				{openSettings === 'adj_factor' && (
