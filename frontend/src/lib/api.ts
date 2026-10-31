@@ -1610,6 +1610,8 @@ export interface FactorBacktestResult {
 	n_symbols: number
 	n_dates: number
 	error: string | null
+	/** P0-6 回测检查员: 放行但需留意的计划问题; 无警告时缺省 */
+	preflight_warnings?: string[]
 }
 
 export interface FactorBatchItem {
@@ -1641,6 +1643,8 @@ export interface FactorBatchResult {
 	n_symbols: number
 	n_dates: number
 	error: string | null
+	/** P0-6 回测检查员: 放行但需留意的计划问题; 无警告时缺省 */
+	preflight_warnings?: string[]
 }
 
 // ===== Factor / strategy mining =====
@@ -2019,6 +2023,8 @@ export interface StrategyBacktestResult {
 	}
 	elapsed_ms: number
 	error: string | null
+	/** P0-6 回测检查员: 放行但值得提醒的计划问题 (区间太短/数据不覆盖起点等); 无警告时缺省 */
+	preflight_warnings?: string[]
 }
 
 // ===== Settings =====

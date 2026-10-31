@@ -528,8 +528,8 @@ async def _application_lifespan(app: FastAPI):
         meng = getattr(app.state, "monitor_engine", None)
         if meng:
             meng.flush_cooldown()
-        # webhook 投递线程池: 放弃排队投递并关闭, 避免通知静默丢失在 daemon 线程里
-        from app.services.quote_service import shutdown_webhook_executor
+        # webhook/系统通知投递线程池: 放弃排队投递并关闭, 避免通知静默丢失在 daemon 线程里
+        from app.services.quote_service import shutdown_delivery_executors
 
         shutdown_delivery_executors()
         logger.info("shutdown")
@@ -758,6 +758,13 @@ async def capability_denied_handler(request: Request, exc: CapabilityDenied) -> 
         status_code=403,
         content={"detail": str(exc), "suggestion": exc.suggestion},
     )
+
+
+@app.exception_handler(ProviderRequestError)
+async def provider_request_error_handler(request: Request, exc: ProviderRequestError) -> JSONResponse:
+    # 数据源请求失败(凭据/权限/额度/上游 4xx-5xx)统一转 502 + 可读 detail,
+    # 前端据此提示"数据源不可用"而非裸露 500。code 供前端做精确分支。
+    return JSONResponse(status_code=502, content={"detail": str(exc), "code": "provider_request"})
 
 
 @app.exception_handler(HTTPException)

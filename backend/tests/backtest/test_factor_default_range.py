@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -39,7 +40,14 @@ class _CapturingService:
 
 
 class _Req:
-    """占位 request; _get_engine 已被 patch, 不会真正访问其属性。"""
+    """占位 request。
+
+    _get_engine / _guard_server_backtest_range 已被 patch; P0-6 回测检查员还会读
+    request.app.state.repo 做数据覆盖检查 — 给一个 repo=None 的空 state, 使该项
+    检查失败开放(跳过), 单测仍只聚焦「起始日解析」这一关注点。
+    """
+
+    app = SimpleNamespace(state=SimpleNamespace(repo=None))
 
 
 @pytest.fixture
