@@ -762,6 +762,11 @@ async def capability_denied_handler(request: Request, exc: CapabilityDenied) -> 
     )
 
 
+@app.exception_handler(DailyIntegrityError)
+async def daily_integrity_error_handler(request: Request, exc: DailyIntegrityError) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc), "code": "daily_integrity"})
+
+
 @app.exception_handler(ProviderRequestError)
 async def provider_request_error_handler(request: Request, exc: ProviderRequestError) -> JSONResponse:
     # 数据源请求失败(凭据/权限/额度/上游 4xx-5xx)统一转 502 + 可读 detail,

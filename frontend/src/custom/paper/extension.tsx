@@ -220,7 +220,7 @@ function SetupCard({ accId, onDone, onCancel }: {
 	const [stampQian, setStampQian] = useState(defaults.stampQian)
 	const [slippageBps, setSlippageBps] = useState(defaults.slippageBps)
 	const [name, setName] = useState('')
-	// 自动执行策略 (可选): 创建后立即绑一条自动跟单规则, 策略/监控规则触发信号时按下方参数自动下单
+	// 事件跟单（兼容，可选）: 创建后立即绑一条自动跟单规则, 策略/监控规则触发信号时按下方参数自动下单
 	const [autoKind, setAutoKind] = useState<'strategy' | 'rule'>('strategy')
 	const [autoId, setAutoId] = useState('')
 	const [autoName, setAutoName] = useState('')
