@@ -37,7 +37,12 @@ def test_custom_provider_clamp_allows_1s(monkeypatch):
 
 
 def test_tickflow_tier_floor_unchanged(monkeypatch):
-    """TickFlow 路由: 档位查表行为不变 (none/free/starter=6s, pro=3s, expert=1s)。"""
+    """TickFlow 路由且无静态互补源: 档位查表行为不变 (none/free/starter=6s, pro=3s, expert=1s)。
+
+    P1-12 layer1: 免费档有互补源顶实时时下限放宽到 1s, 该行为由
+    test_layer1_complement.py 覆盖; 本测试锁定「无互补源时查表不变」。
+    """
+    monkeypatch.setattr(QuoteService, "_realtime_complement", classmethod(lambda cls: None))
     for tier, expect in (("none", 6.0), ("free", 6.0), ("starter", 6.0), ("pro", 3.0), ("expert", 1.0)):
         _route(monkeypatch, "tickflow", tier)
         assert _bare().get_min_interval() == expect, tier

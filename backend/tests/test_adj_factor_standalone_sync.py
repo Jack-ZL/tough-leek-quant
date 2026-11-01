@@ -38,7 +38,8 @@ def _patch_common(monkeypatch, tmp_path, *, written=2, affected=("600519.SH",),
 
     captured_sync: dict = {}
 
-    def fake_sync(symbols, repo, capset, start_time=None, end_time=None, on_chunk_done=None):
+    def fake_sync(symbols, repo, capset, start_time=None, end_time=None, on_chunk_done=None,
+                  failed_out=None):
         captured_sync["symbols"] = symbols
         captured_sync["start_time"] = start_time
         return written, list(affected)

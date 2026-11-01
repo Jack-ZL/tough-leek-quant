@@ -41,6 +41,10 @@ class CapabilitySet:
 
     def __init__(self, caps: dict[Cap, CapabilityLimits] | None = None) -> None:
         self._caps: dict[Cap, CapabilityLimits] = dict(caps or {})
+        # P1-12 layer1: 静态互补授权记录 cap → 互补源名。仅当 TickFlow 原生
+        # 缺该能力、由免费内置源补授时写入; 取数点经 complement_of() 把请求
+        # 路由到互补源, 避免授权后误走 TickFlow SDK。不持久化 (每次探测重算)。
+        self._complements: dict[Cap, str] = {}
 
     def has(self, cap: Cap) -> bool:
         return cap in self._caps
@@ -62,6 +66,20 @@ class CapabilitySet:
         即使无 TickFlow Pro+ 也补上 KLINE_MINUTE_BATCH, 使所有 capset.has() 检查通过。"""
         if cap not in self._caps:
             self._caps[cap] = limits or CapabilityLimits()
+
+    def grant_complement(self, cap: Cap, provider_name: str) -> None:
+        """P1-12 layer1: 由静态互补源补授能力并记录来源 (不覆盖 TickFlow 原生能力)。
+
+        与 grant() 的区别: 记录「这个能力是免费内置源顶上来的」, 取数点用
+        complement_of() 识别后把请求路由给互补源, 而不是调 TickFlow SDK。
+        """
+        if cap not in self._caps:
+            self._caps[cap] = CapabilityLimits()
+            self._complements[cap] = provider_name
+
+    def complement_of(self, cap: Cap) -> str | None:
+        """P1-12 layer1: 返回该能力的静态互补源名; TickFlow 原生具备时为 None。"""
+        return self._complements.get(cap)
 
     def to_dict(self) -> dict[str, dict]:
         return {

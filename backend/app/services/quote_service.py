@@ -541,6 +541,16 @@ class QuoteService:
         return tier_label().split()[0].split("+")[0].strip().lower()
 
     @classmethod
+    def _realtime_complement(cls) -> str | None:
+        """P1-12 layer1: TickFlow 免费档无实时时, 能顶上的免费内置互补源名。
+
+        realtime 没有 Cap 键 (实时链路整体由 mode 驱动, 不走 capset), 因此
+        直接查 loader; 无互补源返回 None。
+        """
+        from app.data_providers import custom as custom_sources
+        return custom_sources.find_complement_provider("realtime")
+
+    @classmethod
     def realtime_mode(cls) -> str:
         """当前实时行情模式: none / full_market。
 
@@ -553,6 +563,9 @@ class QuoteService:
             return "full_market"
         tier = cls._current_tier()
         if tier in ("none", "free"):
+            # P1-12 layer1: 有免费内置源 (腾讯/东财快照) 能顶实时 → 保持全市场模式
+            if cls._realtime_complement():
+                return "full_market"
             return "none"
         return "full_market"
 
@@ -569,6 +582,9 @@ class QuoteService:
         if preferences.get_realtime_data_provider() != "tickflow":
             return cls.CUSTOM_PROVIDER_MIN_INTERVAL
         tier = cls._current_tier()
+        # P1-12 layer1: 静态互补源顶实时时, TickFlow 档位限速不适用 (中立能力原则)
+        if tier in ("none", "free") and cls._realtime_complement():
+            return cls.CUSTOM_PROVIDER_MIN_INTERVAL
         return cls.TIER_MIN_INTERVAL.get(tier, cls.DEFAULT_INTERVAL)
 
     def _clamp_interval(self, interval: float) -> float:
@@ -760,8 +776,36 @@ class QuoteService:
         from app.services import preferences
 
         provider_name = preferences.get_realtime_data_provider()
+        from app.data_providers import custom as custom_sources
+        # P1-12 layer1: 生效源归一化 — custom 未声明 realtime → 按 tickflow 处理;
+        # tickflow 无付费 Key (免费档) → 由免费内置互补源 (腾讯/东财快照) 接管,
+        # 运行时兜底、不写偏好, 用户配置了 Key 后自动回到 TickFlow。
+        if provider_name != "tickflow" and not custom_sources.provider_has_dataset(
+            provider_name, "realtime"
+        ):
+            provider_name = "tickflow"
+        if provider_name == "tickflow":
+            from app.tickflow.client import get_paid_realtime_client
+            if get_paid_realtime_client() is None:
+                complement = self._realtime_complement()
+                if complement:
+                    logger.info("TickFlow 无实时 Key, 实时行情由静态互补源 '%s' 接管", complement)
+                    provider_name = complement
+        # P1-12 layer2: 热备路由 — 主源熔断时粘滞切备源, 冷却到期半开探测主源;
+        # 状态机见 app/services/realtime_failover.py (进程内单例, API 共享读状态)
+        from app.services.realtime_failover import get_failover
+        failover = get_failover()
+        primary_name = provider_name
+        provider_name = failover.resolve(primary_name)
+        if provider_name != primary_name:
+            # 熔断期间每轮明示一条 (不静默), 冷却剩余时间来自状态快照
+            logger.info(
+                "实时热备: 主源 %s 熔断中, 本轮由备源 %s 顶替 (冷却剩余 %.0fs)",
+                primary_name,
+                provider_name,
+                failover.status()["cooldown_remaining"],
+            )
         if provider_name != "tickflow":
-            from app.data_providers import custom as custom_sources
             if custom_sources.provider_has_dataset(provider_name, "realtime"):
                 try:
                     t0 = time.perf_counter()
@@ -793,8 +837,15 @@ class QuoteService:
                             logger.warning("自定义源指数行情拉取失败: %s", e)
                             replace_index_cache = False
                 except Exception as e:  # noqa: BLE001
+                    failover.on_failure(provider_name)  # P1-12 layer2: 异常计入熔断
                     logger.warning("自定义实时行情拉取失败: %s", e)
                     return
+                # P1-12 layer2: 空快照按失败计 (插件软失败约定: 网络错/熔断 → []),
+                # 非空即认为源健康 (边界未确认轮只是数据陈旧, 不算源故障)
+                if records:
+                    failover.on_success(provider_name)
+                else:
+                    failover.on_failure(provider_name)
                 return self._process_full_market_records(
                     records,
                     t0=t0,
@@ -849,12 +900,15 @@ class QuoteService:
                 resp.extend(tf.quotes.get(symbols=_core_syms) or [])
                 logger.info("核心指数行情拉取完成: %d 只 (%.2fs)", len(_core_syms), time.perf_counter() - _i0)
         except Exception as e:  # noqa: BLE001
+            failover.on_failure("tickflow")  # P1-12 layer2: 异常计入熔断
             logger.warning("行情拉取失败 (%.2fs): %s", time.perf_counter() - t0, e)
             return
 
         if not resp:
+            failover.on_failure("tickflow")  # P1-12 layer2: 空响应计入熔断
             logger.warning("行情数据为空")
             return
+        failover.on_success("tickflow")  # P1-12 layer2: 拿到数据即源健康
 
         # ---- 解析 API 响应 (临时变量, 用完丢弃) ----
         records = []

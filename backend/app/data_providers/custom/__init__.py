@@ -4,6 +4,7 @@ from app.data_providers.custom.loader import (
     data_sources_dir,
     delete_config,
     errors,
+    find_complement_provider,
     get_config_dict,
     get_provider,
     install_plugin,
@@ -16,6 +17,7 @@ from app.data_providers.custom.loader import (
     plugin_manifest,
     probe_plugin_key,
     provider_has_dataset,
+    resolve_with_complement,
     save_config,
     uninstall_plugin,
 )
@@ -25,6 +27,7 @@ __all__ = [
     "data_sources_dir",
     "delete_config",
     "errors",
+    "find_complement_provider",
     "get_config_dict",
     "get_provider",
     "install_plugin",
@@ -37,6 +40,7 @@ __all__ = [
     "plugin_manifest",
     "probe_plugin_key",
     "provider_has_dataset",
+    "resolve_with_complement",
     "save_config",
     "uninstall_plugin",
 ]

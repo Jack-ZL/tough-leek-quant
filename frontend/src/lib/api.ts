@@ -2348,11 +2348,29 @@ export interface CapabilityRoute {
 	effective_display: string
 	candidates: CapabilityCandidate[]                // 当前可用候选 (按当前 TickFlow 档位过滤)
 	pending: CapabilityCandidate[]                   // 声明了该能力但未就绪的源 (置灰提示)
+	// P1-12 layer1: 静态互补 — TickFlow 缺能力且选定源未声明时, 免费内置源自动补授
+	complement?: string | null                       // 互补源名 (null = 无)
+	complement_display?: string | null               // 互补源展示名
+}
+
+/** P1-12 layer2: 实时行情热备状态 (熔断→粘滞切备源→冷却半开探测→切回) */
+export interface RealtimeFailoverStatus {
+	state: 'closed' | 'open' | 'half_open'           // closed=主源健康 / open=备源顶替中 / half_open=探测主源中
+	primary: string | null                           // 主源名
+	backup: string | null                            // 备源名 (null = 无热备)
+	active: string | null                            // 当前实际生效源
+	failures: number                                 // 主源连续失败计数
+	threshold: number                                // 熔断阈值
+	cooldown_seconds: number                         // 熔断冷却时长
+	cooldown_remaining: number                       // 冷却剩余秒数
 }
 
 export interface CapabilityMatrix {
 	tickflow_tier?: string                           // TickFlow 当前档位基础名 (none/free/...)
 	capabilities: CapabilityRoute[]
+	// P1-12 layer2: 实时热备状态 + 备源偏好 (auto/off/具体源名)
+	realtime_failover?: RealtimeFailoverStatus
+	realtime_backup_provider?: string
 }
 
 export interface DataSourceLoadError {
@@ -3129,8 +3147,11 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ provider, dataset, symbols, config }),
 		}),
-	updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>>) =>
-		request<Pick<Preferences, ProviderField>>(
+	// P1-12 layer2: realtime_backup_provider = 实时热备备源偏好 (auto/off/具体源名)
+	updateDataProviders: (
+		cfg: Partial<Pick<Preferences, ProviderField>> & { realtime_backup_provider?: string },
+	) =>
+		request<Pick<Preferences, ProviderField> & { realtime_backup_provider?: string }>(
 			'/api/settings/preferences/data-providers',
 			{ method: 'PUT', body: JSON.stringify(cfg) },
 		),
@@ -3667,6 +3688,19 @@ export const api = {
     request<{ status: string; job_id: string }>('/api/kline/repair_daily', {
       method: 'POST',
       body: JSON.stringify({ start_date: startDate }),
+    }),
+  // P1-12 layer3: 备源重跑 — 批量任务硬失败标的的清单/重跑/忽略
+  rerunManifest: () =>
+    request<RerunManifest>('/api/kline/rerun_manifest'),
+  rerunWithBackup: (dataset: RerunDataset) =>
+    request<{ status: string; job_id: string }>('/api/kline/rerun_with_backup', {
+      method: 'POST',
+      body: JSON.stringify({ dataset }),
+    }),
+  clearRerunManifest: (dataset: RerunDataset) =>
+    request<{ status: string; dataset: string }>('/api/kline/rerun_manifest/clear', {
+      method: 'POST',
+      body: JSON.stringify({ dataset }),
     }),
   rebuildEnriched: () =>
     request<{ status: string; job_id: string }>('/api/kline/rebuild_enriched', {
@@ -5591,6 +5625,21 @@ export const api = {
 }
 
 // ===== Pipeline =====
+// P1-12 layer3: 备源重跑清单 (盘后管道/除权同步单票硬失败时由后端记录)
+export type RerunDataset = 'daily' | 'adj_factor'
+
+export interface RerunDatasetEntry {
+	count: number
+	symbols_sample: string[]
+	source: string | null      // 失败时用的主源 (展示用)
+	recorded_at: string | null
+	backup: string | null      // 当前可用备源; null = 无备源只能忽略或修主源
+}
+
+export interface RerunManifest {
+	datasets: Partial<Record<RerunDataset, RerunDatasetEntry>>
+}
+
 export interface PipelineJob {
 	id: string
 	status: 'pending' | 'running' | 'succeeded' | 'failed'

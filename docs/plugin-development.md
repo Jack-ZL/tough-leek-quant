@@ -332,6 +332,16 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
   - `client.py` — httpx 客户端(按主机令牌桶 3 QPS + 随机抖动 + 指数退避重试 + 连续失败熔断冷却 300s; 实测短时突发会触发 push2 系主机 IP 级临时封禁, datacenter 为独立封禁池; 请求一律不带 ut token, 带 ut 反而返回空)
   - `provider.py` — Provider 实现(clist 字段映射 f2最新价/f3涨跌幅%/f12代码/f13市场(1沪,0深京)/f124秒戳→ms、百分数→小数制、volume 手/amount 元透传、kline CSV 列序陷阱"日期,开,**收**,高,低"、secid 前缀 1=SH/0=SZ与BJ、停牌 "-"→None 不伪造、软失败)
   - `tests/test_eastmoney_provider.py` — 50 个契约测试(实测录制样例离线回放 + 虚拟时钟验证限速/熔断节奏 + loader 注册与能力矩阵注入)
+- **`backend/app/plugins/tencent/`** — 腾讯行情免费公开接口(runtime: python, 无 requirements.txt 零额外依赖, 纯 httpx; 免 Key 开箱即用, P1-12)
+  - 提供 `realtime`(qt.gtimg.cn 快照, 单请求最多 300 只, 全市场一轮约 20 请求; 股票池复用项目维表 instruments.parquet, 北交所/指数同端点)、`depth5`(快照自带买卖五档, 零额外请求, 手口径透传)、`minute`(ifzq.gtimg.cn 1 分钟线, 真实 OHLC 但仅近 320 根 ≈1.3 个交易日, 只适合当日应急, 无成交额列不伪造); daily 未接入(腾讯日K无成交额字段不满足内部契约), adj_factor/financial 上游无对应接口 → 自动回退 TickFlow
+  - 定位: **实时行情热备首选**(layer2 `prefer=("tencent",)` — 东财 push2 高频易 IP 封禁且封禁池与日K主链路共享, 腾讯快照接口无明显封禁前科)
+  - `client.py` — httpx 客户端(令牌桶 8 QPS + 随机抖动 + 指数退避 + 连续失败 5 次熔断冷却 300s; GBK 编码需显式 decode)
+  - `tests/test_tencent_provider.py` — 契约测试(录制样例离线回放 + 限速/熔断虚拟时钟)
+- **`backend/app/plugins/baostock/`** — baostock 证券宝免费开源数据(runtime: python, 依赖 `baostock` 包, 卡片一键安装; 匿名登录免 Key, P1-12)
+  - 提供 `daily`(不复权原始价含成交额, 股票/指数支持, `iter_daily` 流式, volume 股→手)、`adj_factor`(全历史后复权因子链推导单事件比值, 已与项目存量数据精确对账; 增量窗口只裁输出不裁查询); realtime/depth5/minute 上游无实时接口, financial 单查询最坏 31s 不可用, instruments 严禁接入(`query_stock_basic` 服务端挂起且毒化会话) → 均回退 TickFlow
+  - 定位: **日K/除权因子备源重跑首选**(layer3 `prefer=("baostock",)` — 官方免费接口稳定、无 IP 封禁前科); 数据收盘后更新, 逐标的 0.15-0.6s, 全市场回填 15-60 分钟, 是兜底不是主力; 北交所/ETF 无覆盖(自动跳过并回退)
+  - `client.py` — 全局单 socket 会话封装(查询串行 + 失败自动重连重试一次)
+  - `tests/test_baostock_provider.py` — 契约测试(假 login/query 注入, 不触网)
 
 TdxQuant 在 SDK 清理响应前检查服务端错误, 保留错误原因并脱敏; 明确的凭据/额度拒绝不重试, 实时分钟轮立即熔断。历史分钟请求失败会通过 `app.data_providers.base.ProviderRequestError` 传递到任务层并标记失败, 不转换成成功的 0 行或跨源重试; 其他插件也可用该异常显式声明请求失败。带时区的分钟请求窗口在插件边界归一为北京墙钟, 再与原生分钟列比较。正常停牌、休市或窗口内无数据的空结果保留原语义。
 
@@ -345,3 +355,25 @@ TdxQuant 在 SDK 清理响应前检查服务端错误, 保留错误原因并脱�
 
 注册后, 插件和用户 YAML 自定义源走**完全相同的路由路径**(services 层的
 `provider_has_dataset` / `get_provider` 调用), 无需额外集成代码。
+
+### 分层保险(P1-12, 插件开发者了解即可)
+
+免费内置插件之上, services 层有三层兜底路由, 插件**无需任何额外适配**:
+
+1. **layer1 静态互补**(`custom/loader.py` 的 `resolve_with_complement`):
+   用户选定源未声明某数据集、且 TickFlow 原生也缺该能力时, 自动由免费内置源
+   (按 `_COMPLEMENT_PRIORITY` 优先级)补授能力并接管取数。不写用户偏好、
+   能力矩阵页如实展示"由 X 互补"。
+2. **layer2 实时热备**(`services/realtime_failover.py`): 仅 realtime 有运行时
+   自动切源(无状态快照, 零污染风险)。主源连续 3 轮失败(异常或空快照)→熔断
+   打开→粘滞切备源(`find_complement_provider("realtime", prefer=("tencent",))`)
+   →300s 冷却→半开探测主源→成功切回/失败重新熔断。设置页可配 auto/off/指定源。
+3. **layer3 批量任务备源重跑**(`services/rerun_manifest.py`): 日K/除权因子等
+   **落库**任务不做运行时切源(中途换源=数据混杂)。单票硬失败→记
+   `{data_dir}/rerun_manifest.json` + stage_errors(任务终态如实 failed)→数据页
+   「用备源重跑」按钮(手动)→后台 job 全程只用备源(`prefer=("baostock",)`,
+   经 `provider_override` 参数, 不回退不混源)重拉清单标的; 仍失败的重新记回。
+
+对插件的含义: 声明 `datasets` 要诚实(只声明实测通过的), 软失败契约(接口报错
+返回 [] 而非抛异常)会被 layer2 计为失败轮次; 落库数据集的分块失败经
+`failed_out` 出参上浮进 layer3 清单。

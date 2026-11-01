@@ -137,12 +137,18 @@ def test_sync_discards_staging_when_streaming_fails(monkeypatch, repo):
     )
     _route_fuyao(monkeypatch, provider)
 
-    with pytest.raises(RuntimeError, match="network lost"):
-        kline_sync.sync_and_persist_daily_batch(
-            ["000001.SZ"], repo, object(),
-            start_date=datetime(2020, 1, 1), end_date=datetime(2020, 1, 2),
-        )
+    # P1-12 layer3: 流式取数异常不再炸掉整个任务 — 改为软失败:
+    # 全量标的经 failed_out 上浮 (上层记重跑清单 + stage_errors 仍标任务 failed),
+    # staging 原子性不变: 半写分块照样不落正式分区。
+    failed: list[str] = []
+    written = kline_sync.sync_and_persist_daily_batch(
+        ["000001.SZ"], repo, object(),
+        start_date=datetime(2020, 1, 1), end_date=datetime(2020, 1, 2),
+        failed_out=failed,
+    )
 
+    assert written == 0
+    assert failed == ["000001.SZ"]
     assert not list((repo.store.data_dir / "kline_daily").glob("date=*"))
     assert not (repo.store.data_dir / ".daily_sync_staging").exists()
 

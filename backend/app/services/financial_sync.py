@@ -68,19 +68,23 @@ def _fetch_table(
 ) -> pl.DataFrame:
     """通过当前财务数据源拉取一张标准化财务表。"""
     is_custom = _financial_is_custom()
-    if not is_custom and not capset.has(Cap.FINANCIAL):
+    # P1-12 layer1: 静态互补 — 选定源未声明 financial 且 TickFlow 原生缺该能力时,
+    # 由免费内置源接管 (当前三个免费源均未声明 financial, 此处为通用钩子)。
+    complement = None if is_custom else capset.complement_of(Cap.FINANCIAL)
+    if not is_custom and complement is None and not capset.has(Cap.FINANCIAL):
         logger.info("sync_%s skipped: %s 不可用", table, _financial_capability_label())
         return pl.DataFrame()
     if not symbols:
         logger.warning("sync_%s skipped: no symbols", table)
         return pl.DataFrame()
 
-    # 自定义数据源分流
-    if is_custom:
+    # 自定义数据源分流 (含静态互补源)
+    if is_custom or complement:
         from app.services import preferences
         from app.data_providers import custom as custom_sources
+        provider_name = preferences.get_financial_provider() if is_custom else complement
         try:
-            provider = custom_sources.get_provider(preferences.get_financial_provider())
+            provider = custom_sources.get_provider(provider_name)
             df = provider.get_financials(table, symbols, latest_only=latest_only)
         except Exception as e:  # noqa: BLE001
             logger.warning("sync_%s custom provider failed: %s", table, e)

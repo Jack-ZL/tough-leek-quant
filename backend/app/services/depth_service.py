@@ -305,6 +305,14 @@ class DepthService:
         from app.services import preferences
 
         provider_name = preferences.get_depth5_data_provider()
+        capset = self._get_capset()
+        # P1-12 layer1: 静态互补 — 互补授权仅在「选定源未声明 depth5 且 TickFlow
+        # 原生缺该能力」时记录, 因此 complement 非空即可直接接管; 失败不跨源回退
+        # 的既有契约不变 (跳过本轮)。
+        complement = capset.complement_of(Cap.DEPTH5_BATCH)
+        if complement:
+            logger.debug("depth5 由静态互补源 '%s' 接管", complement)
+            provider_name = complement
         if provider_name == "tickflow":
             from app.data_providers.registry import get_provider
 
@@ -326,7 +334,6 @@ class DepthService:
             logger.warning("depth provider %s 未实现 get_depth_batch, 跳过本轮", provider_name)
             return {}
 
-        capset = self._get_capset()
         limit = resolve_limit(capset, Cap.DEPTH5_BATCH, default_batch=100, default_rpm=30)
 
         result: dict = {}

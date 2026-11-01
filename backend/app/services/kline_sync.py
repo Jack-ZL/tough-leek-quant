@@ -365,6 +365,9 @@ def iter_daily_frames(
     from app.data_providers import custom
 
     provider_name = preferences.get_daily_data_provider()
+    # P1-12 layer1: 选定源未声明 daily 且 TickFlow 原生缺该能力时, 路由到静态互补源
+    provider_name = custom.resolve_with_complement(
+        "daily", Cap.KLINE_DAILY_BATCH, capset, provider_name)
     if provider_name != "tickflow" and custom.provider_has_dataset(provider_name, "daily"):
         found = False
         for frame in iter_custom_daily_frames(
@@ -401,6 +404,7 @@ def sync_and_persist_daily_batch(
     on_chunk_done: Callable[[int, int], None] | None = None,
     zero_row_out: list[str] | None = None,
     failed_out: list[str] | None = None,
+    provider_override: str | None = None,
 ) -> int:
     """批量同步日 K 并落到 Parquet。返回写入的行数。
 
@@ -411,6 +415,8 @@ def sync_and_persist_daily_batch(
                   供上层 fail-loud 展示, 不再"显示成功实则全空" (#302)。
     failed_out: 可选出参。分块拉取失败(超时/异常)的标的, 供上层把单票失败
                 上浮为 stage_errors 而非静默当成功 (#514)。
+    provider_override: P1-12 layer3 备源重跑专用 — 直接用指定源取数, 跳过
+                偏好/互补解析, 且**不回退 TickFlow** (原子性: 重跑任务不混源)。
     """
     seen: set[str] = set()
     failed_syms: list[str] = []
@@ -444,43 +450,61 @@ def sync_and_persist_daily_batch(
     if not symbols:
         return _finalize(0)
 
-    provider_name = preferences.get_daily_data_provider()
-    if provider_name != "tickflow":
-        from app.data_providers import custom as custom_sources
+    from app.data_providers import custom as custom_sources
 
+    if provider_override:
+        # P1-12 layer3: 备源重跑 — 指定源必须声明 daily, 否则直接报错
+        # (不允许悄悄回退 TickFlow, 保证重跑任务原子性: 全程只用一个源)
+        if not custom_sources.provider_has_dataset(provider_override, "daily"):
+            raise ValueError(f"备源 {provider_override} 未声明 daily 数据集, 无法重跑")
+        provider_name = provider_override
+    else:
+        provider_name = preferences.get_daily_data_provider()
+        # P1-12 layer1: 选定源未声明 daily 且 TickFlow 原生缺该能力时, 路由到静态互补源
+        provider_name = custom_sources.resolve_with_complement(
+            "daily", Cap.KLINE_DAILY_BATCH, capset, provider_name)
+    if provider_name != "tickflow":
         if custom_sources.provider_has_dataset(provider_name, "daily"):
             provider = custom_sources.get_provider(provider_name)
             end_time = end_date or datetime.now()
             days = count or 365
             start_time = start_date or (end_time - timedelta(days=days))
             iter_daily = getattr(provider, "iter_daily", None)
-            if callable(iter_daily):
+            try:
+                if callable(iter_daily):
 
-                def _tracking_chunks(chunks):
-                    for df in chunks:
-                        if not df.is_empty() and "symbol" in df.columns:
-                            seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
-                        yield df
+                    def _tracking_chunks(chunks):
+                        for df in chunks:
+                            if not df.is_empty() and "symbol" in df.columns:
+                                seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
+                            yield df
 
-                return _finalize(
-                    _persist_daily_chunks(
-                        _tracking_chunks(
-                            iter_daily(
-                                symbols,
-                                start_time=start_time,
-                                end_time=end_time,
-                                on_chunk_done=on_chunk_done,
-                            )
-                        ),
-                        repo,
+                    return _finalize(
+                        _persist_daily_chunks(
+                            _tracking_chunks(
+                                iter_daily(
+                                    symbols,
+                                    start_time=start_time,
+                                    end_time=end_time,
+                                    on_chunk_done=on_chunk_done,
+                                )
+                            ),
+                            repo,
+                        )
                     )
+                df = provider.get_daily(
+                    symbols,
+                    start_time=start_time,
+                    end_time=end_time,
+                    on_chunk_done=on_chunk_done,
                 )
-            df = provider.get_daily(
-                symbols,
-                start_time=start_time,
-                end_time=end_time,
-                on_chunk_done=on_chunk_done,
-            )
+            except Exception as e:  # noqa: BLE001
+                # P1-12 layer3: 自定义源整体抛异常 → 全量记失败上浮 (staging 机制
+                # 保证已写分块不落正式分区), 不再让整个任务崩掉; 上层据此记重跑清单
+                logger.warning("日K自定义源 %s 取数异常, %d 只标的记为失败: %s",
+                               provider_name, len(requested), e)
+                failed_syms.extend(requested)
+                return _finalize(0)
             if df.is_empty():
                 return _finalize(0)
             if "symbol" in df.columns:
@@ -774,6 +798,8 @@ def sync_adj_factor(
     end_time: datetime | None = None,
     on_chunk_done: Callable[[int, int], None] | None = None,
     asset_type: str = "stock",
+    failed_out: list[str] | None = None,
+    provider_override: str | None = None,
 ) -> tuple[int, list[str]]:
     """同步除权因子(Starter+)。SDK 接口:`tf.klines.ex_factors(symbols=...)`。
 
@@ -781,23 +807,45 @@ def sync_adj_factor(
     返回 (写入行数, 受影响的 symbol 列表) — 供 enriched 局部重算使用。
     受影响 = 因子新增或值变化 (ex_factor diff) 的标的; 仅事件明细列
     (dividend 等) 回填不改变复权价, 不计入受影响列表。
+
+    failed_out: P1-12 layer3 可选出参 — 硬失败(分块超时/异常、自定义源整体
+                抛错)的标的追加进该 list, 供上层记重跑清单 + stage_errors。
+    provider_override: P1-12 layer3 备源重跑专用 — 直接用指定源, 跳过偏好/
+                互补解析, 不回退 TickFlow (原子性: 重跑任务不混源)。
     """
     if not symbols:
         return 0, []
 
-    provider_name = preferences.get_adj_factor_provider()
-    if provider_name != "tickflow":
-        from app.data_providers import custom as custom_sources
+    from app.data_providers import custom as custom_sources
 
+    if provider_override:
+        # P1-12 layer3: 指定备源必须声明 adj_factor, 否则直接报错 (不悄悄回退)
+        if not custom_sources.provider_has_dataset(provider_override, "adj_factor"):
+            raise ValueError(f"备源 {provider_override} 未声明 adj_factor 数据集, 无法重跑")
+        provider_name = provider_override
+    else:
+        provider_name = preferences.get_adj_factor_provider()
+        # P1-12 layer1: 选定源未声明 adj_factor 且 TickFlow 原生缺该能力时, 路由到静态互补源
+        provider_name = custom_sources.resolve_with_complement(
+            "adj_factor", Cap.ADJ_FACTOR, capset, provider_name)
+    if provider_name != "tickflow":
         if custom_sources.provider_has_dataset(provider_name, "adj_factor"):
             provider = custom_sources.get_provider(provider_name)
-            new_data = provider.get_adj_factors(
-                symbols,
-                start_time=start_time,
-                end_time=end_time,
-                asset_type=asset_type,
-                on_chunk_done=on_chunk_done,
-            )
+            try:
+                new_data = provider.get_adj_factors(
+                    symbols,
+                    start_time=start_time,
+                    end_time=end_time,
+                    asset_type=asset_type,
+                    on_chunk_done=on_chunk_done,
+                )
+            except Exception as e:  # noqa: BLE001
+                # P1-12 layer3: 自定义源整体抛异常 → 全量记失败上浮, 任务不崩
+                logger.warning("adj_factor 自定义源 %s 取数异常, %d 只标的记为失败: %s",
+                               provider_name, len(symbols), e)
+                if failed_out is not None:
+                    failed_out.extend(symbols)
+                return 0, []
             if new_data.is_empty():
                 # 扶摇等自定义源对 ETF 直接空返回, 与「该 ETF 无除权」无法区分;
                 # 有 TickFlow 除权能力时回退, 否则 ETF 日K永远不复权。
@@ -868,6 +916,9 @@ def sync_adj_factor(
             len(symbols),
             failed_syms[:10],
         )
+        # P1-12 layer3: 失败标的上浮给调用方 (记重跑清单 + stage_errors)
+        if failed_out is not None:
+            failed_out.extend(failed_syms)
 
     if not all_dfs:
         return 0, []
@@ -1139,6 +1190,19 @@ def _selected_minute_provider_name() -> str:
     selected = preferences.get_minute_data_provider()
     if saved != "tickflow" and selected == "tickflow":
         return f"unavailable:{saved}"
+    if selected == "tickflow":
+        # P1-12 layer1: 静态互补 — TickFlow 档位不含分钟能力时, 由免费内置源
+        # (腾讯 m1 分钟线) 自动接管。运行时解析、不写偏好; 下游按 custom 源
+        # 解析, fail-closed 契约不变 (互补源失败不静默跨源补数据)。
+        from app.data_providers import custom as custom_sources
+        from app.data_providers.capabilities import tickflow_native_serves
+        from app.tickflow import policy
+
+        if not tickflow_native_serves("minute", policy.base_tier_name()):
+            complement = custom_sources.find_complement_provider("minute")
+            if complement:
+                logger.debug("minute dataset served by static complement '%s'", complement)
+                return complement
     return selected
 
 

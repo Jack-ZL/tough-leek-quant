@@ -16,10 +16,12 @@ def test_custom_realtime_source_is_full_market(monkeypatch):
 
 
 def test_tickflow_free_has_no_realtime(monkeypatch):
-    """TickFlow 免费档 = 无实时(不再降级为自选模式)。"""
+    """TickFlow 免费档且无静态互补源 = 无实时(不再降级为自选模式)。"""
     from app.services import preferences
     monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
     monkeypatch.setattr(QuoteService, "_current_tier", lambda: "free")
+    # P1-12 layer1 隔离: 无互补源时才回到 "none" (互补行为见 test_layer1_complement.py)
+    monkeypatch.setattr(QuoteService, "_realtime_complement", classmethod(lambda cls: None))
     assert QuoteService.realtime_mode() == "none"
     assert QuoteService.is_realtime_allowed() is False
 

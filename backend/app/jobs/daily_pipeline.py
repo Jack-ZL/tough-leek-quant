@@ -129,6 +129,23 @@ class PipelineStageError(RuntimeError):
         super().__init__("盘后管道部分阶段失败: " + "; ".join(errors))
 
 
+def _mark_rerun_failures(repo, dataset: str, symbols: list[str]) -> None:
+    """P1-12 layer3: 把批量任务里硬失败的标的记进重跑清单。
+
+    数据页据此显示「用备源重跑」按钮 (只重拉这些标的, 全程用备源)。
+    清单写入失败只记日志不抛 — 标记是增强能力, 不能反噬主任务流程。
+    """
+    if not symbols:
+        return
+    try:
+        from app.services import rerun_manifest
+        source = (_prefs.get_daily_data_provider() if dataset == "daily"
+                  else _prefs.get_adj_factor_provider())
+        rerun_manifest.record_failures(repo.store.data_dir, dataset, symbols, source)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("重跑清单写入失败 (%s, %d 只): %s", dataset, len(symbols), e)
+
+
 def _noop(stage: str, pct: int, msg: str, **kwargs) -> None:  # noqa: ARG001
     pass
 
@@ -309,6 +326,8 @@ def run_now(
             preview = ", ".join(repair_failed_symbols[:10])
             more = "" if len(repair_failed_symbols) <= 10 else f" 等 {len(repair_failed_symbols)} 只"
             stage_errors.append(f"日K修复有 {len(repair_failed_symbols)} 只标的拉取失败: {preview}{more}")
+            # P1-12 layer3: 记重跑清单 → 数据页「用备源重跑」按钮
+            _mark_rerun_failures(repo, "daily", repair_failed_symbols)
     elif (
         today_exists
         and stale_day is None
@@ -340,12 +359,22 @@ def run_now(
         def _daily_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_daily", 12 + int(33 * cur / tot),
                  f"日K 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+        # P1-12 layer3: 单票硬失败上浮 (记重跑清单 + stage_errors), 不再只留 WARNING
+        gap_failed_symbols: list[str] = []
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
+            failed_out=gap_failed_symbols,
         )
+        if gap_failed_symbols:
+            _mark_rerun_failures(repo, "daily", gap_failed_symbols)
+            preview = ", ".join(gap_failed_symbols[:10])
+            more = "" if len(gap_failed_symbols) <= 10 else f" 等 {len(gap_failed_symbols)} 只"
+            stage_errors.append(
+                f"日K同步有 {len(gap_failed_symbols)} 只标的拉取失败: {preview}{more}"
+                " (数据页可用备源重跑)")
         gap_days = (today - start_date).days
         new_daily_days = gap_days
         emit("sync_daily", 45, f"日K 完成,覆盖 {gap_days} 天")
@@ -360,12 +389,22 @@ def run_now(
         def _daily_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_daily", 12 + int(33 * cur / tot),
                  f"日K 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+        # P1-12 layer3: 首次拉取同样上浮单票硬失败
+        initial_failed_symbols: list[str] = []
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
             start_date=_dt.combine(start_date, _dt.min.time()),
             end_date=_dt.combine(today, _dt.min.time()),
             on_chunk_done=_daily_chunk_progress,
+            failed_out=initial_failed_symbols,
         )
+        if initial_failed_symbols:
+            _mark_rerun_failures(repo, "daily", initial_failed_symbols)
+            preview = ", ".join(initial_failed_symbols[:10])
+            more = "" if len(initial_failed_symbols) <= 10 else f" 等 {len(initial_failed_symbols)} 只"
+            stage_errors.append(
+                f"日K首次拉取有 {len(initial_failed_symbols)} 只标的失败: {preview}{more}"
+                " (数据页可用备源重跑)")
         new_daily_days = 365
         emit("sync_daily", 45, "日K 完成")
         logger.info("sync_daily: [%s ~ %s] done", start_date, today)
@@ -428,11 +467,21 @@ def run_now(
         def _adj_chunk_progress(cur: int, tot: int) -> None:
             emit("sync_adj", 50 + int(10 * cur / tot),
                  f"除权因子批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+        # P1-12 layer3: 除权因子单票硬失败上浮 (记重跑清单 + stage_errors)
+        adj_failed_symbols: list[str] = []
         written_adj, affected_symbols = kline_sync.sync_adj_factor(
             universe, repo, capset,
             start_time=adj_start, end_time=adj_end,
             on_chunk_done=_adj_chunk_progress,
+            failed_out=adj_failed_symbols,
         )
+        if adj_failed_symbols:
+            _mark_rerun_failures(repo, "adj_factor", adj_failed_symbols)
+            preview = ", ".join(adj_failed_symbols[:10])
+            more = "" if len(adj_failed_symbols) <= 10 else f" 等 {len(adj_failed_symbols)} 只"
+            stage_errors.append(
+                f"除权因子同步有 {len(adj_failed_symbols)} 只标的失败: {preview}{more}"
+                " (数据页可用备源重跑)")
         if affected_symbols:
             _refresh_single_view(repo, "adj_factor")
             emit("sync_adj", 60, f"除权因子完成,新增 {len(affected_symbols)} 只个股")
@@ -907,11 +956,16 @@ def run_adj_factor_sync(
         len(universe), window_label,
     )
     emit("sync_adj", 10, f"获取除权因子 [{window_label}, {len(universe)} 只]…")
+    # P1-12 layer3: 独立除权同步也上浮单票硬失败 (记重跑清单, 结果里带失败数)
+    adj_failed_symbols: list[str] = []
     written_adj, affected = kline_sync.sync_adj_factor(
         universe, repo, capset,
         start_time=start, end_time=datetime.now(),
         on_chunk_done=_adj_chunk_progress,
+        failed_out=adj_failed_symbols,
     )
+    if adj_failed_symbols:
+        _mark_rerun_failures(repo, "adj_factor", adj_failed_symbols)
     affected = sorted(set(affected))
     _refresh_single_view(repo, "adj_factor")
     emit("sync_adj", 65,
@@ -943,6 +997,8 @@ def run_adj_factor_sync(
         "adj_factor_symbols": len(affected),
         "enriched_days": written_enriched,
         "skipped_stages": [],
+        # P1-12 layer3: 硬失败标的数 (>0 时重跑清单已记录, 数据页出「用备源重跑」)
+        "adj_failed": len(adj_failed_symbols),
     }
 
 
