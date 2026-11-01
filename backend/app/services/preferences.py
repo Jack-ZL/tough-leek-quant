@@ -370,6 +370,24 @@ def get_realtime_data_provider() -> str:
     return _validated_provider(provider, "realtime_data_provider")
 
 
+def get_realtime_backup_provider() -> str:
+    """P1-12 layer2: 实时行情热备的备源偏好。
+
+    取值:
+      - "auto" (默认): 自动挑免费内置源 (优先腾讯, 东财 push2 易封 IP 不适合高频热备);
+      - "off": 关闭热备, 主源熔断就熔断 (只记日志不切源);
+      - 具体源名: 用户指定, 需仍可用且声明 realtime, 否则回退 "auto"。
+    """
+    raw = str(load().get("realtime_backup_provider", "auto") or "auto").lower()
+    if raw in ("auto", "off"):
+        return raw
+    from app.data_providers import custom as custom_sources
+
+    if raw != "tickflow" and custom_sources.provider_has_dataset(raw, "realtime"):
+        return raw
+    return "auto"
+
+
 def get_financial_provider() -> str:
     provider = str(load().get("financial_data_provider", "tickflow") or "tickflow").lower()
     return _validated_provider(provider, "financial_data_provider")

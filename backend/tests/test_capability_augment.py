@@ -9,8 +9,19 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 from app.tickflow.policy import _augment_custom_sources
+
+
+@pytest.fixture(autouse=True)
+def _no_static_complement(monkeypatch):
+    """P1-12 layer1 隔离: 本文件聚焦「选定源声明数据集 → grant」的既有增广
+    语义, 静态互补源一律置空 (互补授权行为由 test_layer1_complement.py
+    专门覆盖), 避免测试机上真实内置免费插件把能力补授造成串扰。"""
+    monkeypatch.setattr(
+        "app.data_providers.custom.find_complement_provider", lambda *a, **k: None)
 
 
 def _set_providers(monkeypatch, *, daily="tickflow", adj="tickflow",

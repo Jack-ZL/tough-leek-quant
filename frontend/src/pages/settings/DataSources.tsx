@@ -36,6 +36,7 @@ import {
 	type PluginDataSourceItem,
 	type Preferences,
 	type ProviderField,
+	type RealtimeFailoverStatus,
 } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
@@ -146,13 +147,94 @@ function patchMatrix(
 	return { ...matrix, capabilities: caps }
 }
 
+/** P1-12 layer2: 实时热备区块 — 熔断/备源状态明示 + 备源偏好选择。
+ *  状态语义: closed=主源健康 / open=熔断中备源顶替 / half_open=冷却到期探测主源。
+ *  切换/探测/切回由后端状态机自动完成, 这里只做展示与偏好配置。 */
+function HotStandbyBlock({ cap, failover, backupPref, onChange }: {
+	cap: CapabilityRoute
+	failover: RealtimeFailoverStatus
+	backupPref: string
+	onChange: (value: string) => void
+}) {
+	// 源名 → 展示名: 在本卡候选/待就绪表里找, 找不到回退原始名
+	const dn = (n: string | null) =>
+		n
+			? (cap.candidates.find(c => c.name === n)?.display
+				?? cap.pending.find(c => c.name === n)?.display
+				?? n)
+			: '—'
+	// 备源候选: 排除 tickflow (备源只从自定义/插件源里选) 和当前主源自己
+	const backupCandidates = cap.candidates.filter(
+		c => c.name !== 'tickflow' && c.name !== cap.effective,
+	)
+
+	let chip: { text: string; cls: string; title: string }
+	if (failover.state === 'open') {
+		chip = {
+			text: `热备中: ${dn(failover.backup)} 顶替 · 冷却剩 ${Math.ceil(failover.cooldown_remaining)}s`,
+			cls: 'text-warning',
+			title: `主源 ${dn(failover.primary)} 连续失败已熔断, 暂由备源 ${dn(failover.backup)} 顶替; 冷却到期自动探测主源, 成功即切回`,
+		}
+	} else if (failover.state === 'half_open') {
+		chip = {
+			text: '热备: 探测主源中…',
+			cls: 'text-accent',
+			title: `冷却到期, 本轮试探主源 ${dn(failover.primary)} — 成功切回, 失败继续用备源`,
+		}
+	} else if (backupPref === 'off') {
+		chip = {
+			text: '热备已关闭',
+			cls: 'text-muted/60',
+			title: '主源失败时不切备源, 仅记录日志',
+		}
+	} else if (failover.backup) {
+		chip = {
+			text: `热备就绪: ${dn(failover.backup)}`,
+			cls: 'text-muted/60',
+			title: `主源连续失败 ${failover.threshold} 轮自动切到 ${dn(failover.backup)}, 冷却 ${failover.cooldown_seconds}s 后探测切回`,
+		}
+	} else {
+		chip = {
+			text: '无可用备源',
+			cls: 'text-muted/60',
+			title: '当前没有可用作热备的免费实时源 (插件未就绪或偏好为 off)',
+		}
+	}
+
+	return (
+		<div className="mt-1.5 space-y-1">
+			<div className={`flex items-center gap-1 text-[10px] min-w-0 ${chip.cls}`} title={chip.title}>
+				<Zap className="h-2.5 w-2.5 shrink-0" />
+				<span className="truncate">{chip.text}</span>
+			</div>
+			<select
+				aria-label="实时热备备源"
+				value={backupPref}
+				onChange={e => onChange(e.target.value)}
+				className="w-full rounded-btn border border-border bg-surface px-1.5 py-1 text-[10px] text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
+			>
+				<option value="auto">热备: 自动选择 (腾讯优先)</option>
+				<option value="off">热备: 关闭</option>
+				{backupCandidates.map(c => (
+					<option key={c.name} value={c.name}>热备: {c.display}</option>
+				))}
+			</select>
+		</div>
+	)
+}
+
 /** 单个能力卡: 当前生效提供方 + 候选切换标签。
  *  candidates 只含当前可提供该能力的源; 未就绪源 (pending) 置灰提示;
- *  生效源无法提供该能力 (usable=False, 无论档位不足还是源未就绪) 时显示琥珀警示。 */
-function CapabilityCard({ cap, pendingKey, onSelect }: {
+ *  生效源无法提供该能力 (usable=False, 无论档位不足还是源未就绪) 时显示琥珀警示。
+ *  P1-12 layer1: complement 非空 → 展示"静态互补"来源提示;
+ *  P1-12 layer2: 实时卡额外渲染热备状态 + 备源偏好选择 (failover prop 仅实时卡传入)。 */
+function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBackupPrefChange }: {
 	cap: CapabilityRoute
 	pendingKey: string | null
 	onSelect: (field: ProviderField, provider: string) => void
+	failover?: RealtimeFailoverStatus
+	backupPref?: string
+	onBackupPrefChange?: (value: string) => void
 }) {
 	const Icon = CAP_ICON[cap.id] ?? Database
 	const busy = (provider: string) => pendingKey === `${cap.field}:${provider}`
@@ -187,6 +269,27 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
 					</>
 				)}
 			</div>
+
+			{/* P1-12 layer1: 静态互补提示 — 生效源缺该能力时由免费内置源自动顶上 (不写偏好) */}
+			{cap.complement && (
+				<div
+					className="mt-1 flex items-center gap-1 text-[10px] text-muted/70 min-w-0"
+					title={`「${cap.label}」当前路由的源不提供该能力, 已由免费内置源 ${cap.complement_display || cap.complement} 静态互补接管`}
+				>
+					<Puzzle className="h-2.5 w-2.5 shrink-0" />
+					<span className="truncate">由 {cap.complement_display || cap.complement} 互补</span>
+				</div>
+			)}
+
+			{/* P1-12 layer2: 实时热备 — 状态明示 + 备源偏好 (仅实时卡传入 failover) */}
+			{failover && onBackupPrefChange && (
+				<HotStandbyBlock
+					cap={cap}
+					failover={failover}
+					backupPref={backupPref ?? 'auto'}
+					onChange={onBackupPrefChange}
+				/>
+			)}
 
 			{/* 候选标签: 点谁该能力就由谁提供 */}
 			<div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-border/50 min-h-[26px] items-center">
@@ -292,9 +395,18 @@ function CapabilityRoutingSection() {
 		},
 	})
 
+	// P1-12 layer2: 实时热备备源偏好保存 (auto/off/具体源名), 后端保存时会重置熔断状态机
+	const backupMut = useMutation({
+		mutationFn: (value: string) => api.updateDataProviders({ realtime_backup_provider: value }),
+		onSuccess: () => {
+			toast('实时热备配置已保存', 'success')
+			invalidateRouting()
+		},
+		onError: (e: Error) => toast(`保存失败: ${e.message}`, 'error'),
+	})
+
 	const resetMut = useMutation({
-		mutationFn: () => api.updateDataProviders(DEFAULT_ROUTING),
-		onMutate: async () => {
+		mutationFn: () => api.updateDataProviders(DEFAULT_ROUTING),		onMutate: async () => {
 			await qc.cancelQueries({ queryKey: QK.capabilityMatrix })
 			await qc.cancelQueries({ queryKey: QK.preferences })
 			return applyOptimistic(DEFAULT_ROUTING)
@@ -361,6 +473,10 @@ function CapabilityRoutingSection() {
 							cap={cap}
 							pendingKey={pendingKey}
 							onSelect={(field, provider) => routeMut.mutate({ field, provider })}
+							// P1-12 layer2: 热备状态/备源偏好只挂实时卡
+							failover={cap.id === 'realtime' ? matrix.data?.realtime_failover : undefined}
+							backupPref={matrix.data?.realtime_backup_provider}
+							onBackupPrefChange={v => backupMut.mutate(v)}
 						/>
 					))}
 				</div>

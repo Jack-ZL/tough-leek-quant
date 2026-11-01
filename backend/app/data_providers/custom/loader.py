@@ -328,6 +328,82 @@ def provider_has_dataset(name: str, dataset: str) -> bool:
     return dataset in provider.config.datasets
 
 
+# ---------------------------------------------------------------------------
+# P1-12 layer1: 静态互补源 (TickFlow 档位不够时, 由免费内置源顶上未覆盖的数据集)
+# ---------------------------------------------------------------------------
+
+# 互补源优先级: 契约完整度与性能优先 (东财字段最全/最快, 腾讯实时+分钟,
+# baostock 单连接较慢且无 BJ/ETF, 垫底); 名单外的免费内置源按字母序排后。
+_COMPLEMENT_PRIORITY: tuple[str, ...] = ("eastmoney", "tencent", "baostock")
+
+
+def find_complement_provider(
+    dataset: str,
+    exclude: str | None = None,
+    prefer: tuple[str, ...] | None = None,
+) -> str | None:
+    """P1-12 layer1: 找一个能顶替指定数据集的免费内置互补源, 找不到返回 None。
+
+    资格 (全部满足才参与自动接管, 避免在用户不知情时消耗付费额度):
+      - 内置插件且已通过可用性自检 (在 _PROVIDERS 里 = 依赖就绪);
+      - 未声明 api_key_env (需要付费 Key 的源如 fuyao 不自动接管);
+      - billing 为 free 或未声明 (积分计费的源如 tdxquant 不自动接管);
+      - 声明了该数据集;
+      - 不是 exclude (当前生效源自己) 也不是 tickflow。
+
+    返回按 _COMPLEMENT_PRIORITY 排序后的第一个源名。
+
+    P1-12 layer2: prefer 可覆盖默认优先级 (如实时热备指定 prefer=("tencent",),
+    因东财 push2 易 IP 封禁, 高频轮询的热备源首选更稳的腾讯快照)。
+    """
+    candidates: list[str] = []
+    for name, provider in _PROVIDERS.items():
+        if name == "tickflow" or (exclude and name == exclude.lower()):
+            continue
+        status = _PLUGIN_STATUS.get(name)
+        if status is None:
+            continue  # 用户自配 HTTP 源: 不参与自动接管 (只有内置插件算互补源)
+        if status.get("api_key_env"):
+            continue  # 需付费 Key 的源不自动接管
+        if str(status.get("billing") or "").lower() not in ("", "free"):
+            continue  # 积分等计费源不自动接管
+        if dataset not in provider.config.datasets:
+            continue
+        candidates.append(name)
+    if not candidates:
+        return None
+
+    # P1-12 layer2: prefer 列表排在最前, 其余仍按默认互补优先级
+    order = tuple(prefer or ()) + _COMPLEMENT_PRIORITY
+
+    def _rank(n: str) -> tuple[int, str]:
+        try:
+            return (order.index(n), n)
+        except ValueError:
+            return (len(order), n)
+
+    return sorted(candidates, key=_rank)[0]
+
+
+def resolve_with_complement(dataset: str, cap, capset, selected: str) -> str:
+    """P1-12 layer1: 数据集实际生效源 = 选定源(已声明) → TickFlow(原生有能力) → 静态互补源。
+
+    cap/capset 鸭子类型传入 (Cap 枚举成员 + CapabilitySet), 避免 loader 反向
+    依赖 tickflow 包。capset.complement_of(cap) 非空 = TickFlow 原生缺该能力
+    且探测期已记录互补源 → 返回互补源名, 让调用方现有的 custom 分支接管;
+    其余情况原样返回 selected, 保持既有路由语义不变。
+    """
+    if selected != "tickflow" and provider_has_dataset(selected, dataset):
+        return selected
+    if cap is not None and capset is not None:
+        # getattr 防御: 兼容不带 complement_of 的旧 capset 替身 (测试桩)
+        complement_of = getattr(capset, "complement_of", None)
+        complement = complement_of(cap) if callable(complement_of) else None
+        if complement and provider_has_dataset(complement, dataset):
+            return complement
+    return selected
+
+
 def get_config_dict(name: str) -> dict | None:
     """读取一个已加载 custom 源的原始配置 dict(用于前端编辑回填)。内置插件不可编辑。"""
     if is_builtin(name):

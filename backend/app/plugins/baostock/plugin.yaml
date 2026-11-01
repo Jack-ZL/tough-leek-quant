@@ -1,0 +1,35 @@
+# baostock 证券宝插件 — 内置免 Key 数据源 (P1-12)
+# 免费开源证券数据库, 匿名登录无需注册; 定位: 日K/除权因子的备源与兜底 (收盘后更新, 无实时)。
+name: baostock
+display_name: baostock 证券宝
+runtime: python
+entry: app.plugins.baostock.provider:BaostockProvider
+check: app.plugins.baostock.provider:availability
+
+# 路由数据集: 仅声明实测通过的能力。
+# 未接入: realtime/depth5/minute (上游无实时接口) / financial (单查询最坏 31s 不可用)
+# / instruments (query_stock_basic 服务端挂起, 严禁调用)。未声明数据集自动回退 TickFlow。
+datasets:
+  daily: true
+  adj_factor: true
+
+api_key_env: null
+billing: free
+key_manage_url: null
+description: |
+  baostock (证券宝) 免费开源证券数据, 匿名登录、无需注册与 Key。
+  日K为不复权原始价且含成交额, 股票与指数均支持;
+  除权因子由全历史后复权因子链推导单事件比值 (已与项目存量数据精确对账)。
+  数据收盘后更新、无实时行情, 逐标的查询约 0.15-0.6 秒/只,
+  全市场日K回填约 15-60 分钟 — 定位是备源/兜底而非主力。
+  北交所与 ETF 无覆盖 (自动跳过并回退)。
+billing_note: 完全免费, 匿名登录; 无官方 SLA, 数据收盘后更新。
+usage_notes:
+  - 免 Key 匿名登录; 需先安装依赖 baostock (卡片安装按钮一键装, 或 uv pip install baostock)。
+  - daily 为不复权原始价 (与东财 fqt=0 同口径), volume 已由股转手, amount 元; 复权由内部因子链完成。
+  - adj_factor 每次查询全历史因子链 (比值推导依赖前锚点), 增量窗口只裁输出不裁查询。
+  - 北交所不支持 (上游限制), 同步时自动跳过并汇总告警; ETF 无覆盖, 空返回上层回退 TickFlow。
+  - 全局单 socket 会话, 查询串行 + 失败自动重连重试一次; 速度约 0.15-0.6 秒/标的, 适合夜间批量兜底。
+  - 严禁经由本插件调用 query_stock_basic (上游服务端挂起且毒化会话) — 插件未暴露该能力。
+install_hint: 点击安装按钮自动执行 uv pip install -r requirements.txt (仅一个纯 Python 依赖 baostock)。
+homepage: http://baostock.com/

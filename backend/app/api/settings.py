@@ -775,6 +775,8 @@ class DataProvidersIn(BaseModel):
     depth5_data_provider: str | None = None
     realtime_data_provider: str | None = None
     financial_data_provider: str | None = None
+    # P1-12 layer2: 实时热备备源偏好 (auto/off/具体源名)
+    realtime_backup_provider: str | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -973,9 +975,10 @@ def get_capability_matrix() -> dict:
     """
     from app.data_providers.capabilities import build_capability_matrix
     from app.services import preferences
+    from app.services.realtime_failover import get_failover
     from app.tickflow import policy
 
-    return build_capability_matrix(
+    result = build_capability_matrix(
         {
             "realtime_data_provider": preferences.get_realtime_data_provider(),
             "daily_data_provider": preferences.get_daily_data_provider(),
@@ -987,6 +990,10 @@ def get_capability_matrix() -> dict:
         },
         tickflow_tier=policy.base_tier_name(),
     )
+    # P1-12 layer2: 实时热备状态 + 备源偏好一并透出, 前端数据源页展示
+    result["realtime_failover"] = get_failover().status()
+    result["realtime_backup_provider"] = preferences.get_realtime_backup_provider()
+    return result
 
 
 @router.post("/plugin-key")
@@ -1197,6 +1204,12 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
     updates = req.model_dump(exclude_none=True)
     if updates:
         preferences.save(updates)
+    # P1-12 layer2: 实时主源/备源偏好变更 → 热备状态机作废重算
+    # (主源变更 resolve() 自身会识别, 备源偏好变更需显式 reset)
+    if "realtime_backup_provider" in updates or "realtime_data_provider" in updates:
+        from app.services.realtime_failover import get_failover
+
+        get_failover().reset()
     # 刷新能力快照: 当前 provider 变化会改变自定义源能力增广结果 (读缓存, 无网络请求)
     request.app.state.capabilities = detect_capabilities()
     return {
@@ -1207,6 +1220,7 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "depth5_data_provider": preferences.get_depth5_data_provider(),
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
+        "realtime_backup_provider": preferences.get_realtime_backup_provider(),
     }
 
 

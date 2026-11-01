@@ -210,6 +210,7 @@ def _sync_custom_daily(
     end_time: datetime,
     on_chunk_done: Callable[[int, int], None] | None,
     persist_frame: Callable[[pl.DataFrame], int],
+    capset: CapabilitySet | None = None,
 ) -> int:
     """日K源为自定义 provider 时接管指数/ETF 日K同步 (#502)。
 
@@ -226,9 +227,14 @@ def _sync_custom_daily(
     返回行数 —— 指数/ETF 各自复用与 TickFlow 路径相同的落盘逻辑, 不另起一套。
     """
     provider_name = preferences.get_daily_data_provider()
+    from app.data_providers import custom as custom_sources
+    # P1-12 layer1: 静态互补 — 选定源未声明 daily 且 TickFlow 原生缺该能力时,
+    # 由互补源接管 (当前 none 档原生含日K批量, 实际不触发, 属通用钩子)。
+    if capset is not None:
+        provider_name = custom_sources.resolve_with_complement(
+            "daily", Cap.KLINE_DAILY_BATCH, capset, provider_name)
     if provider_name == "tickflow":
         return -1
-    from app.data_providers import custom as custom_sources
     if not custom_sources.provider_has_dataset(provider_name, "daily"):
         return -1
 
@@ -301,6 +307,7 @@ def sync_and_persist_index_daily(
         start_time=start_time, end_time=end_time,
         on_chunk_done=on_chunk_done,
         persist_frame=_persist_index_frame,
+        capset=capset,
     )
     if custom_rows >= 0:
         return custom_rows
@@ -462,6 +469,7 @@ def sync_and_persist_etf_daily(
         start_time=start_time, end_time=end_time,
         on_chunk_done=on_chunk_done,
         persist_frame=_persist_etf_frame,
+        capset=capset,
     )
     if custom_rows >= 0:
         return custom_rows

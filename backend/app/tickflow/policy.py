@@ -340,6 +340,17 @@ def _augment_custom_sources(capset: CapabilitySet) -> None:
                     "custom source '%s' provides dataset '%s': granted %s",
                     provider, dataset, cap.value,
                 )
+            elif not capset.has(cap):
+                # P1-12 layer1: 静态互补 — TickFlow 档位不含该能力、选定源也未声明
+                # 该数据集时, 由免费内置源 (东财/腾讯/baostock) 补授能力。取数点
+                # 经 capset.complement_of(cap) 识别后路由到互补源, 不会误调 TickFlow。
+                complement = custom_sources.find_complement_provider(dataset, exclude=provider)
+                if complement:
+                    capset.grant_complement(cap, complement)
+                    logger.info(
+                        "static complement '%s' provides dataset '%s': granted %s",
+                        complement, dataset, cap.value,
+                    )
     except Exception as e:  # noqa: BLE001
         logger.debug("custom source augment skipped: %s", e)
 

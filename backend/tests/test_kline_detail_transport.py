@@ -265,6 +265,8 @@ def test_pro_tier_keeps_tickflow_minute_fallback(monkeypatch):
     get_client = MagicMock(return_value=tickflow)
     monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "tickflow")
     monkeypatch.setattr("app.services.kline_sync.get_client", get_client)
+    # P1-12 layer1 隔离: pro 档 TickFlow 原生有分钟能力, 静态互补不介入
+    monkeypatch.setattr("app.tickflow.policy.base_tier_name", lambda: "pro")
 
     response = _client(_DetailRepo(pl.DataFrame()), capset).get(
         "/api/kline/minute",

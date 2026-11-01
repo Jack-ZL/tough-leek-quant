@@ -547,7 +547,18 @@ def get_daily(
             from app.tickflow.capabilities import Cap
 
             if capset and capset.has(Cap.ADJ_FACTOR):
-                factors = kline_sync.fetch_adj_factor_single(symbol)
+                # P1-12 layer1: 静态互补 — 能力由免费内置源补授时直接调互补源
+                # (fetch_adj_factor_single 是 TickFlow 专用, 互补授权下会误调 SDK)。
+                complement = capset.complement_of(Cap.ADJ_FACTOR)
+                if complement:
+                    from app.data_providers import custom as custom_sources
+
+                    provider = custom_sources.get_provider(complement)
+                    factors = provider.get_adj_factors(
+                        [symbol], start_time=None, end_time=None, asset_type=asset_type,
+                    )
+                else:
+                    factors = kline_sync.fetch_adj_factor_single(symbol)
         except Exception as e:  # noqa: BLE001
             logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
         enriched = compute_enriched(raw, factors=factors)
@@ -1963,6 +1974,137 @@ async def repair_daily(request: Request):
     except Exception as e:
         logger.error("repair_daily error: %s\n%s", e, _tb.format_exc())
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ===== P1-12 layer3: 备源重跑 — 批量任务失败标的用免费备源手动重试 =====
+
+@router.get("/rerun_manifest")
+async def get_rerun_manifest(request: Request):
+    """读重跑清单 + 各数据集当前可用备源 (数据页「用备源重跑」按钮数据源)。
+
+    清单由盘后管道/独立除权同步在单票硬失败时写入 (见 rerun_manifest.py)。
+    symbols 只回前 50 只做展示样例, 重跑时后端直接用清单全量。
+    """
+    from app.services import rerun_manifest
+
+    repo = request.app.state.repo
+    manifest = rerun_manifest.load(repo.store.data_dir)
+    datasets: dict = {}
+    for ds in rerun_manifest.RERUN_DATASETS:
+        entry = manifest.get(ds) or {}
+        symbols = list(entry.get("symbols") or [])
+        if not symbols:
+            continue
+        datasets[ds] = {
+            "count": len(symbols),
+            "symbols_sample": symbols[:50],
+            "source": entry.get("source"),          # 失败时用的主源 (展示用)
+            "recorded_at": entry.get("recorded_at"),
+            "backup": rerun_manifest.resolve_backup(ds),  # None = 无可用备源
+        }
+    return {"datasets": datasets}
+
+
+@router.post("/rerun_with_backup")
+async def rerun_with_backup(request: Request):
+    """用备源重跑清单里的失败标的 (手动触发, 原子性: 全程只用备源不混源)。
+
+    body: { "dataset": "daily" | "adj_factor" }
+    返回 job_id, 可轮询 /api/pipeline/jobs 查看进度; 仍失败的标的会重新
+    记回清单, 按钮再次出现。
+    """
+    import asyncio
+    import traceback as _tb
+
+    try:
+        body = await request.json()
+        dataset = str(body.get("dataset") or "")
+
+        from app.services import rerun_manifest
+
+        if dataset not in rerun_manifest.RERUN_DATASETS:
+            raise HTTPException(status_code=400, detail="dataset 须为 daily / adj_factor")
+
+        repo = request.app.state.repo
+        capset = request.app.state.capabilities
+        entry = rerun_manifest.load(repo.store.data_dir).get(dataset) or {}
+        if not entry.get("symbols"):
+            raise HTTPException(status_code=400, detail="重跑清单为空, 无需重跑")
+        if not rerun_manifest.resolve_backup(dataset):
+            raise HTTPException(
+                status_code=409, detail="无可用备源 (需免费内置源声明该数据集且依赖就绪)")
+
+        from app.api.data import invalidate_storage_cache
+        from app.services.pipeline_jobs import (
+            JobCancelledError,
+            job_store,
+            release_run_slot,
+            run_with_capacity,
+            try_acquire_run_slot,
+        )
+
+        job_id, is_new = job_store.create()
+        if not is_new:
+            return {"status": "reused", "job_id": job_id}
+
+        async def task() -> None:
+            if not try_acquire_run_slot(job_id):
+                job_store.fail(job_id, "已有数据任务在运行(或上一次任务卡死未结束),请稍后再试")
+                return
+            loop = asyncio.get_event_loop()
+            qs = getattr(request.app.state, "quote_service", None)
+
+            def progress(
+                stage: str, pct: int, msg: str, stage_pct: int | None = None, skip_log: bool = False
+            ) -> None:
+                job_store.progress(job_id, stage, pct, msg, stage_pct=stage_pct, skip_log=skip_log)
+
+            def _run() -> dict:
+                # 重跑运行期间暂停实时行情, 防止覆写同一批 parquet 竞态 (与 repair_daily 同口径)
+                if qs:
+                    with qs.paused():
+                        return rerun_manifest.run_backup_rerun(repo, capset, dataset, on_progress=progress)
+                return rerun_manifest.run_backup_rerun(repo, capset, dataset, on_progress=progress)
+
+            try:
+                result = await loop.run_in_executor(
+                    _long_task_executor, run_with_capacity, job_id, _run
+                )
+                if "error" in result:
+                    job_store.fail(job_id, result["error"])
+                else:
+                    job_store.succeed(job_id, result)
+                invalidate_storage_cache()
+            except JobCancelledError:
+                invalidate_storage_cache()
+            except Exception as e:
+                logger.exception("rerun_with_backup failed: job_id=%s", job_id)
+                job_store.fail(job_id, str(e))
+                invalidate_storage_cache()
+            finally:
+                release_run_slot(job_id)
+
+        asyncio.create_task(task())
+        return {"status": "started", "job_id": job_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("rerun_with_backup error: %s\n%s", e, _tb.format_exc())
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/rerun_manifest/clear")
+async def clear_rerun_manifest(request: Request):
+    """忽略某数据集的重跑清单标记 (用户确认不重跑, 清掉按钮)。"""
+    from app.services import rerun_manifest
+
+    body = await request.json()
+    dataset = str(body.get("dataset") or "")
+    if dataset not in rerun_manifest.RERUN_DATASETS:
+        raise HTTPException(status_code=400, detail="dataset 须为 daily / adj_factor")
+    repo = request.app.state.repo
+    rerun_manifest.clear(repo.store.data_dir, dataset)
+    return {"status": "cleared", "dataset": dataset}
 
 
 @router.post("/rebuild_enriched")

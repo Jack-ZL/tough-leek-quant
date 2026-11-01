@@ -41,6 +41,8 @@ import { findDataSource } from '@/lib/dataSources'
 // 拆分出的子组件
 import { StatCard, type FieldTab, type CapLimitValue } from '@/components/data/StatCard'
 import { ActiveJobCard } from '@/components/data/ActiveJobCard'
+// P1-12 layer3: 备源重跑面板 (批量任务失败标的标记 + 手动重跑按钮)
+import { BackupRerunPanel } from '@/components/data/BackupRerunPanel'
 import { SectionTitle, HistoryRow } from '@/components/data/SectionTitle'
 import { SettingsModal } from '@/components/data/SettingsModal'
 import { ScheduleEditor } from '@/components/data/ScheduleEditor'
@@ -727,6 +729,15 @@ export function Data() {
 						</motion.div>
 					)}
 				</AnimatePresence>
+
+				{/* P1-12 layer3: 备源重跑标记 — 清单非空才渲染, 平时零占位 */}
+				<BackupRerunPanel
+					isRunning={!!activeJobId}
+					onStart={(id) => {
+						setActiveJobId(id);
+						qc.invalidateQueries({ queryKey: QK.pipelineJobs })
+					}}
+				/>
 
 				{/* 实时行情 + 存储 + 调度 */}
 				<div className="grid grid-cols-1 md:grid-cols-3 gap-4">

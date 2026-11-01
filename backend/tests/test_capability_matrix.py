@@ -10,8 +10,18 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from app.data_providers import custom as custom_sources
 from app.data_providers.capabilities import CAPABILITY_REGISTRY, build_capability_matrix
+
+
+@pytest.fixture(autouse=True)
+def _no_static_complement(monkeypatch):
+    """P1-12 layer1 隔离: 本文件聚焦既有矩阵语义, 静态互补源一律置空
+    (互补行为由 test_layer1_complement.py 专门覆盖), 避免测试机上真实
+    内置免费插件 (东财/腾讯/baostock) 把 usable 翻转造成串扰。"""
+    monkeypatch.setattr(custom_sources, "find_complement_provider", lambda *a, **k: None)
 
 DEFAULT_CURRENT = {
     "daily_data_provider": "tickflow",

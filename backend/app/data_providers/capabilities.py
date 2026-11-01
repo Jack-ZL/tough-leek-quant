@@ -143,6 +143,19 @@ def _display_of(sources: list[dict], name: str) -> str:
     return name
 
 
+def tickflow_native_serves(cap_id: str, tier: str) -> bool:
+    """P1-12 layer1: TickFlow 档位是否原生包含某能力 (不看路由偏好、不看互补源)。
+
+    cap_id 用注册表 id (daily/adj_factor/realtime/minute/depth5/financial/full_minute)。
+    供无 capset 的取数点 (如分钟源解析) 判断「TickFlow 自己顶不顶得上」,
+    顶不上才轮到静态互补源接管。未知能力按不可用处理 (fail-closed)。
+    """
+    for cap in CAPABILITY_REGISTRY:
+        if cap["id"] == cap_id:
+            return _TIER_RANK.get(_tier_base(tier), -1) >= _TIER_RANK[cap["tf_tier"]]
+    return False
+
+
 def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none") -> dict:
     """注册表 + 源能力声明 + 当前偏好 → 能力路由矩阵。
 
@@ -181,6 +194,12 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             }
             (candidates if s["available"] else pending).append(entry)
         usable = any(c["name"] == effective for c in candidates)
+        # P1-12 layer1: 生效源顶不上时查免费内置互补源; 找到则能力实际可用
+        # (取数点会路由过去), 前端可据 complement 字段展示「由 XX 静态互补」。
+        complement = None
+        if not usable:
+            complement = custom_sources.find_complement_provider(cap["id"], exclude=effective)
+            usable = complement is not None
         capabilities.append({
             "id": cap["id"],
             "label": cap["label"],
@@ -190,6 +209,8 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             "tf_tier": cap["tf_tier"],
             "tf_available": tf_available,
             "usable": usable,
+            "complement": complement,
+            "complement_display": _display_of(sources, complement) if complement else None,
             "current": effective,
             "current_display": _display_of(sources, effective),
             "effective": effective,
@@ -253,14 +274,24 @@ def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
             s["name"] for s in sources
             if cap["id"] in s["datasets"] and s["available"]
         }
+        usable = effective in provider_names
+        # P1-12 layer1: 生效源自己顶不上时, 查免费内置互补源 (注册表 id 即数据集名)。
+        # 找到 → 该能力实际可用 (取数点会路由到互补源), usable 放宽并单列 complement
+        # 字段, 门禁日志/前端可明示「由谁顶替」, 不静默。
+        complement = None
+        if not usable:
+            complement = custom_sources.find_complement_provider(cap["id"], exclude=effective)
+            usable = complement is not None
         rows.append({
             "id": cap["id"],
             "label": cap["label"],
             "field": field,
             "source": effective,
             "source_display": _display_of(sources, effective),
-            "usable": effective in provider_names,
+            "usable": usable,
             "tf_available": tf_available,
+            "complement": complement,
+            "complement_display": _display_of(sources, complement) if complement else None,
         })
     return rows
 
@@ -280,6 +311,10 @@ def capability_gate(cap_id: str, tickflow_tier: str | None = None) -> tuple[bool
 
     for row in resolve_capability_sources(tickflow_tier):
         if row["id"] == cap_id:
+            # P1-12 layer1: 生效源顶不上、由免费内置互补源接管时, 标签直指互补源,
+            # 让「为什么没跑/谁在顶」在日志里一眼可读。
+            if row.get("complement"):
+                return True, f"{row['label']} ← {row['complement_display']}(静态互补)"
             label = f"{row['label']} ← {row['source_display']}"
             if not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
                 label += "(档位不足)"

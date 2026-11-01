@@ -1,0 +1,34 @@
+# 腾讯行情插件 — 内置免 Key 数据源 (P1-12)
+# 免费公开接口, 无需注册/无需 Key, 开箱即用; 作为主源(TickFlow/东财)的备源与应急补充。
+name: tencent
+display_name: 腾讯行情
+runtime: python
+entry: app.plugins.tencent.provider:TencentProvider
+check: app.plugins.tencent.provider:availability
+
+# 路由数据集: 仅声明实测通过的能力 (daily 未接入 — 腾讯日K无成交额字段;
+# adj_factor/financial 上游无对应接口)。未声明数据集自动回退 TickFlow。
+datasets:
+  realtime: true
+  depth5: true
+  minute: true
+
+api_key_env: null
+billing: free
+key_manage_url: null
+description: |
+  腾讯行情免费公开接口 (qt.gtimg.cn 快照 + ifzq.gtimg.cn 分钟K)。
+  无需注册、无需 Key、无计费。快照单请求最多 300 只且自带买卖五档,
+  全市场一轮约 20 个请求, 适合做实时行情/盘口的热备源;
+  北交所 (bj 前缀) 与指数 (sh000001 等) 同端点支持。
+  分钟K为真实 OHLC 但仅覆盖近 320 根 (约 1.3 个交易日), 只适合当日应急补数。
+billing_note: 免费公开接口, 无需注册与 Key; 无官方 SLA, 请保持限速纪律避免 IP 被封。
+usage_notes:
+  - 免 Key 开箱即用; 客户端内置令牌桶限速(8 QPS)+随机抖动+指数退避+连续失败熔断(5 次→冷却 300 秒)。
+  - realtime 股票池复用项目维表 instruments.parquet (腾讯无全市场列表端点); 维表缺失时返回空并告警, 请先用主源同步维表。
+  - depth5 随快照免费返回 (无独立请求), 量单位手透传; 停牌/指数五档为 0 时跳过该标的不伪造。
+  - minute 仅 1 分钟线且上限 320 根/标的 (约 1.3 个交易日, 上游硬限制), 适合当日盘中监控/应急补数, 不能做历史回补; 无成交额列 (上游字段含义未知, 不伪造)。
+  - 日K未接入: 腾讯日K无成交额字段不满足内部契约, 日K备源请用 eastmoney/baostock。
+  - 免费公开接口无官方 SLA, 字段布局以 2026-11 实测为准; 若上游改版导致解析异常, 设置页试拉会直接暴露。
+install_hint: 内置插件, 无需安装依赖。
+homepage: https://gu.qq.com/
