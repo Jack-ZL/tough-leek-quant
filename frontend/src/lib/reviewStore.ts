@@ -19,6 +19,10 @@ export interface ReviewMeta {
   emotion_score?: number
   emotion_label?: string
   summary?: string
+  /** P1-15 模型归属: meta 事件下发, 归档复盘时原样带回落盘 */
+  model?: string
+  provider?: string
+  profile_id?: string
 }
 
 export interface ReviewState {

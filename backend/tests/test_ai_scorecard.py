@@ -549,3 +549,81 @@ def test_ledger_file_is_valid_json_after_settle(env):
     assert raw["sar_json"]["direction"] == "偏空"
     assert raw["sar_json"]["horizons"]["5"]["hit"] is True
     assert raw["sar_json"]["horizons"]["5"]["pct"] == -6.0
+
+
+# ================================================================
+# P1-15 第二批: 模型归属快照 + 按模型分组战绩
+# ================================================================
+
+def test_settle_snapshots_model_attribution(env):
+    """结算时把报告的 model/provider/profile_id 复制进台账 —
+    报告只留最近 50 份会被裁剪, 台账必须自带归属才能长期按模型统计。"""
+    start = date.today() - timedelta(days=20)
+    rep = _report("sar_attr", "600020.SH", "看多")
+    rep.update({"model": "qwen-max", "provider": "openai_compat", "profile_id": "p-qw"})
+    repo = env([rep], _Repo({"600020.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]}, start))
+    ai_scorecard.settle_due(repo)
+    entry = ai_scorecard._load_ledger()["sar_attr"]
+    assert entry["model"] == "qwen-max"
+    assert entry["provider"] == "openai_compat"
+    assert entry["profile_id"] == "p-qw"
+
+
+def test_settle_without_attribution_defaults_empty(env):
+    """老报告没有归属字段 → 台账记空串, 结算照常 (兼容不报错)。"""
+    start = date.today() - timedelta(days=20)
+    repo = env(
+        [_report("sar_old", "600021.SH", "看多")],
+        _Repo({"600021.SH": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]}, start),
+    )
+    ai_scorecard.settle_due(repo)
+    entry = ai_scorecard._load_ledger()["sar_old"]
+    assert entry["model"] == "" and entry["profile_id"] == ""
+
+
+def _entry_model(rid: str, model: str, hit: bool) -> dict:
+    """带模型归属的新格式 T+5 已结算条目。"""
+    e = _entry_h(rid, "看多", {"5": _hz(2.0, hit)})
+    e["model"] = model
+    return e
+
+
+def test_stats_by_model_grouping(env):
+    """by_model: 按模型分组 T+5 战绩, 样本数降序; 空模型归"未标注";
+    同款 MIN_SAMPLE 护栏 — 样本不足不给命中率。"""
+    env([])
+    entries = {}
+    for i in range(20):  # qwen-max: 20 条 15 对 = 75%
+        entries[f"q{i}"] = _entry_model(f"q{i}", "qwen-max", i < 15)
+    for i in range(3):   # deepseek-chat: 3 条 (样本不足)
+        entries[f"d{i}"] = _entry_model(f"d{i}", "deepseek-chat", True)
+    for i in range(2):   # 无归属老战绩 → 未标注
+        entries[f"o{i}"] = _entry_h(f"o{i}", "看多", {"5": _hz(1.0, False)})
+    _seed_ledger(entries)
+
+    by_model = ai_scorecard.stats()["by_model"]
+    assert [g["model"] for g in by_model] == ["qwen-max", "deepseek-chat", "未标注"]
+    qw = by_model[0]
+    assert qw["settled"] == 20 and qw["hits"] == 15
+    assert qw["hit_rate_pct"] == 75.0 and qw["insufficient"] is False
+    assert qw["horizon_days"] == ai_scorecard.PRIMARY_HORIZON
+    ds = by_model[1]
+    assert ds["settled"] == 3 and ds["hit_rate_pct"] is None and ds["insufficient"] is True
+    assert by_model[2]["settled"] == 2 and by_model[2]["hits"] == 0
+
+
+def test_stats_by_model_empty_ledger(env):
+    """空台账 → by_model 为空列表 (前端整块不渲染)。"""
+    env([])
+    _seed_ledger({})
+    assert ai_scorecard.stats()["by_model"] == []
+
+
+def test_migrate_entry_keeps_model():
+    """旧格式条目带 model 键时迁移不丢 (归属功能上线后写的旧格式不会再有,
+    但迁移白名单必须放行, 防止手工修台账丢数据)。"""
+    raw = _entry("m1", "看多", True)
+    raw.update({"model": "glm-4.6", "provider": "openai_compat", "profile_id": "p-glm"})
+    migrated = ai_scorecard._migrate_entry(raw)
+    assert migrated["model"] == "glm-4.6"
+    assert migrated["profile_id"] == "p-glm"

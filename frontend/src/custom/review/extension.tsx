@@ -217,6 +217,10 @@ export function ReviewPage() {
 		summary?: string;
 		emotion_score?: number;
 		emotion_label?: string
+		// P1-15 模型归属快照 (ReviewMeta 随 meta 事件下发)
+		model?: string;
+		provider?: string;
+		profile_id?: string
 	} | null) => {
 		const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
 		try {
@@ -227,6 +231,10 @@ export function ReviewPage() {
 				summary: doneMeta?.summary,
 				emotion_score: doneMeta?.emotion_score ?? null,
 				emotion_label: doneMeta?.emotion_label ?? '',
+				// P1-15: 归属快照随复盘归档落盘
+				model: doneMeta?.model ?? '',
+				provider: doneMeta?.provider ?? '',
+				profile_id: doneMeta?.profile_id ?? '',
 			})
 			qc.invalidateQueries({ queryKey: QK.reviewReports })
 		} catch { /* 静默 */

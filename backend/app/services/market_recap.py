@@ -336,13 +336,15 @@ async def recap_market_stream(
 
     emo = overview.get("emotion") or {}
 
-    # 2. meta 事件(前端据此先渲染信号灯/看板)
+    # 2. meta 事件(前端据此先渲染信号灯/看板; P1-15: 带归属快照随报告落盘)
+    from app.services import ai_provider as _ai_prov
     yield json.dumps({
         "type": "meta",
         "as_of": as_of_str,
         "emotion_score": emo.get("score", 50),
         "emotion_label": emo.get("label", "—"),
         "summary": _recap_summary(overview),
+        **_ai_prov.current_attribution(),
     }, ensure_ascii=False)
 
     # 3+4. 构建 prompt + 流式调用 LLM(整体 try-except,任何异常 yield error,避免前端卡死)

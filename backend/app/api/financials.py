@@ -211,6 +211,10 @@ class SaveReportRequest(BaseModel):
     content: str
     periods: int | None = None
     summary: str = ""
+    # P1-15 模型归属: 生成时的 model/provider/profile_id (meta 事件下发, 前端原样带回)
+    model: str = ""
+    provider: str = ""
+    profile_id: str = ""
 
 
 @router.get("/reports")
@@ -234,6 +238,10 @@ def save_report(request: Request, req: SaveReportRequest):
         "content": req.content,
         "periods": req.periods,
         "summary": req.summary,
+        # P1-15 模型归属快照 (空串=旧前端未带, 兼容不报错)
+        "model": req.model,
+        "provider": req.provider,
+        "profile_id": req.profile_id,
     })
     return {"ok": True, "report": report}
 

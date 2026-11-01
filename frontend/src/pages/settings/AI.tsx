@@ -4,10 +4,10 @@ import {
 	Save, Loader2, Check, Wifi, Eye, EyeOff, AlertCircle, SlidersHorizontal,
 	Shuffle, ExternalLink, Trash2, FileCog, RefreshCw,
 	Terminal, ChevronDown, Sparkles, Atom, Waves, Cloud, Gem, Moon,
-	Plus, CheckCircle2, Zap,
+	Plus, CheckCircle2, Zap, X,
 } from 'lucide-react'
 import { useSettings, usePreferences } from '@/lib/useSharedQueries'
-import { api, type AiProfile, type SettingsState, type SponsorModelItem } from '@/lib/api'
+import { api, type AiKeyHealthEvent, type AiModelCapabilities, type AiProfile, type SettingsState, type SponsorModelItem } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { AnchorWrap } from '@/lib/useCardFlash'
 import { copyText } from '@/lib/clipboard'
@@ -25,6 +25,14 @@ import {
 const fmtDiscount = (rate: number) => {
 	const fold = Math.round(rate * 100) / 10
 	return `${Number.isInteger(fold) ? fold : fold.toFixed(1)}折`
+}
+
+// P1-15 第三批: 实测时间 ISO → 紧凑显示 "11-01 18:20" (档案"已验证"徽章用)
+const fmtVerifiedAt = (iso: string) => {
+	const d = new Date(iso)
+	if (Number.isNaN(d.getTime())) return iso
+	const p = (n: number) => String(n).padStart(2, '0')
+	return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 // 上下文长度 → 紧凑显示: 1050000→"1M", 262144→"256K"
@@ -300,6 +308,11 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 	const [modelFilter, setModelFilter] = useState('')
 	const modelBoxRef = useRef<HTMLDivElement | null>(null)
 	const [testing, setTesting] = useState(false)
+	// P1-15: 当前模型在能力表中的登记情况 (null/未登记 = 不展示提示)
+	const [modelCaps, setModelCaps] = useState<AiModelCapabilities | null>(null)
+	// P1-15 第三批: 密钥健康 (最近 401/403 鉴权失败记录) — 页首红横幅数据源
+	const [keyHealth, setKeyHealth] = useState<AiKeyHealthEvent[]>([])
+	const [keyHealthDismissed, setKeyHealthDismissed] = useState(false)
 	const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
 	const [selectedPresetLabel, setSelectedPresetLabel] = useState(PRESETS[0].label)
 	// ===== 模型档案 (多模型配置库, 可回显/激活/删除) =====
@@ -388,6 +401,18 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		setApiKey('')
 	}
 
+	// P1-15: 模型/API 地址变化时防抖查询能力表登记 (纯参考提示, 查询失败静默忽略不阻塞配置)
+	useEffect(() => {
+		const m = model.trim()
+		if (!m) { setModelCaps(null); return }
+		const t = setTimeout(() => {
+			api.getModelCapabilities(m, baseUrl.trim())
+				.then(caps => setModelCaps(caps.registered ? caps : null))
+				.catch(() => setModelCaps(null))
+		}, 300)
+		return () => clearTimeout(t)
+	}, [model, baseUrl])
+
 	useEffect(() => {
 		if (!s) return
 		// 用户已交互: 表单是用户草稿, 晚到/重复的 settings 快照不得覆盖
@@ -434,8 +459,16 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		}
 	}
 
+	// P1-15 第三批: 拉取密钥健康记录 (最近鉴权失败) — 挂载时与每次连通性测试后刷新
+	const refreshKeyHealth = async () => {
+		try {
+			setKeyHealth((await api.aiKeyHealth()).events ?? [])
+		} catch { /* 拉不到不打扰: 横幅只是提示, 不是功能入口 */ }
+	}
+
 	// 首次挂载: 拉档案库, 标记当前激活档案为编辑目标
 	useEffect(() => {
+		void refreshKeyHealth()
 		void refreshProfiles().then(r => {
 			if (!r?.active) return
 			setEditingProfileId(r.active)
@@ -761,16 +794,22 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		try {
 			// 只探测当前表单值, 绝不保存 — 测试失败不能把坏配置写进已保存配置。
 			// codex 探测是真实最小 exec (CLI 启动+一次生成), 默认 30s 会掐断, 放宽到 90s
+			// P1-15 第三批: 带上正在编辑的档案 id — 测试结果 (last_verified_*) 记进档案
 			const r = await api.testAiSettings({
 				provider,
 				...(isCodexProvider ? {} : { base_url: baseUrl.trim(), protocol }),
 				model: (isCodexProvider ? codexModel : model).trim(),
 				...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+				...(editingProfileId ? { profile_id: editingProfileId } : {}),
 			}, isCodexProvider ? { timeoutMs: 90_000 } : undefined)
 			setTestResult({
 				ok: r.ok,
 				msg: r.ok ? `连通成功 · ${r.model ?? provider}` : (r.error ?? '未知错误'),
 			})
+			// 实测记录已写进档案 + 成功会清鉴权失败记录 → 两处都刷新
+			void refreshProfiles()
+			setKeyHealthDismissed(false)
+			void refreshKeyHealth()
 		} catch (e: any) {
 			setTestResult({ ok: false, msg: String(e?.message ?? '测试失败') })
 		} finally {
@@ -797,6 +836,25 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 				{/* 拆成多张卡 (与 数据源 页同构): 原先 7 个区块挤在一张卡里, 只靠细分割线
 				 区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
 				<div className="space-y-4">
+					{/* P1-15 第三批: 密钥鉴权失败红横幅 — 401/403 大声说, 不只埋服务器日志;
+					 连通性测试成功会清掉对应记录, 横幅随之消失 */}
+					{keyHealth.length > 0 && !keyHealthDismissed && (
+						<div className="flex items-start gap-2.5 rounded-card border border-danger/30 bg-danger/[0.06] px-4 py-3">
+							<AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+							<div className="min-w-0 flex-1 text-xs leading-relaxed text-danger">
+								<span className="font-medium">检测到 AI 密钥鉴权失败({keyHealth[0].status})</span>
+								{' · '}模型 <span className="font-mono">{keyHealth[0].model || '未知'}</span>
+								{' · '}{keyHealth[0].ts.replace('T', ' ')}
+								{keyHealth.length > 1 && `(最近共 ${keyHealth.length} 次)`}
+								<div className="mt-1 break-all text-[11px] text-danger/80">{keyHealth[0].detail}</div>
+							</div>
+							<button type="button" onClick={() => setKeyHealthDismissed(true)}
+								className="shrink-0 rounded-md p-1 text-danger/70 transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+								title="关闭提示 (再次鉴权失败或测试后会重新出现)">
+								<X className="h-3.5 w-3.5" />
+							</button>
+						</div>
+					)}
 					{/* 面板页眉 (非卡片): 标题 / 当前状态 / 连接测试。
 					 这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
 					 套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
@@ -879,6 +937,20 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 																<span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-bear/10 px-1.5 py-px text-[9px] font-medium text-bear">
 																	<CheckCircle2 className="h-2.5 w-2.5" /> 使用中
 																</span>
+															)}
+															{/* P1-15 第三批: 实测记录徽章 — 这档案上次真实验证是什么时候、过没过 */}
+															{p.last_verified_at && (
+																p.last_verified_ok ? (
+																	<span title={`${p.last_verified_via || '真实调用'} · 模型 ${p.last_verified_model || p.model || ''}`}
+																		className="inline-flex shrink-0 items-center rounded-full bg-bear/10 px-1.5 py-px text-[9px] font-medium text-bear">
+																		✓ 已验证 {fmtVerifiedAt(p.last_verified_at)}
+																	</span>
+																) : (
+																	<span title={p.last_verified_error || '连通性测试失败'}
+																		className="inline-flex shrink-0 items-center rounded-full bg-danger/10 px-1.5 py-px text-[9px] font-medium text-danger">
+																		✗ 验证失败
+																	</span>
+																)
 															)}
 														</span>
 														<span className="mt-0.5 block truncate font-mono text-[10px] text-muted">
@@ -1093,6 +1165,14 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 																</div>
 															)}
 														</div>
+														{/* P1-15: 能力表登记提示 — 只有命中登记的模型才展示 (未登记不打扰) */}
+														{modelCaps?.registered && (
+															<p className="mt-1.5 flex items-start gap-1 text-[11px] leading-snug text-muted"
+																title={`能力表登记 (P1-15):\n· 联网搜索参数: ${modelCaps.supports_web_search ? '支持' : '不支持'}\n· 默认思考模式: ${modelCaps.default_thinking ? '是' : '否'}\n· 思考占用输出预算: ${modelCaps.thinking_shares_max_tokens ? '是' : '否'}`}>
+																<AlertCircle className="mt-px h-3 w-3 shrink-0 text-amber-500/80" />
+																<span>{modelCaps.known_issues.join('；') || '该模型已登记能力怪癖, 悬停查看'}</span>
+															</p>
+														)}
 													</Field>
 												</div>
 												<Field label="API 地址">

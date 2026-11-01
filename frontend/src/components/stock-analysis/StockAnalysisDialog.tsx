@@ -389,13 +389,34 @@ function ScorecardPanel({ sc }: { sc: AiScorecard }) {
       <p className="mt-1.5 border-t border-border/30 pt-1.5 text-[10px] leading-relaxed text-muted">
         ⚠️ {sc.disclaimer}中性研判按涨跌幅在各周期容差带内算对 (T+1 ±1% … T+10 ±3%)。
       </p>
+      {/* P1-15: 按模型分组战绩 — "哪个模型准"一目了然; 同款样本护栏 */}
+      {sc.by_model && sc.by_model.length > 0 && (
+        <div className="mt-1.5 border-t border-border/30 pt-1.5">
+          <div className="mb-0.5 text-[10px] text-muted"
+            title="按研判生成时的模型快照分组 (T+5 主周期口径); 「未标注」= 模型归属功能上线前的老战绩">
+            按模型战绩 (T+{sc.horizon_days})
+          </div>
+          {sc.by_model.map(g => (
+            <div key={g.model} className="flex items-center gap-2 py-0.5 text-[10px]">
+              <span className="max-w-40 truncate text-secondary" title={g.model}>{g.model}</span>
+              <span className="ml-auto shrink-0">
+                {g.insufficient || g.hit_rate_pct == null
+                  ? <span className="text-muted">样本不足 {g.settled}/{sc.min_sample}</span>
+                  : <span className="font-semibold text-secondary">{g.hit_rate_pct}%</span>}
+              </span>
+              <span className="w-10 shrink-0 text-right text-muted">{g.settled} 次</span>
+            </div>
+          ))}
+        </div>
+      )}
       {sc.recent.length > 0 && (
         <div className="mt-1.5 border-t border-border/30 pt-1.5">
           <div className="mb-0.5 text-[10px] text-muted">最近结算 (最多 10 条)</div>
           {sc.recent.map((r, i) => (
             <div key={r.report_id ?? i} className="flex items-center gap-2 py-0.5 text-[10px]">
               <span className="shrink-0 text-muted">{r.analysis_date}</span>
-              <span className="max-w-24 truncate text-secondary">{r.name || r.symbol}</span>
+              <span className="max-w-24 truncate text-secondary"
+                title={r.model ? `模型: ${r.model}` : undefined}>{r.name || r.symbol}</span>
               <span className="shrink-0 text-muted">{r.direction}</span>
               <span className="ml-auto flex shrink-0 gap-1.5">
                 {Object.entries(r.horizons ?? {}).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, hz]) => (

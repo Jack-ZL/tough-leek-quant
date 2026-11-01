@@ -121,6 +121,18 @@ def _current_model_label() -> str:
     return str(model or "").strip()
 
 
+def _profile_switch_note(profile: dict | None) -> str:
+    """P1-15: 消息命中模型档案时的回显文案 (未命中返回空串, 不打扰)。
+
+    临时覆盖只对本次回复生效、不改激活档案, 所以措辞是"本次用"而非"已切换"。
+    """
+    if not profile:
+        return ""
+    name = profile.get("name") or profile.get("id") or "未命名"
+    model = profile.get("model") or profile.get("codex_model") or _current_model_label()
+    return f"\n🔀 本次用档案「{name}」(模型 {model})"
+
+
 def _build_analysis_report(
     content: str, stock_name: str, symbol: str, elapsed: float, model: str = ""
 ) -> str:
@@ -221,8 +233,12 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
 
             start_time = time.time()
             try:
+                # P1-15: 命中模型档案不再静默切换 — "分析中"回执里明说本次用哪套配置
+                switch_note = _profile_switch_note(profile)
                 await self._reply_markdown(
-                    "分析中", f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候...", incoming_message
+                    "分析中",
+                    f"🔍 正在分析 **{stock_name}**({symbol}), 请稍候...{switch_note}",
+                    incoming_message,
                 )
                 with ai_provider.profile_override(profile):
                     analysis_content = await self._run_analysis(repo, symbol)

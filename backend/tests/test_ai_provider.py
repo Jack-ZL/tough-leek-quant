@@ -859,8 +859,13 @@ async def test_run_codex_cli_401_without_auth_json_appends_hint(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_run_codex_cli_401_with_auth_json_no_hint(monkeypatch, tmp_path):
-    """auth.json 存在 → 保持原始错误, 不加误导性登录指引。"""
+async def test_run_codex_cli_401_with_auth_json_appends_expired_hint(monkeypatch, tmp_path):
+    """P1-15 第三批: auth.json 存在但 401 → 按"登录态过期"大声提示 + 记入密钥健康。
+
+    旧行为是保持原始错误不加指引 — 用户面对 expired token 无从下手;
+    现在明确告知重新 codex login, 并承诺绝不回退按量付费通道。
+    """
+    ai_provider.clear_key_health()
     coro = _codex_fail_run(
         monkeypatch, tmp_path,
         auth_json=True,
@@ -868,7 +873,13 @@ async def test_run_codex_cli_401_with_auth_json_no_hint(monkeypatch, tmp_path):
     )
     with pytest.raises(RuntimeError) as exc_info:
         await coro
-    assert "codex login" not in str(exc_info.value)
+    text = str(exc_info.value)
+    assert "过期" in text and "codex login" in text
+    assert "按量" in text  # 审计承诺: 不静默切按量付费 API
+    events = ai_provider.key_health()
+    assert events and events[0]["status"] == "401"
+    assert "Codex CLI 鉴权失败" in events[0]["detail"]
+    ai_provider.clear_key_health()
 
 
 @pytest.mark.asyncio

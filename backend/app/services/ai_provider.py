@@ -15,13 +15,16 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from urllib.parse import urlsplit, urlunsplit
 
 from app import secrets_store
 from app.config import settings
+from app.services import ai_capabilities  # P1-15: 声明式模型能力表
 
 OPENAI_COMPAT_PROVIDER = "openai_compat"
 OPENAI_PROVIDER = "openai"
@@ -174,6 +177,58 @@ def current_ai_model() -> str:
     return current_openai_model()
 
 
+def current_attribution() -> dict:
+    """P1-15: 当前 AI 调用的归属快照 — 随产出(报告/研判/记分卡台账)落盘。
+
+    返回 {"model", "provider", "profile_id"}; profile_override 上下文内
+    (机器人按档案单次分析)返回被覆盖档案的模型与 id, 归属不失真。
+    """
+    return {
+        "model": current_ai_model(),
+        "provider": current_ai_provider(),
+        "profile_id": secrets_store.get_active_ai_profile_id(),
+    }
+
+
+# ── P1-15 第三批: 密钥健康记录器 ──────────────────────────────────────────
+# 401/403 鉴权失败不再只把错误抛回调用方: 同时留 ERROR 日志 + 内存记录,
+# 设置页"红横幅"据此提示最近的密钥问题 (连通性测试成功后清除对应记录)。
+# 只做内存态 (重启即清): 目的是"最近出过什么事", 不是持久审计台账。
+_KEY_HEALTH_MAX = 20
+_key_health_events: deque[dict] = deque(maxlen=_KEY_HEALTH_MAX)
+
+
+def record_auth_failure(status: int | str, detail: str) -> None:
+    """记录一次鉴权失败 (带当前归属快照) + ERROR 日志 — 密钥问题必须大声。"""
+    attr = current_attribution()
+    event = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "status": str(status),
+        "detail": detail[:300],
+        **attr,
+    }
+    _key_health_events.appendleft(event)
+    logger.error(
+        "[P1-15] AI 鉴权失败(%s) model=%s profile=%s: %s",
+        status, attr["model"], attr["profile_id"], event["detail"],
+    )
+
+
+def key_health() -> list[dict]:
+    """最近的鉴权失败记录 (新→旧) — GET /api/settings/ai/key-health 数据源。"""
+    return list(_key_health_events)
+
+
+def clear_key_health(model: str = "") -> None:
+    """连通性测试成功后清记录: model 为空清全部, 否则只清该模型的记录。"""
+    if not model:
+        _key_health_events.clear()
+        return
+    for event in [e for e in _key_health_events if e.get("model") == model]:
+        with contextlib.suppress(ValueError):
+            _key_health_events.remove(event)
+
+
 def current_openai_reasoning_effort() -> str:
     stored = secrets_store.load()
     if "ai_reasoning_effort" not in stored:
@@ -201,15 +256,12 @@ def current_ai_web_search() -> bool:
     return secrets_store.get_ai_config_bool("ai_web_search", settings.ai_web_search)
 
 
-# DeepSeek 官方聊天 API 无 enable_search 参数 (联网需 /v1/tools/search 自行编排),
-# 命中该关键字时不传参数, 提示词也退回无联网变体。
-_SEARCH_UNSUPPORTED_MODEL_HINTS = ("deepseek",)
-
-
 def web_search_supported() -> bool:
     """当前配置下能否真正启用联网搜索 (请求参数与提示词变体共用同一判定)。
 
-    条件: 开关开启 + OpenAI 系 chat_completions 协议 + 模型不在不支持名单。
+    条件: 开关开启 + OpenAI 系 chat_completions 协议 + 能力表未登记该模型
+    不支持联网 (P1-15: 原 _SEARCH_UNSUPPORTED_MODEL_HINTS 子串特判已收编进
+    ai_capabilities 能力表, 如 DeepSeek 官方聊天 API 无 enable_search 参数)。
     Responses 协议的联网走 tools=[{"type":"web_search"}], 暂未接入;
     网关若拒绝 enable_search, 由 _openai_retry_kwargs 移除该参数后重试。
     """
@@ -217,8 +269,7 @@ def web_search_supported() -> bool:
         return False
     if is_codex_cli_provider() or is_responses_protocol():
         return False
-    model = current_ai_model().strip().lower()
-    return not any(h in model for h in _SEARCH_UNSUPPORTED_MODEL_HINTS)
+    return ai_capabilities.lookup(current_ai_model()).supports_web_search
 
 
 # 厂商关键词映射: 输入端友好叫法 (中英文/别名) → 厂商标识。
@@ -322,7 +373,11 @@ def profile_override(profile: dict | None):
     if not profile:
         yield None
         return
-    token = secrets_store.set_runtime_override(secrets_store.flat_from_profile(profile))
+    flat = secrets_store.flat_from_profile(profile)
+    # P1-15: 覆盖上下文内 get_active_ai_profile_id() 也返回该档案 id —
+    # current_attribution() 归属快照在机器人临时切档案时不失真。
+    flat["ai_active_profile"] = str(profile.get("id") or "")
+    token = secrets_store.set_runtime_override(flat)
     try:
         yield profile
     finally:
@@ -961,11 +1016,23 @@ def _openai_error_param(exc: Exception) -> str:
 def _openai_retry_kwargs(exc: Exception, kwargs: dict) -> dict | None:
     """Remove one explicitly rejected optional argument for a bounded retry."""
     retry_kwargs = dict(kwargs)
+
+    # P1-15: 移除被拒参数不再静默 — 每次降级都留 warning 日志,
+    # 排查"为什么这个模型没联网/没思考/温度不生效"时有据可查。
+    def _warn(dropped: str) -> None:
+        logger.warning(
+            "[P1-15] 模型 %s 拒绝 %s 参数, 已移除后重试 (能力表未登记该怪癖, "
+            "可考虑在 ai_capabilities 登记): %s",
+            retry_kwargs.get("model") or current_ai_model(), dropped, exc,
+        )
+
     if "temperature" in retry_kwargs and _is_temperature_rejected(exc):
         retry_kwargs.pop("temperature")
+        _warn("temperature")
         return retry_kwargs
     if "reasoning_effort" in retry_kwargs and _is_reasoning_effort_rejected(exc):
         retry_kwargs.pop("reasoning_effort")
+        _warn("reasoning_effort")
         return retry_kwargs
     if "extra_body" in retry_kwargs and _is_search_body_rejected(exc):
         # 网关/模型不支持联网搜索参数: 仅移除搜索相关键重试,
@@ -978,16 +1045,15 @@ def _openai_retry_kwargs(exc: Exception, kwargs: dict) -> dict | None:
                 retry_kwargs["extra_body"] = rest
             else:
                 retry_kwargs.pop("extra_body")
+            _warn("enable_search")
             return retry_kwargs
     if "extra_body" in retry_kwargs and _is_thinking_body_rejected(exc):
         # DeepSeek thinking 禁用参数被拒 (模型/API 版本差异): 回退默认思考模式
         # 重试; 报告若因此被推理挤占正文, 由 _iter_openai_text 显式报错。
         retry_kwargs.pop("extra_body")
+        _warn("thinking")
         return retry_kwargs
     return None
-
-
-_DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
 
 
 def _openai_kwargs(
@@ -1016,14 +1082,11 @@ def _openai_kwargs(
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
     extra_body: dict = {}
-    if (
-        prefer_final_answer
-        and model.strip().lower() in _DEEPSEEK_V4_MODELS
-        and urlsplit(base_url.strip()).hostname == "api.deepseek.com"
-    ):
-        # DeepSeek V4 defaults to thinking mode. For report-style tasks the
-        # hidden reasoning shares max_tokens with the final answer and can
-        # exhaust the budget before any visible content is emitted.
+    # P1-15: 原 _DEEPSEEK_V4_MODELS + hostname 特判收编进能力表 —
+    # "默认开思考 + 思考挤占 max_tokens" 的模型 (DeepSeek V4 官方 API),
+    # 报告类任务显式禁用思考, 防止推理吃光预算后正文 0 字。
+    caps = ai_capabilities.lookup(model, base_url)
+    if prefer_final_answer and caps.default_thinking and caps.thinking_shares_max_tokens:
         extra_body["thinking"] = {"type": "disabled"}
     if web_search:
         # 千问/百炼 OpenAI 兼容模式的联网搜索参数; 不支持的网关会 400 拒绝,
@@ -1085,6 +1148,9 @@ def _format_openai_error(exc: Exception) -> str:
     # 可读 detail 时才回落到按状态码的通用文案, 避免吞掉排障关键信息。
     message = detail or status_messages.get(status) or "请稍后重试或检查 AI 服务配置"
     if status:
+        # P1-15 第三批: 401/403 大声化 — 除抛回调用方外, 留 ERROR 日志与健康记录
+        if status in (401, 403):
+            record_auth_failure(status, message)
         return f"AI 服务请求失败({status}): {message}"
     return f"AI 服务请求失败: {message}"
 
@@ -1159,6 +1225,19 @@ def _codex_missing_auth_hint() -> str:
     )
 
 
+def _codex_auth_expired_hint() -> str:
+    """auth.json 存在但上游拒绝 (登录态过期) 时的指引。
+
+    P1-15 第三批审计承诺: 本系统绝不把 OPENAI_API_KEY 等按量密钥传给 Codex
+    子进程 (_CODEX_ENV_ALLOWLIST 不含它, 有测试锁死) — 登录态过期时大声失败,
+    不静默切到按量付费通道烧钱, 也不换模型。
+    """
+    return (
+        "Codex 登录态可能已过期 (auth.json 存在但上游拒绝): 请在终端重新执行 "
+        "codex login。本系统不会回退按量付费 API Key、不会换模型 — 不存在静默扣费。"
+    )
+
+
 async def _run_codex_cli(
     messages: Sequence[Message],
     *,
@@ -1226,9 +1305,11 @@ async def _run_codex_cli(
             detail = err or out or f"exit code {returncode}"
             message = f"Codex CLI 调用失败: {detail[-1200:]}"
             if _CODEX_AUTH_FAILURE_RE.search(detail):
-                hint = _codex_missing_auth_hint()
-                if hint:
-                    message = f"{message}\n{hint}"
+                # P1-15 第三批: 鉴权失败大声化 — auth.json 缺失给登录指引,
+                # 存在则按"登录态过期"提示; 同时记入密钥健康 (设置页红横幅)
+                hint = _codex_missing_auth_hint() or _codex_auth_expired_hint()
+                message = f"{message}\n{hint}"
+                record_auth_failure(401, f"Codex CLI 鉴权失败: {detail[-200:]}")
             raise RuntimeError(message)
         result = final_message or out
         if not result:

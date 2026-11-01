@@ -23,7 +23,8 @@ export interface ActiveTask {
   phase: Phase
   content: string             // 累积的 Markdown
   error: string
-  meta: { summary?: string; periods?: number } | null
+  // P1-15: model/provider/profile_id 归属快照随 meta 下发, 保存时原样带回
+  meta: { summary?: string; periods?: number; model?: string; provider?: string; profile_id?: string } | null
   createdAt: number           // ms 时间戳
   savedReportId?: string      // 完成后存到后端的报告 id
   doneAt?: number             // 进入 done/error 态的时间戳(用于气泡过期清理)
@@ -39,6 +40,10 @@ export interface HistoryReport {
   periods?: number
   summary?: string
   created_at: string
+  /** P1-15 模型归属: 生成该报告时用的模型/渠道/档案 (老报告无此字段) */
+  model?: string
+  provider?: string
+  profile_id?: string
 }
 
 const MAX_ACTIVE = 3
@@ -219,7 +224,8 @@ async function runStream(id: string, symbol: string, focus: string) {
       if (!cur) return
       switch (chunk.type) {
         case 'meta':
-          patchTask(id, { meta: { summary: chunk.summary, periods: chunk.periods } })
+          // P1-15: 归属快照一并接住, 保存时带回
+          patchTask(id, { meta: { summary: chunk.summary, periods: chunk.periods, model: chunk.model, provider: chunk.provider, profile_id: chunk.profile_id } })
           break
         case 'delta':
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }
@@ -245,6 +251,10 @@ async function runStream(id: string, symbol: string, focus: string) {
           content: final.content,
           periods: final.meta?.periods,
           summary: final.meta?.summary ?? '',
+          // P1-15 模型归属快照落库
+          model: final.meta?.model ?? '',
+          provider: final.meta?.provider ?? '',
+          profile_id: final.meta?.profile_id ?? '',
         })
         if (res.report) {
           patchTask(id, { savedReportId: res.report.id })
