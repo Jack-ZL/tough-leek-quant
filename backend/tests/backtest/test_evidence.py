@@ -435,9 +435,14 @@ def test_minute_replay_checks_intraday_future_and_tracks_minute_inputs(tmp_path,
     service = _make_service(tmp_path, frame, minutes)
     service.engine.repo.store = SimpleNamespace(data_dir=tmp_path)
     if leak:
+        # P1-16: 注入的偷看未来改用"动态负偏移"(-params.get(...))。
+        # 静态门控 (_detect_lookahead) 只拦可证明为负的常量偏移, 这种动态
+        # 偏移它判不准会放行 — 正好由本测试验证 evidence 运行时检测器兜底,
+        # 两者分工互补。若改回 shift(-1) 会在 reload 阶段就被静态门控拦下,
+        # 根本走不到运行时检测, 测试意图就没了。
         source = TEST_STRATEGY_SOURCE.replace(
             'joined = df.join(prev, on="symbol", how="inner")',
-            'df = df.with_columns(pl.col("close").shift(-1).over("symbol").alias("close"))\n    joined = df.join(prev, on="symbol", how="inner")',
+            'df = df.with_columns(pl.col("close").shift(-params.get("leak", 1)).over("symbol").alias("close"))\n    joined = df.join(prev, on="symbol", how="inner")',
         )
         (tmp_path / "strategies" / "test_minute_ping.py").write_text(source, encoding="utf-8")
         service.strategy_engine.reload()

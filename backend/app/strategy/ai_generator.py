@@ -182,6 +182,153 @@ def _dotted_name(node: ast.AST) -> str | None:
     return ".".join(reversed(parts))
 
 
+# ================================================================
+# P1-16: 静态未来函数检测 (look-ahead bias)
+# ================================================================
+# 位移族调用两种形态:
+# - 方法形式 (polars): expr.shift(n) / .shift_and_fill(n) / .diff(n), 偏移在第 1 参
+# - 函数形式 (矩阵后端): shift(values, periods) / valid_shift(values, periods), 偏移在第 2 参
+# 两个后端语义一致: 偏移为正 = 回看历史 (安全), 为负 = 引用未来 (回测作弊)。
+_LOOKAHEAD_METHODS = frozenset({"shift", "shift_and_fill", "diff"})
+_LOOKAHEAD_FUNCS = frozenset({"shift", "valid_shift"})
+# 偏移参数的关键字名 (polars 用 n, 矩阵后端用 periods)
+_LOOKAHEAD_KEYWORDS = frozenset({"n", "periods"})
+# 门控错误前缀 — 调用方靠它识别"这是未来函数错误", 别处不要硬编码中文串
+LOOKAHEAD_ERROR_PREFIX = "禁止未来函数"
+
+
+def _collect_int_consts(tree: ast.Module) -> dict[str, int]:
+    """收集 `x = <可折叠整数>` 形式的简单赋值, 供偏移量名字解析。
+
+    同名多处赋值且结果不一致时视为不可解析 (丢弃) — 宁可漏判交给运行时
+    evidence 抽查兜底, 不误伤合法策略。
+    """
+    consts: dict[str, int] = {}
+    conflicted: set[str] = set()
+    for node in ast.walk(tree):
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target, node.value
+        if target is None or value is None:
+            continue
+        folded = _fold_int(value, {})
+        if folded is None:
+            continue
+        name = target.id
+        if name in consts and consts[name] != folded:
+            conflicted.add(name)
+        consts[name] = folded
+    for name in conflicted:
+        consts.pop(name, None)
+    return consts
+
+
+def _fold_int(node: ast.expr, consts: dict[str, int]) -> int | None:
+    """把偏移量表达式尽量折叠成整数; 折叠不出返回 None (放行, 不猜)。
+
+    覆盖: 字面量 / 一元正负号 / 加减乘 / 已解析常量名 / pl.lit(常量)。
+    """
+    if isinstance(node, ast.Constant):
+        # bool 是 int 子类, 但不是合法偏移语义, 不放行也不判负
+        return node.value if isinstance(node.value, int) \
+            and not isinstance(node.value, bool) else None
+    if isinstance(node, ast.UnaryOp):
+        inner = _fold_int(node.operand, consts)
+        if inner is None:
+            return None
+        if isinstance(node.op, ast.USub):
+            return -inner
+        if isinstance(node.op, ast.UAdd):
+            return inner
+        return None
+    if isinstance(node, ast.BinOp) \
+            and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+        left = _fold_int(node.left, consts)
+        right = _fold_int(node.right, consts)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        return left * right
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.Call):
+        # pl.lit(-1) 之类的常量包装
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "lit" \
+                and len(node.args) == 1 and not node.keywords:
+            return _fold_int(node.args[0], consts)
+        if isinstance(func, ast.Name) and func.id == "lit" \
+                and len(node.args) == 1 and not node.keywords:
+            return _fold_int(node.args[0], consts)
+    return None
+
+
+def _lookahead_offset(node: ast.Call) -> ast.expr | None:
+    """取位移族调用的偏移量实参; 非位移族调用返回 None。"""
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr in _LOOKAHEAD_METHODS:
+        index = 0
+    elif isinstance(func, ast.Name) and func.id in _LOOKAHEAD_FUNCS:
+        index = 1
+    else:
+        return None
+    if len(node.args) > index:
+        return node.args[index]
+    for keyword in node.keywords:
+        if keyword.arg in _LOOKAHEAD_KEYWORDS:
+            return keyword.value
+    return None
+
+
+def _detect_lookahead(tree: ast.Module) -> None:
+    """AST 级未来函数门控: 拦截可证明为负偏移的位移调用 (GH 报告 P1-16)。
+
+    与运行时 evidence.audit_matrix (扰动未来数据重算对比) 分工: 本检查在
+    生成/保存/加载时事前拦截代码模式, 零成本高确定性; 判不准的动态偏移
+    一律放行, 由 evidence 事后经验抽查兜底 — 宁漏勿误伤。
+    """
+    consts = _collect_int_consts(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        offset = _lookahead_offset(node)
+        if offset is None:
+            continue
+        folded = _fold_int(offset, consts)
+        if folded is not None and folded < 0:
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) \
+                else func.id if isinstance(func, ast.Name) else "shift"
+            raise ValueError(
+                f"{LOOKAHEAD_ERROR_PREFIX}: 第 {node.lineno} 行 {name}({folded}) "
+                "偏移为负会引用未来数据 (回测 look-ahead 偏差); "
+                "回看历史请用正偏移, 如 shift(1)"
+            )
+
+
+def is_lookahead_error(result: dict) -> bool:
+    """校验结果里的错误是否为未来函数门控所出。"""
+    return str(result.get("error") or "").startswith(LOOKAHEAD_ERROR_PREFIX)
+
+
+def needs_code_repair(result: dict) -> bool:
+    """P1-16: 判断这份校验失败结果值不值得回喂模型重修一次。
+
+    结构错误 (META 缺失/入口不对) 与语义门控错误 (未来函数) 都属于
+    "模型能按错误信息自己改对"的类别; 其余 (如安全违规) 直接失败上报,
+    不浪费一次 LLM 调用。AI 生成入口统一用本判据, 别再各自判断。
+    """
+    return AIStrategyGenerator.needs_structural_repair(result) \
+        or is_lookahead_error(result)
+
+
 def _top_level_assignment(
     tree: ast.Module,
     name: str,
@@ -272,7 +419,7 @@ class AIStrategyGenerator:
         # 调用 LLM
         code = await self._call_llm(user_prompt, guide)
         result = self.validate_code(code)
-        if self.needs_structural_repair(result):
+        if needs_code_repair(result):
             return await self.repair_code(result["code"], result["error"])
         return result
 
@@ -394,7 +541,12 @@ class AIStrategyGenerator:
             )
 
     async def repair_code(self, code: str, error: str) -> dict:
-        """Ask the model once for a complete replacement after a structural error."""
+        """Ask the model once for a complete replacement after a validation error.
+
+        P1-16: 不再只服务结构错误 — 未来函数门控 (needs_code_repair) 也走这里,
+        所以文案用中性的"未通过校验", 并把错误原文完整回喂 (错误信息本身
+        已写明正确写法, 如 "回看历史请用正偏移, 如 shift(1)")。
+        """
         try:
             backend = _strategy_execution_backend(ast.parse(code))
         except SyntaxError:
@@ -408,7 +560,7 @@ class AIStrategyGenerator:
             entrypoint_requirement = (
                 "保留原执行后端，并定义对应的 filter() 或 filter_history()"
             )
-        prompt = f"""上一次生成的策略代码未通过结构校验。
+        prompt = f"""上一次生成的策略代码未通过校验。
 
 校验错误：{error}
 
@@ -486,6 +638,9 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         - 任意 dunder 名字 / dunder 属性 / 含 dunder 的字符串 (含拼接折叠)
         - 白名单模块的模块类型属性 (pl.os / np.ctypeslib / np.lib ...) 与 from 导入
         - 进程执行与文件读写原语属性名 (x.system / x.write_csv ...)
+
+        P1-16 追加: 静态未来函数门控 (_detect_lookahead) — 可证明为负偏移的
+        位移调用 (shift/shift_and_fill/diff/valid_shift) 直接拒绝。
         """
         tree = ast.parse(code)
 
@@ -589,6 +744,9 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 folded = _fold_string(node.slice)
                 if folded is not None:
                     _reject_dunder_text(folded, "下标访问")
+
+        # P1-16: 安全门控之后叠加金融语义门控 — 静态未来函数拦截
+        _detect_lookahead(tree)
 
     @staticmethod
     def _extract_meta(code: str) -> dict:
