@@ -18,6 +18,7 @@ from app.plugins.tencent import client as tc
 from app.plugins.tencent import provider as tp
 from app.plugins.tencent.provider import TencentProvider
 
+
 # ---- 实测录制样例 (2026-11 冒烟, qt.gtimg.cn 快照 ~ 分隔字段) ----
 def _snap_fields(**over) -> list[str]:
     """构造 52 字段快照行。over 用 f3/f37 等键覆盖指定索引。"""
@@ -565,3 +566,44 @@ def test_plugin_yaml_loadable():
 def test_availability_always_true():
     ok, msg = tp.availability()
     assert ok and msg
+
+
+# ---- P1-13 第三批: 分时逐笔 (stock.gtimg.cn detail 分页) ----
+
+def test_tick_trades_tail_pages():
+    """bigdata 索引段数 = 总页数; 取尾部 pages 页拼接返回原始 tick 串。"""
+    vt = _VirtualTime()
+    idx = 'v_detail_time_sz000651=[20261030,"09:25:00~09:33:24|09:33:27~09:36:54|09:36:57~09:40:21"];'
+    p1 = 'v_detail_data_sz000651=[1,"70/09:36:57/38.04/0.01/58/220586/B|71/09:37:00/38.03/-0.01/150/570527/S"];'
+    p2 = 'v_detail_data_sz000651=[2,"140/09:40:18/38.05/0.02/30/114150/M"];'
+    c, http = _client_with(
+        [_FakeResponse(content=idx.encode("gbk")),
+         _FakeResponse(content=p1.encode("gbk")),
+         _FakeResponse(content=p2.encode("gbk"))], vt)
+    ticks = c.tick_trades("sz000651", pages=2)
+    assert len(ticks) == 3 and ticks[0].startswith("70/") and ticks[-1].endswith("/M")
+    # 请求序列: 先 bigdata 索引定位总页数(3), 再拉尾部 2 页(p=1,2)
+    assert http.requests[0][1]["action"] == "bigdata"
+    assert [r[1]["p"] for r in http.requests[1:]] == [1, 2]
+    assert all(r[1]["c"] == "sz000651" for r in http.requests)
+    assert all("stock.gtimg.cn" in r[0] for r in http.requests)
+
+
+def test_tick_trades_empty_index_returns_empty():
+    """索引为空(如新股尚无逐笔) → 返回 [], 不再发数据页请求。"""
+    vt = _VirtualTime()
+    c, http = _client_with([_FakeResponse(content=b"v_detail_time_sz000651=[];")], vt)
+    assert c.tick_trades("sz000651") == []
+    assert len(http.requests) == 1
+
+
+def test_tick_trades_pages_capped_at_total():
+    """总页数不足请求页数时从第 0 页拉起 — 不能越界(越界页返回空响应体会被当限流重试)。"""
+    vt = _VirtualTime()
+    idx = 'v_detail_time_sz000651=[20261030,"09:25:00~09:33:24"];'
+    p0 = 'v_detail_data_sz000651=[0,"0/09:25:00/37.52/-0.02/1191/4467206/S"];'
+    c, http = _client_with(
+        [_FakeResponse(content=idx.encode("gbk")), _FakeResponse(content=p0.encode("gbk"))], vt)
+    ticks = c.tick_trades("sz000651", pages=3)
+    assert len(ticks) == 1
+    assert [r[1].get("p") for r in http.requests[1:]] == [0]

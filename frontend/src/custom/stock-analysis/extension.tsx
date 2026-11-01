@@ -7,6 +7,7 @@ import { StockFinancialSearch } from '@/components/financials/StockFinancialSear
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { LastStockChip } from '@/components/LastStockChip'
 import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
+import { StockProfilePanel } from '@/components/stock-analysis/StockProfilePanel'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
 import { api } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
@@ -132,7 +133,7 @@ export function StockAnalysis() {
 
 				{/* 主体:左侧当前个股看板 + 右侧常驻历史报告 */}
 				<div className="grid grid-cols-[1fr_288px] gap-6 items-start">
-					<div className="min-w-0">
+					<div className="min-w-0 space-y-6">
 						{!symbol ? (
 							<EmptyState
 								icon={LineChart}
@@ -140,7 +141,11 @@ export function StockAnalysis() {
 								hint="搜索代码或名称,查看日 K 与关键价位,并可让 AI 进行技术面 / 基本面 / 财务面 / 消息面四维综合分析。"
 							/>
 						) : (
-							<StockAnalysisBoard symbol={symbol} />
+							<>
+								<StockAnalysisBoard symbol={symbol} />
+								{/* P1-13: 个股资料(解禁/质押/回购/股东户数), 免费源直连 */}
+								<StockProfilePanel symbol={symbol} />
+							</>
 						)}
 					</div>
 					<HistorySidebar />

@@ -402,3 +402,44 @@ class EastmoneyClient:
                 break
             page += 1
         return out
+
+    def datacenter_report(
+        self,
+        report_name: str,
+        flt: str | None = None,
+        columns: str = "ALL",
+        page_size: int = 50,
+        page_number: int = 1,
+        sort_columns: str | None = None,
+        sort_types: int | str | None = None,  # 多列排序时传字符串如 "-1,1"(与 sort_columns 逗号列一一对应)
+    ) -> list[dict]:
+        """通用 datacenter 报表拉取, 单页返回。P1-13: 个股资料数据源。
+
+        与 dividend_events 共用 datacenter 主机的令牌桶+熔断(独立封禁池, 实测
+        push2 被封时 datacenter 仍可用)。个股资料类查询都按标的过滤取前 N 条,
+        单页足够, 不自动翻页。
+
+        空数据语义(实测 2026-11): 无记录时接口返回 success=false + code=9201
+        + message="返回数据为空" — 这是合法空结果(如银行股无回购记录), 返回 [];
+        其余失败(报表名不存在 9501 / 列不存在等)抛 EastmoneyError。
+        """
+        params: dict = {
+            "reportName": report_name,
+            "columns": columns,
+            "pageSize": page_size,
+            "pageNumber": page_number,
+            "source": "WEB",
+            "client": "WEB",
+        }
+        if flt:
+            params["filter"] = flt
+        if sort_columns:
+            params["sortColumns"] = sort_columns
+            params["sortTypes"] = sort_types if sort_types is not None else -1
+        payload = self._get_json(DATACENTER_BASE, "/api/data/v1/get", params)
+        if payload.get("success"):
+            result = payload.get("result") or {}
+            return list(result.get("data") or [])
+        if payload.get("code") == 9201:
+            return []  # 合法空结果: 该标的无此类记录
+        raise EastmoneyError(f"datacenter 报表 {report_name} 失败: {payload.get('message')}")

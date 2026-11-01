@@ -105,6 +105,8 @@ export const QK = {
 	pipelineJob: (id: string) => ['pipeline-job', id] as const,
 	// P1-12 layer3: 备源重跑清单
 	rerunManifest: ['rerun-manifest'] as const,
+	// P1-13: 个股资料(解禁/质押/回购/股东户数), 按数据集+标的分键
+	stockProfile: (dataset: string, symbol: string) => ['stock-profile', dataset, symbol] as const,
 	extData: ['ext-data'] as const,
 	extDataRows: (id: string, date?: string, limit?: number, columns?: string) => ['ext-data-rows', id, date, limit, columns] as const,
 	dimensionMembers: (id: string, field: string, value: string, date?: string) => ['dimension-members', id, field, value, date] as const,

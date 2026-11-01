@@ -2934,6 +2934,152 @@ export interface LabReport {
 	}
 }
 
+// ===== 个股资料 (P1-13: 第一批 解禁/质押/回购/股东户数 + 第二批 十大股东/基金持仓/新股申购/业绩快报, 免费源东财 datacenter) =====
+export type StockProfileDataset =
+	| 'unlock' | 'pledge' | 'repurchase' | 'holder_number'
+	| 'top_holders' | 'fund_holding' | 'ipo_info' | 'perf_express'
+	| 'money_flow' | 'tick_trade'
+
+/** 限售解禁行: 股数/市值单位万股/万元, ratio 已是百分数 */
+export interface ProfileUnlockRow {
+	free_date: string | null
+	free_shares_wan: number | null
+	free_market_cap_wan: number | null
+	free_shares_type: string | null
+	ratio_of_total_pct: number | null
+	holder_num: number | null
+}
+
+/** 股权质押行(中登周频): 余额万股/市值万元, ratio 已是百分数 */
+export interface ProfilePledgeRow {
+	trade_date: string | null
+	pledge_ratio_pct: number | null
+	pledge_shares_wan: number | null
+	pledge_market_cap_wan: number | null
+	pledge_deal_num: number | null
+}
+
+/** 股票回购行: 金额单位元/数量单位股, progress 已映射中文 */
+export interface ProfileRepurchaseRow {
+	notice_date: string | null
+	progress: string | null
+	amount: number | null
+	num: number | null
+	price_cap: number | null
+	share_type: string | null
+	end_date: string | null
+	objective: string | null
+}
+
+/** 股东户数行(季频): 户均市值单位元, 比例已是百分数 */
+export interface ProfileHolderNumberRow {
+	end_date: string | null
+	holder_num: number | null
+	holder_num_change: number | null
+	holder_num_ratio_pct: number | null
+	avg_hold_num: number | null
+	avg_market_cap: number | null
+	interval_chrate_pct: number | null
+	notice_date: string | null
+}
+
+/** 十大股东行(季频, P1-13 第二批): 持股数单位股/市值单位元, ratio 已是百分数; hold_change 混合类型(数字或"不变"文本) */
+export interface ProfileTopHoldersRow {
+	end_date: string | null
+	rank: number | null
+	holder_name: string | null
+	hold_num: number | null
+	hold_ratio_pct: number | null
+	hold_change: number | string | null
+	shares_type: string | null
+	market_cap: number | null
+}
+
+/** 基金持仓行(季频, 分机构类型, P1-13 第二批): 持股单位股/市值单位元, ratio 已是百分数; hold_change 为增仓/减仓/新进/不变文本 */
+export interface ProfileFundHoldingRow {
+	report_date: string | null
+	org_type: string | null
+	org_num: number | null
+	hold_shares: number | null
+	hold_value: number | null
+	free_ratio_pct: number | null
+	hold_change: string | null
+}
+
+/** 新股申购行(P1-13 第二批): 发行价元/发行量万股/募资亿元/中签率已是百分数/申购上限股 */
+export interface ProfileIpoInfoRow {
+	apply_date: string | null
+	apply_code: string | null
+	name: string | null
+	listing_date: string | null
+	market: string | null
+	issue_price: number | null
+	issue_num_wan: number | null
+	raise_funds_yi: number | null
+	pe_after_issue: number | null
+	industry_pe: number | null
+	win_rate_pct: number | null
+	apply_upper: number | null
+	each_ballot_shares: string | null
+	industry_name: string | null
+}
+
+/** 业绩快报行(P1-13 第二批): 营收/净利单位元, 同比与 ROE 已是百分数 */
+export interface ProfilePerfExpressRow {
+	report_date: string | null
+	notice_date: string | null
+	data_type: string | null
+	eps: number | null
+	revenue: number | null
+	revenue_yoy_pct: number | null
+	net_profit: number | null
+	net_profit_yoy_pct: number | null
+	bvps: number | null
+	roe_pct: number | null
+}
+
+/** P1-13 第三批: 资金流向日频行(新浪源): 金额单位元, 比例字段已是百分数 */
+export interface ProfileMoneyFlowRow {
+	date: string | null
+	close: number | null
+	chg_pct: number | null
+	net_inflow: number | null
+	net_ratio_pct: number | null
+	main_net: number | null
+	main_ratio_pct: number | null
+	industry_chg_pct: number | null
+	industry_net: number | null
+}
+
+/** P1-13 第三批: 逐笔成交行(腾讯源): change 是与上一笔的价差(元), 量单位手/额单位元 */
+export interface ProfileTickTradeRow {
+	time: string | null
+	price: number | null
+	change: number | null
+	volume_lots: number | null
+	amount: number | null
+	side: string | null
+}
+
+export type StockProfileRow =
+	| ProfileUnlockRow | ProfilePledgeRow | ProfileRepurchaseRow | ProfileHolderNumberRow
+	| ProfileTopHoldersRow | ProfileFundHoldingRow | ProfileIpoInfoRow | ProfilePerfExpressRow
+	| ProfileMoneyFlowRow | ProfileTickTradeRow
+
+export interface StockProfileResponse<T = StockProfileRow> {
+	state: 'ok' | 'source_unavailable'
+	source: string
+	dataset: StockProfileDataset
+	symbol: string
+	fetched_at?: number
+	/** true = 数据源暂不可用, 展示的是过期缓存 */
+	stale?: boolean
+	warning?: string
+	message?: string
+	count: number
+	rows: T[]
+}
+
 // ===== API surface =====
 export const api = {
 	health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -4823,6 +4969,11 @@ export const api = {
 	// ===== 个股分析 =====
 	stockAnalysisLevels: (symbol: string, days = 120) =>
 		request<StockLevels>(`/api/stock-analysis/levels?symbol=${encodeURIComponent(symbol)}&days=${days}`),
+
+	// ===== 个股资料 (P1-13: 免费源直连, 后端缓存 12h; force 跳过缓存) =====
+	stockProfile: <T = StockProfileRow>(dataset: StockProfileDataset, symbol: string, force = false) =>
+		request<StockProfileResponse<T>>(
+			`/api/stock-profile/${dataset}?symbol=${encodeURIComponent(symbol)}${force ? '&force=1' : ''}`),
 
 	stockAnalysisReportsList: () =>
 		request<{ reports: AiStockReport[] }>('/api/stock-analysis/reports'),

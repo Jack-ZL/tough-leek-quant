@@ -503,6 +503,35 @@ def _get_financials(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return {"symbol": symbol, "table": table, "count": len(rows), "rows": rows}
 
 
+def _get_stock_profile(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """P1-13: 个股资料事件(解禁/质押/回购/股东户数/十大股东/机构持仓/新股/业绩快报/资金流向/逐笔成交) — 免费源直连+缓存, 不依赖联网搜索。"""
+    from app.services import stock_profile
+
+    symbol = _validate_symbol(args.get("symbol"))
+    dataset = str(args.get("dataset") or "unlock")
+    if dataset not in stock_profile.DATASETS:
+        raise ValueError(f"dataset 必须是 {list(stock_profile.DATASETS)} 之一。")
+    if ctx.data_dir is None:
+        raise ValueError("数据目录未就绪。")
+    result = stock_profile.get_profile(ctx.data_dir, dataset, symbol)
+    label = stock_profile.DATASET_LABELS[dataset]
+    if result.get("state") != "ok":
+        return {
+            "symbol": symbol, "dataset": dataset, "label": label, "rows": [],
+            "note": result.get("message") or "资料数据源暂不可用。",
+        }
+    rows = result.get("rows") or []
+    out: dict[str, Any] = {
+        "symbol": symbol, "dataset": dataset, "label": label,
+        "count": len(rows), "rows": rows,
+    }
+    if result.get("stale"):
+        out["note"] = "数据源暂不可用, 返回的是过期缓存数据。"
+    elif not rows:
+        out["note"] = f"该标的暂无{label}记录(不代表接口失败)。"
+    return out
+
+
 def _get_watchlist(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     from app.services import watchlist as watchlist_service
 
@@ -1339,6 +1368,7 @@ _LOCAL_TOOLS: dict[str, Callable[[dict[str, Any], ToolContext], Any]] = {
     "get_stock_daily": _get_stock_daily,
     "get_stock_analysis": _get_stock_analysis,
     "get_financials": _get_financials,
+    "get_stock_profile": _get_stock_profile,
     "get_watchlist": _get_watchlist,
     "get_market_overview": _get_market_overview,
     "get_indices": _get_indices,
@@ -1411,6 +1441,26 @@ def _local_tool_schemas() -> list[dict[str, Any]]:
                 "symbol": {"type": "string", "description": "证券代码"},
                 "table": {"type": "string", "enum": ["metrics", "income", "balance_sheet", "cash_flow", "shares"], "description": "报表类型, 默认 metrics"},
                 "periods": {"type": "integer", "description": "最近 N 个报告期 (1-8, 默认 4)"},
+            },
+            ["symbol"],
+        ),
+        _schema(
+            "get_stock_profile",
+            "查询个股资料事件(免费源, 本地缓存: 资料类12小时/资金流30分钟/逐笔60秒): "
+            "unlock(限售解禁时间表)/pledge(股权质押比例,周频)/"
+            "repurchase(公司回购进度与金额)/holder_number(股东户数变化,季频)/top_holders(十大股东,季频)/"
+            "fund_holding(基金等机构持仓分类型统计,季频)/ipo_info(新股申购发行信息)/perf_express(业绩快报)/"
+            "money_flow(资金流向日频历史,新浪源,主力=超大单)/tick_trade(逐笔成交,腾讯源,最近交易日尾部约210条)。"
+            "分析股东行为、事件风险(解禁抛压/质押爆仓/回购护盘/筹码集中/机构增减仓)、资金动向时优先用本工具, 比联网搜索可靠。",
+            {
+                "symbol": {"type": "string", "description": "证券代码"},
+                "dataset": {
+                    "type": "string",
+                    "enum": ["unlock", "pledge", "repurchase", "holder_number",
+                             "top_holders", "fund_holding", "ipo_info", "perf_express",
+                             "money_flow", "tick_trade"],
+                    "description": "资料类型, 默认 unlock",
+                },
             },
             ["symbol"],
         ),
@@ -1694,6 +1744,8 @@ def summarize_tool_result(name: str, payload: dict[str, Any]) -> str:
         return "完成个股关键价位分析"
     if name == "get_financials":
         return f"返回 {result.get('table', '财务')} 近 {_count()} 期"
+    if name == "get_stock_profile":
+        return f"返回{result.get('label', '个股资料')} {_count()} 条"
     if name == "get_watchlist":
         return f"返回自选 {_count()} 只"
     if name == "get_market_overview":
