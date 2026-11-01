@@ -422,6 +422,9 @@ async def analyze_stock_stream(
         return
 
     # 4. meta
+    # P1-15: 归属快照 (model/provider/profile_id) 随 meta 下发 —
+    # 前端保存报告时原样带回落盘, 记分卡按模型分组统计的数据源头。
+    from app.services import ai_provider as _ai_prov
     yield json.dumps({
         "type": "meta",
         "symbol": symbol,
@@ -430,6 +433,7 @@ async def analyze_stock_stream(
         "close": close,
         # P1-11: 体检结果随 meta 下发, 前端显示等级徽章并随报告落库
         "quality": quality,
+        **_ai_prov.current_attribution(),
     }, ensure_ascii=False)
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)

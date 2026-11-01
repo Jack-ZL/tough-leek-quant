@@ -29,6 +29,10 @@ export interface ActiveTask {
     close?: number | null
     /** 数据体检 (P1-11): meta 事件下发, 徽章展示 + 落库 */
     quality?: DataQuality | null
+    /** P1-15 模型归属: meta 事件下发, 保存报告时原样带回落盘 */
+    model?: string
+    provider?: string
+    profile_id?: string
   } | null
   /** 研判卡 (ai_verdict): done 前由后端 verdict 事件下发; 未收到则为 null */
   verdict?: AiVerdict | null
@@ -50,6 +54,10 @@ export interface HistoryReport {
   verdict?: AiVerdict | null
   /** 数据体检快照 (P1-11): 历史回看时复现徽章 */
   quality?: DataQuality | null
+  /** P1-15 模型归属: 生成该报告时用的模型/档案 (老报告无此字段) */
+  model?: string
+  provider?: string
+  profile_id?: string
   created_at: string
 }
 
@@ -211,7 +219,8 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
       switch (chunk.type) {
         case 'meta':
           // P1-11: quality 随 meta 下发 (体检失败时为 null, 徽章不显示)
-          patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close, quality: chunk.quality ?? null } })
+          // P1-15: model/provider/profile_id 归属快照一并接住, 保存时带回
+          patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close, quality: chunk.quality ?? null, model: chunk.model, provider: chunk.provider, profile_id: chunk.profile_id } })
           break
         case 'delta':
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }
@@ -243,6 +252,10 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
           close: final.meta?.close ?? null, levels: final.meta?.levels,
           verdict: final.verdict ?? null,
           quality: final.meta?.quality ?? null,  // P1-11 体检快照落库
+          // P1-15 模型归属快照落库 (记分卡按模型分组的数据源头)
+          model: final.meta?.model ?? '',
+          provider: final.meta?.provider ?? '',
+          profile_id: final.meta?.profile_id ?? '',
         })
         if (res.report) {
           patchTask(id, { savedReportId: res.report.id })

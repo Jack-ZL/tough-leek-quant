@@ -162,12 +162,14 @@ async def analyze_financials_stream(
         yield json.dumps({"type": "error", "message": f"标的 {symbol} 暂无任何财务数据,请先同步财务表"}, ensure_ascii=False)
         return
 
-    # 2. meta
+    # 2. meta (P1-15: 带归属快照, 前端保存报告时原样带回落盘)
+    from app.services import ai_provider as _ai_prov
     yield json.dumps({
         "type": "meta",
         "symbol": symbol,
         "summary": _summarize(fins),
         "periods": total_rows,
+        **_ai_prov.current_attribution(),
     }, ensure_ascii=False)
 
     # 3. 调用 LLM 流式

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -321,6 +322,9 @@ class AiTestIn(BaseModel):
     api_key: str | None = None  # 留空回退已保存 Key (改模型/协议不必重输)
     model: str = ""
     protocol: str = ""
+    # P1-15 第三批: 表单当前编辑的档案 id — 测试结果 (last_verified_*) 记到该档案;
+    # 空串/档案不存在则只测不记
+    profile_id: str = ""
 
 
 @router.post("/ai/test")
@@ -341,6 +345,7 @@ async def test_ai_settings(req: AiTestIn) -> dict:
     provider = req.provider or "openai_compat"
     api_key = (req.api_key or "").strip() or (secrets_store.get_ai_key() or "")
     protocol = req.protocol if req.protocol == RESPONSES_PROTOCOL else ""
+    from app.services.ai_provider import clear_key_health  # P1-15
     try:
         text = await probe_ai_config(
             provider=provider,
@@ -353,8 +358,71 @@ async def test_ai_settings(req: AiTestIn) -> dict:
         detail = str(exc) or repr(exc)
         if _is_openai_transport_error(exc):
             detail = _format_openai_error(exc)
+        # P1-15 第三批: 失败也记入档案实测记录 — "上次验证失败"同样是重要事实
+        _stamp_profile_verification(req.profile_id, ok=False, model=req.model.strip(),
+                                    provider=provider, error=detail)
         return {"ok": False, "error": detail, "error_type": type(exc).__name__}
+    # P1-15 第三批: 实测通过 → 清掉该模型的鉴权失败记录 (红横幅消失) + 档案盖章
+    clear_key_health(req.model.strip())
+    _stamp_profile_verification(req.profile_id, ok=True, model=req.model.strip(),
+                                provider=provider)
     return {"ok": True, "model": req.model.strip() or provider, "response": text[:80]}
+
+
+def _stamp_profile_verification(profile_id: str, *, ok: bool, model: str,
+                                provider: str, error: str = "") -> None:
+    """P1-15 第三批: 把连通性测试结果记进档案 (last_verified_* 字段)。
+
+    只记不判: 档案不存在/未传 id 时静默跳过 (测试草稿不一定已保存成档案);
+    写入失败也不影响测试结果回报 — 实测记录是锦上添花, 不能反客为主。
+    """
+    pid = (profile_id or "").strip()
+    if not pid:
+        return
+    try:
+        if not any(p.get("id") == pid for p in secrets_store.list_ai_profiles()):
+            return
+        fields: dict = {
+            "last_verified_at": datetime.now().isoformat(timespec="seconds"),
+            "last_verified_ok": ok,
+            "last_verified_model": model,
+        }
+        if ok:
+            # 通过项: 探测是真实调用 (非只验命令存在), 记清楚验证了什么
+            fields["last_verified_via"] = (
+                "Codex 真实生成" if provider == "codex_cli" else "真实调用 200"
+            )
+            fields["last_verified_error"] = ""
+        else:
+            fields["last_verified_via"] = ""
+            fields["last_verified_error"] = error[:200]
+        secrets_store.upsert_ai_profile(pid, fields)
+    except Exception as exc:  # noqa: BLE001 — 记录失败不阻断测试结果回报
+        logger.warning("[P1-15] 档案实测记录写入失败(%s): %s", pid, exc)
+
+
+@router.get("/ai/model-capabilities")
+def get_ai_model_capabilities(model: str = "", base_url: str = "") -> dict:
+    """P1-15: 查询模型在声明式能力表中的登记情况 (只读, 设置页档案展示用)。
+
+    未登记模型返回 registered=false, 前端不展示 — 能力表只记已确认事实,
+    不做猜测性登记 (见 ai_capabilities 模块文档)。
+    """
+    from app.services import ai_capabilities
+
+    return ai_capabilities.describe(model, base_url)
+
+
+@router.get("/ai/key-health")
+def get_ai_key_health() -> dict:
+    """P1-15 第三批: 最近的 AI 鉴权失败记录 (401/403) — 设置页红横幅数据源。
+
+    内存态 (重启即清), 新→旧最多 20 条; 连通性测试成功后对应模型的记录被清除。
+    密钥失效必须大声: 这里暴露给前端, 而不是只埋在服务器日志里。
+    """
+    from app.services.ai_provider import key_health
+
+    return {"ok": True, "events": key_health()}
 
 
 def _ai_effective_payload() -> dict:

@@ -480,6 +480,9 @@ async def debate_stream(
         return
 
     role_profiles = resolve_role_profiles()
+    # P1-15: roles 已带各角色模型显示名; 顶层再补当前激活配置归属快照,
+    # 前端保存辩论记录时随报告落盘 (未配角色档案时角色用的就是这套配置)。
+    from app.services.ai_provider import current_attribution
     yield json.dumps({
         "type": "meta", "symbol": symbol, "name": name,
         "summary": summarize_levels(materials["levels"], materials["close"]),
@@ -488,6 +491,7 @@ async def debate_stream(
         "roles": {r: {"model": role_model_display(role_profiles.get(r)),
                       "custom_profile": role_profiles.get(r) is not None}
                   for r in ROLES},
+        **current_attribution(),
     }, ensure_ascii=False)
 
     # 数字闸门白名单: 材料结构化数据 + 全部系统提示词 + 材料成品文本

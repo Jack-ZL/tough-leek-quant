@@ -510,3 +510,41 @@ def test_api_reports_crud(client):
 def test_api_analyze_rejects_empty_symbol(client):
     res = client.post("/api/stock-debate/analyze", json={"symbol": ""})
     assert res.status_code == 400
+
+
+# ================================================================
+# P1-15 第二批: 模型归属
+# ================================================================
+
+async def test_debate_meta_carries_attribution(debate_env):
+    """meta 事件带激活配置归属快照 — 前端存辩论记录时随 done 一起落盘。"""
+    calls: list[str] = []
+    _install_llm(debate_env, {
+        "bull": ["多方。"], "bear": ["空方。"], "judge": _JUDGE_PASS,
+    }, calls)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH", name="贵州茅台"))
+    meta = events[0]
+    assert meta["type"] == "meta"
+    assert meta["model"] == "fake-model"  # debate_env 已打桩 current_ai_model
+    assert "provider" in meta and "profile_id" in meta
+    assert "roles" in meta  # 角色→模型映射保留, 与顶层归属并存
+
+
+def test_api_reports_save_persists_attribution(client):
+    """保存端点接受并落盘 model/provider/profile_id; 老前端不传 → 空串兼容。"""
+    res = client.post("/api/stock-debate/reports", json={
+        "symbol": "600519.SH", "name": "贵州茅台",
+        "bull_text": "b", "bear_text": "s", "judge_text": "j",
+        "model": "qwen-max", "provider": "openai_compat", "profile_id": "p-qw",
+    })
+    assert res.status_code == 200
+    rep = res.json()["report"]
+    assert rep["model"] == "qwen-max"
+    assert rep["provider"] == "openai_compat"
+    assert rep["profile_id"] == "p-qw"
+
+    res2 = client.post("/api/stock-debate/reports", json={
+        "symbol": "000001.SZ", "bull_text": "b", "bear_text": "s", "judge_text": "j"})
+    assert res2.status_code == 200
+    assert res2.json()["report"]["model"] == ""

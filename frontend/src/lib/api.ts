@@ -204,6 +204,10 @@ export interface AiFinancialReport {
 	content: string
 	periods?: number
 	summary?: string
+	/** P1-15 模型归属: 生成该报告时用的模型/服务商/档案 id (旧报告无此字段) */
+	model?: string
+	provider?: string
+	profile_id?: string
 	created_at: string
 }
 
@@ -263,6 +267,10 @@ export interface AiStockReport {
 	verdict?: AiVerdict | null
 	/** 数据体检快照 (P1-11): 报告生成时的数据质量评级, 历史回看可复现徽章 */
 	quality?: DataQuality | null
+	/** P1-15 模型归属: 生成该报告时用的模型/服务商/档案 id (旧报告无此字段) */
+	model?: string
+	provider?: string
+	profile_id?: string
 	created_at: string
 }
 
@@ -335,7 +343,23 @@ export interface AiScorecard {
 		analysis_date?: string
 		expired?: boolean
 		horizons?: Record<string, { pct?: number; hit?: boolean; alpha_pct?: number | null }>
+		/** P1-15: 台账条目自带的模型归属快照 (老条目为空/缺失) */
+		model?: string
+		profile_id?: string
 	}[]
+	/** P1-15: 按模型分组的 T+5 战绩 (样本数降序; "未标注"=归属功能上线前的老战绩); 旧后端无此字段 */
+	by_model?: AiScorecardByModel[]
+}
+
+/** P1-15: 单模型 T+5 主周期战绩 — 与 AiScorecardHorizon 同款 MIN_SAMPLE 护栏 */
+export interface AiScorecardByModel {
+	model: string
+	settled: number
+	hits: number
+	/** 命中率 %; 样本不足 (settled < min_sample) 时为 null */
+	hit_rate_pct: number | null
+	insufficient: boolean
+	horizon_days: number
 }
 
 // ===== 多空辩论 (P1-9) =====
@@ -357,6 +381,10 @@ export interface DebateStreamEvent {
 	roles?: Partial<Record<DebateRole, { model: string; custom_profile: boolean }>>
 	/** meta 事件: 数据体检结果 (P1-11) */
 	quality?: DataQuality | null
+	/** P1-15: meta 事件带当前激活配置的归属快照, 保存辩论记录时原样带回 */
+	model?: string
+	provider?: string
+	profile_id?: string
 	/** role_delta: 增量文本; role_done: 该角色最终全文 (重写过的为重写版) */
 	content?: string
 	/** role_done: 该角色是否被打回重写过 */
@@ -390,6 +418,10 @@ export interface DebateReport {
 	summary?: string
 	close?: number | null
 	levels?: Record<LevelType, PriceLevel[]>
+	/** P1-15 模型归属: 生成时的激活配置 (各角色实际模型见 roles; 旧记录无此字段) */
+	model?: string
+	provider?: string
+	profile_id?: string
 	created_at: string
 }
 
@@ -921,6 +953,10 @@ export interface AiReviewReport {
 	summary?: string
 	emotion_score?: number | null
 	emotion_label?: string
+	/** P1-15 模型归属: 生成该复盘时用的模型/服务商/档案 id (旧报告无此字段) */
+	model?: string
+	provider?: string
+	profile_id?: string
 	created_at: string
 }
 
@@ -2215,6 +2251,32 @@ export interface AiProfile extends AiProfileSlim {
 	codex_command?: string
 	codex_model?: string
 	codex_reasoning_effort?: string
+	/** P1-15 第三批: 最近一次连通性测试的实测记录 (未测过则无这些字段) */
+	last_verified_at?: string
+	last_verified_ok?: boolean
+	last_verified_model?: string
+	last_verified_via?: string
+	last_verified_error?: string
+}
+
+/** P1-15 第三批: AI 鉴权失败记录 (GET /api/settings/ai/key-health 下发, 新→旧) */
+export interface AiKeyHealthEvent {
+	ts: string
+	status: string
+	detail: string
+	model: string
+	provider: string
+	profile_id: string
+}
+
+/** P1-15: 模型能力表登记项 (GET /api/settings/ai/model-capabilities 下发; registered=false 表示未登记) */
+export interface AiModelCapabilities {
+	model: string
+	registered: boolean
+	supports_web_search: boolean
+	default_thinking: boolean
+	thinking_shares_max_tokens: boolean
+	known_issues: string[]
 }
 
 /** 档案保存/激活后的生效配置响应 (与 saveAiSettings 响应同构) */
@@ -3171,6 +3233,12 @@ export const api = {
 	getAiProfiles: () =>
 		request<{ profiles: AiProfile[]; active: string }>('/api/settings/ai/profiles'),
 
+	// P1-15: 查询模型在声明式能力表中的登记情况 (设置页展示只读提示; 未登记模型 registered=false)
+	getModelCapabilities: (model: string, baseUrl = '') =>
+		request<AiModelCapabilities>(
+			`/api/settings/ai/model-capabilities?model=${encodeURIComponent(model)}&base_url=${encodeURIComponent(baseUrl)}`,
+		),
+
 	/** 新建/更新模型档案; apply=true 时同时激活 (立即生效) */
 	saveAiProfile: (p: {
 		id?: string;
@@ -3216,9 +3284,9 @@ export const api = {
 	clearAiSettings: () =>
 		request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
 
-	/** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置 */
+	/** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置; profile_id 用于把实测结果记进档案 (P1-15) */
 	testAiSettings: (
-		ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string },
+		ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string; profile_id?: string },
 		opts?: { timeoutMs?: number },
 	) =>
 		request<{
@@ -3232,6 +3300,10 @@ export const api = {
 			body: JSON.stringify(ai),
 			...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
 		}),
+
+	/** P1-15 第三批: 最近的 AI 鉴权失败记录 (设置页红横幅) */
+	aiKeyHealth: () =>
+		request<{ ok: boolean; events: AiKeyHealthEvent[] }>('/api/settings/ai/key-health'),
 
 	upgradeGuardStatus: () => request<UpgradeGuardStatus>('/api/upgrade-guard/status'),
 	upgradeGuardScan: () => request<UpgradeGuardStatus>('/api/upgrade-guard/scan', { method: 'POST' }),
@@ -4921,6 +4993,8 @@ export const api = {
 	financialReportSave: (r: {
 		symbol: string; name?: string; focus?: string; content: string
 		periods?: number; summary?: string
+		// P1-15 模型归属: meta 事件下发的快照原样带回落盘
+		model?: string; provider?: string; profile_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiFinancialReport }>('/api/financials/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -4947,6 +5021,10 @@ export const api = {
 		periods?: number
 		content?: string
 		message?: string
+		/** P1-15: meta 事件带模型归属快照, 保存报告时原样带回 */
+		model?: string
+		provider?: string
+		profile_id?: string
 	}> {
 		const res = await fetch('/api/financials/analyze', {
 			method: 'POST',
@@ -5013,6 +5091,8 @@ export const api = {
 		levels?: Record<LevelType, PriceLevel[]>
 		verdict?: AiVerdict | null
 		quality?: DataQuality | null  // P1-11 数据体检快照随报告落库
+		// P1-15 模型归属: meta 事件下发的快照原样带回落盘 (记分卡按模型分组的数据源头)
+		model?: string; provider?: string; profile_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiStockReport }>('/api/stock-analysis/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -5106,6 +5186,10 @@ export const api = {
 		close?: number | null
 		/** meta 事件: 数据体检结果 (P1-11), 前端徽章 + 随报告落库 */
 		quality?: DataQuality | null
+		/** P1-15: meta 事件带模型归属快照, 保存报告时原样带回 */
+		model?: string
+		provider?: string
+		profile_id?: string
 		content?: string
 		message?: string
 		/** verdict 事件: 研判卡 (done 前下发; ok=false 表示 AI 未按格式交卡) */
@@ -5177,6 +5261,8 @@ export const api = {
 		as_of: string; focus?: string; content: string
 		summary?: string; emotion_score?: number | null; emotion_label?: string
 		push?: boolean
+		// P1-15 模型归属: meta 事件下发的快照原样带回落盘
+		model?: string; provider?: string; profile_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiReviewReport }>('/api/market-recap/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -5197,6 +5283,10 @@ export const api = {
 		summary?: string
 		content?: string
 		message?: string
+		/** P1-15: meta 事件带模型归属快照, 保存报告时原样带回 */
+		model?: string
+		provider?: string
+		profile_id?: string
 	}> {
 		const res = await fetch('/api/market-recap/analyze', {
 			method: 'POST',

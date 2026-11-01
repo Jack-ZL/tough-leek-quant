@@ -111,7 +111,9 @@ def _migrate_entry(raw: dict) -> dict:
     if isinstance(raw.get("horizons"), dict):
         return raw
     entry: dict = {k: raw[k] for k in
-                   ("report_id", "symbol", "name", "direction", "analysis_date", "t0_close")
+                   ("report_id", "symbol", "name", "direction", "analysis_date", "t0_close",
+                    # P1-15 模型归属 (旧台账没有这些键时自然缺省)
+                    "model", "provider", "profile_id")
                    if k in raw}
     entry["settled_at"] = raw.get("settled_at")
     if raw.get("hit") is None:
@@ -245,6 +247,11 @@ def _settle_entry(repo, report: dict, direction: str, analysis_date: date,
         "name": report.get("name") or "", "direction": direction,
         "analysis_date": analysis_date.isoformat(),
         "horizons": {},
+        # P1-15 模型归属快照: 结算时从报告复制进台账 (报告被裁剪后台账仍自带归属,
+        # 与"每条结算记录自带完整快照"的既有设计一致)。空串=老报告没有归属字段。
+        "model": report.get("model") or "",
+        "provider": report.get("provider") or "",
+        "profile_id": report.get("profile_id") or "",
     }
     horizons: dict = dict(base.get("horizons") or {})
 
@@ -391,6 +398,39 @@ def _horizon_stats(ledger: dict, h: int) -> dict:
     }
 
 
+def _by_model_stats(ledger: dict) -> list[dict]:
+    """P1-15: 按模型分组的 T+5 主周期战绩 — "哪个模型准"一目了然。
+
+    分组键 = 台账条目的 model 快照 (空串归入"未标注", 即归属功能上线前的老战绩)。
+    与 _horizon_stats 同款 MIN_SAMPLE 护栏: 样本不足 hit_rate_pct 为 null,
+    前端显示"样本不足"而不是误导性的百分比。按已结算样本数降序。
+    """
+    key = str(PRIMARY_HORIZON)
+    groups: dict[str, dict] = {}
+    for entry in ledger.values():
+        if not isinstance(entry, dict):
+            continue
+        hz = (entry.get("horizons") or {}).get(key)
+        if not isinstance(hz, dict) or hz.get("hit") is None:
+            continue
+        label = str(entry.get("model") or "") or "未标注"
+        g = groups.setdefault(label, {"model": label, "settled": 0, "hits": 0})
+        g["settled"] += 1
+        if hz.get("hit") is True:
+            g["hits"] += 1
+    result = []
+    for g in groups.values():
+        insufficient = g["settled"] < MIN_SAMPLE
+        result.append({
+            **g,
+            "horizon_days": PRIMARY_HORIZON,
+            "hit_rate_pct": None if insufficient else round(g["hits"] / g["settled"] * 100.0, 1),
+            "insufficient": insufficient,
+        })
+    result.sort(key=lambda g: g["settled"], reverse=True)
+    return result
+
+
 def stats() -> dict:
     """汇总战绩 (纯读台账 + 报告存储, 不触发结算)。
 
@@ -405,6 +445,7 @@ def stats() -> dict:
       disclaimer       "不是回测"免责声明 (前端固定展示)
       pending          有方向但未达终态的报告数 (含部分周期已结、等更长周期的)
       recent           最近 10 条台账记录 (倒序, 含分周期明细)
+      by_model         P1-15: 按模型分组的 T+5 战绩列表 (样本数降序, 同款护栏)
     """
     ledger = _load_ledger()
     hz_stats = {str(h): _horizon_stats(ledger, h) for h in HORIZONS}
@@ -443,6 +484,7 @@ def stats() -> dict:
         "disclaimer": DISCLAIMER,
         "pending": pending,
         "recent": recent,
+        "by_model": _by_model_stats(ledger),  # P1-15 按模型分组战绩
     }
 
 

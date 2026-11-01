@@ -39,6 +39,10 @@ export interface DebateState {
     close?: number | null
     /** 数据体检 (P1-11): meta 事件下发, 徽章展示 (辩论报告暂不落库该字段) */
     quality?: DataQuality | null
+    /** P1-15 模型归属: meta 事件下发, 保存辩论记录时原样带回落盘 */
+    model?: string
+    provider?: string
+    profile_id?: string
   } | null
   /** 生效裁决: 终审 ruling 优先, 无重写时取初审 ruling */
   ruling: { ok: boolean; decision?: 'pass' | 'rewrite'; verdict?: AiVerdict | null; final?: boolean } | null
@@ -123,7 +127,8 @@ async function runDebate(symbol: string, name: string) {
         case 'meta':
           roles = ev.roles ?? {}
           // P1-11: quality 随 meta 下发 (体检失败时为 null, 徽章不显示)
-          meta = { summary: ev.summary, levels: ev.levels, close: ev.close ?? null, quality: ev.quality ?? null }
+          // P1-15: 归属快照一并接住, 保存时带回
+          meta = { summary: ev.summary, levels: ev.levels, close: ev.close ?? null, quality: ev.quality ?? null, model: ev.model, provider: ev.provider, profile_id: ev.profile_id }
           patch({ roles, meta, name: ev.name || name })
           break
         case 'role_delta': {
@@ -206,6 +211,10 @@ async function saveDebate(
       summary: meta?.summary ?? '',
       close: meta?.close ?? null,
       levels: meta?.levels,
+      // P1-15 模型归属快照落库 (各角色实际模型已在 roles 字段)
+      model: meta?.model ?? '',
+      provider: meta?.provider ?? '',
+      profile_id: meta?.profile_id ?? '',
     })
     patch({ savedReportId: res.report?.id })
     if (state.historyOpen) void loadHistory()

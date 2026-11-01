@@ -197,6 +197,11 @@ class SaveReportRequest(BaseModel):
     # 数据体检结果 (P1-11): {"score", "grade", "hard", "issues", ...}
     # 随报告落库, 历史回看时徽章与问题清单可复现
     quality: dict | None = None
+    # P1-15 模型归属: 生成时的 model/provider/profile_id (meta 事件下发,
+    # 前端原样带回) — 记分卡按模型分组统计与历史回看的数据源头
+    model: str = ""
+    provider: str = ""
+    profile_id: str = ""
 
 
 @router.get("/reports")
@@ -218,6 +223,10 @@ def save_report(request: Request, req: SaveReportRequest):
         "levels": req.levels,
         "verdict": req.verdict,
         "quality": req.quality,  # P1-11 数据体检快照
+        # P1-15 模型归属快照 (空串=旧前端未带, 兼容不报错)
+        "model": req.model,
+        "provider": req.provider,
+        "profile_id": req.profile_id,
     })
     # P0-7 惰性结算: 新研判落库时顺手把老的到期条目结算进台账 (本地日 K 查询,
     # 毫秒级)。fail-open — 记分卡坏了绝不能让保存报告失败

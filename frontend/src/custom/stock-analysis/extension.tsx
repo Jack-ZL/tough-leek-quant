@@ -321,6 +321,13 @@ function HistorySidebar() {
 												}>🧭 {r.verdict.direction}</span>
 											)}
 											{r.focus && <span className="text-sky-300/70 truncate">关注: {r.focus}</span>}
+											{/* P1-15 模型归属: 历史列表标出生成时用的模型 (老报告无此字段不显示) */}
+											{r.model && (
+												<span className="shrink-0 truncate text-muted"
+													title={`生成模型: ${r.model}${r.profile_id ? ` (档案 ${r.profile_id})` : ''}`}>
+													🤖 {r.model}
+												</span>
+											)}
 										</div>
 										{r.summary && (
 											<div className="mt-1 text-[11px] text-muted truncate">{r.summary}</div>

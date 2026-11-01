@@ -1195,6 +1195,10 @@ async def _run_scheduled_review(repo) -> None:
             "summary": meta.get("summary", ""),
             "emotion_score": meta.get("emotion_score"),
             "emotion_label": meta.get("emotion_label", ""),
+            # P1-15 模型归属: meta 事件已带生成时的归属快照, 原样落盘
+            "model": meta.get("model", ""),
+            "provider": meta.get("provider", ""),
+            "profile_id": meta.get("profile_id", ""),
         })
         logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
 

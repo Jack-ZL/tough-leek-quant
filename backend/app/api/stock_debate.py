@@ -77,6 +77,11 @@ class SaveDebateReportRequest(BaseModel):
     summary: str = ""
     close: float | None = None
     levels: dict | None = None
+    # P1-15 模型归属: 生成时的 model/provider/profile_id (meta 事件下发,
+    # 前端原样带回); 各角色实际用的模型已在 roles 字段 (角色档案显示名)
+    model: str = ""
+    provider: str = ""
+    profile_id: str = ""
 
 
 @router.get("/reports")
@@ -101,6 +106,10 @@ def save_report(request: Request, req: SaveDebateReportRequest):
         "summary": req.summary,
         "close": req.close,
         "levels": req.levels,
+        # P1-15 模型归属快照 (空串=旧前端未带, 兼容不报错)
+        "model": req.model,
+        "provider": req.provider,
+        "profile_id": req.profile_id,
     })
     return {"ok": True, "report": report}
 

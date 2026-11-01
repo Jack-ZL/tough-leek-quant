@@ -92,6 +92,13 @@ export function ReportHistoryPanel() {
                   {r.summary && (
                     <span className="text-[10px] text-muted/50 truncate">{r.summary}</span>
                   )}
+                  {/* P1-15 模型归属: 标出生成时用的模型 (老报告无此字段不显示) */}
+                  {r.model && (
+                    <span className="shrink-0 truncate text-[10px] text-muted/70"
+                      title={`生成模型: ${r.model}${r.profile_id ? ` (档案 ${r.profile_id})` : ''}`}>
+                      🤖 {r.model}
+                    </span>
+                  )}
                 </div>
               </div>
 
