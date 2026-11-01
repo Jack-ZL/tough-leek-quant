@@ -3,9 +3,10 @@
 职责: 限速(令牌桶+抖动)、重试退避、熔断、GBK 解码、响应解析。不知道 provider / services 层。
 限速/熔断纪律与 eastmoney 插件同款(插件自包含, 不跨插件 import — 保证可独立启停)。
 
-两个主机(各自独立限速与熔断, 封禁池不共享):
+三个主机(各自独立限速与熔断, 封禁池不共享):
   - qt.gtimg.cn        实时快照(股票/指数/北交所同一端点, GBK 编码, 批量 ≤300 只/请求)
   - ifzq.gtimg.cn      分钟K线 mkline (注意: web.ifzq.gtimg.cn 对 mkline 返回 301, 必须用裸域)
+  - stock.gtimg.cn     分时逐笔成交 detail (P1-13 第三批, GBK, 分页 ~70 条/页)
 
 快照响应格式(2026-11 实测): `v_sh600000="f0~f1~...~f51";` 每标的一行, 字段 ~ 分隔。
 无效代码不报错、直接不返回对应行(批量 60 只实测返回 47 行)。
@@ -14,6 +15,13 @@
 m1 分钟K响应: JSON {"code":0, "data":{"sh600000":{"m1":[["YYYYMMDDHHMM",开,收,高,低,量(手),{},?],...]}}}
 — 列序为 开/收/高/低(与腾讯日K同款陷阱, 收盘在第 3 列), 上限 320 根(约 1.3 个交易日),
   第 7/8 列含义未知(疑似占位/换手), 不使用。
+
+逐笔 detail 响应(P1-13 第三批, 2026-11-01 实测):
+  - action=bigdata → v_detail_time_sz000651=[20261030,"09:25:00~09:33:24|..."];
+    值是按页划分的时间段(| 分隔), 段数 = 全天总页数(全天约 4800 条 ≈ 68 页)。
+  - action=data&p=N → v_detail_data_sz000651=[N,"idx/时间/价/涨跌/量(手)/额(元)/方向|..."];
+    每页 ~70 条, 方向 B=买盘/S=卖盘/M=中性; 越界页返回空响应体(会被当限流重试,
+    所以必须先用 bigdata 索引定位总页数, 不能盲猜页号)。
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 QT_BASE = "https://qt.gtimg.cn"
 IFZQ_BASE = "https://ifzq.gtimg.cn"
+STOCK_BASE = "https://stock.gtimg.cn"
 
 # 批量快照单请求代码数上限: 实测 300 只正常返回, 800 只返回空(URL 过长被网关拒绝),
 # 取 300 留足余量。全市场 ~5900 只 ≈ 20 请求/轮。
@@ -46,6 +55,9 @@ _HEADERS = {
 
 # 快照行解析: v_sh600000="..."; (代码段含字母数字, 值内无引号)
 _SNAPSHOT_LINE = re.compile(r'v_(\w+)="([^"]*)"')
+
+# 逐笔响应解析: v_detail_data_sz000651=[页号,"tick|tick|..."]; (bigdata 索引同构, 首元素是日期)
+_DETAIL_PAYLOAD = re.compile(r'\[\d+,"([^"]*)"\]')
 
 
 class TencentError(Exception):
@@ -280,3 +292,43 @@ class TencentClient:
         node = (payload.get("data") or {}).get(code) or {}
         rows = node.get("m1") or []
         return rows if isinstance(rows, list) else []
+
+    # ---- 分时逐笔成交 (P1-13 第三批) ----
+    def tick_trades(self, code: str, pages: int = 3) -> list[str]:
+        """当日(或最近交易日)逐笔成交, 取尾部 pages 页 → 原始 tick 字符串列表。
+
+        每条格式: "idx/时间/价/涨跌/量(手)/额(元)/方向" (方向 B=买盘/S=卖盘/M=中性)。
+        两步走: 先查 bigdata 索引拿总页数(= 时间段数), 再拉最后 pages 页拼接。
+        越界页返回空响应体(会被 _get_text 当限流重试), 所以必须靠索引定位, 不能盲猜页号。
+        索引为空(如新股尚无成交)返回 []。
+        """
+        total = self._tick_page_count(code)
+        if total <= 0:
+            return []
+        start = max(0, total - max(1, pages))
+        ticks: list[str] = []
+        for p in range(start, total):
+            text = self._get_text(
+                STOCK_BASE,
+                "/data/index.php",
+                {"appn": "detail", "action": "data", "c": code, "p": p},
+                encoding="gbk",
+            )
+            m = _DETAIL_PAYLOAD.search(text)
+            if not m:
+                continue
+            ticks.extend(t for t in m.group(1).split("|") if t.strip())
+        return ticks
+
+    def _tick_page_count(self, code: str) -> int:
+        """bigdata 索引 → 逐笔总页数(时间段按 | 分隔, 每段对应一页 ~70 条)。"""
+        text = self._get_text(
+            STOCK_BASE,
+            "/data/index.php",
+            {"appn": "detail", "action": "bigdata", "c": code},
+            encoding="gbk",
+        )
+        m = _DETAIL_PAYLOAD.search(text)
+        if not m:
+            return 0
+        return len([s for s in m.group(1).split("|") if s.strip()])
