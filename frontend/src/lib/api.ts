@@ -2141,6 +2141,56 @@ export interface StrategyBacktestTrade {
 	exit_signal_id?: string | null
 }
 
+export interface BacktestEvidenceCheck {
+  kind: string
+  cutoff: string
+  status: 'completed' | 'error'
+  differences: number
+  compared_values: number
+  error?: string
+  examples: {
+    date: string; symbol: string; field: string; cutoff: string
+    baseline: number | string | boolean | null
+    recomputed: number | string | boolean | null
+  }[]
+}
+
+export interface BacktestEvidence {
+  schema_version: number
+  run_id: string
+  created_at: string
+  runtime: { application: string; python: string; polars: string; numpy: string; code_sha256: string }
+  config: Record<string, unknown>
+  config_sha256: string
+  strategy: { id: string; backend: string; sha256: string; changed_during_run: boolean }
+  data: {
+    sha256: string
+    origin: string
+    asset_type: string
+    daily_price_basis: string
+    datasets: Record<string, {
+      sha256: string; fields: Record<string, string>; rows: number; symbols: number | null
+      start: string | null; end: string | null
+    }>
+  }
+  reproducibility_sha256: string
+  lookahead: {
+    status: 'passed' | 'failed' | 'partial' | 'error' | 'insufficient' | 'cancelled'
+    sampled: boolean
+    differences: number
+    checks: BacktestEvidenceCheck[]
+    reports: { scope: string; status: string; checks: BacktestEvidenceCheck[]; differences: number }[]
+  }
+  persistence: { status: 'saved' | 'error'; error?: string }
+  execution_timing?: {
+    status: 'passed' | 'failed' | 'insufficient'
+    compared_values: number
+    differences: number
+    examples: { symbol: string; side: string; signal_date: string; fill_date: string }[]
+  }
+  limitations: string[]
+}
+
 export interface StrategyBacktestResult {
 	run_id: string
 	config: Record<string, any>
@@ -2186,6 +2236,7 @@ export interface StrategyBacktestResult {
 	error: string | null
 	/** P0-6 回测检查员: 放行但值得提醒的计划问题 (区间太短/数据不覆盖起点等); 无警告时缺省 */
 	preflight_warnings?: string[]
+	evidence?: BacktestEvidence | null
 }
 
 // ===== Settings =====
@@ -4450,32 +4501,35 @@ export const api = {
 			method: 'DELETE',
 		}),
 
-	strategyBacktestRun: (payload: {
-		strategy_id: string
-		symbols?: string[] | null
-		start?: string | null
-		end?: string | null
-		params?: Record<string, any> | null
-		overrides?: Record<string, any> | null
-		matching?: 'close_t' | 'open_t+1'
-		entry_fill?: 'close_t' | 'open_t+1' | null
-		exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
-		fees_pct?: number
-		commission_pct?: number
-		stamp_tax_pct?: number
-		slippage_bps?: number
-		max_positions?: number
-		initial_capital?: number
-		position_sizing?: 'equal' | 'score_weight' | 'policy'
-		position_policy?: string | null
-		position_policy_params?: Record<string, number | boolean | string> | null
-		asset_type?: 'stock' | 'etf' | 'index'
-		minute_fill?: boolean
-	}) =>
-		request<StrategyBacktestResult>('/api/backtest/strategy/run', {
-			method: 'POST',
-			body: JSON.stringify(payload),
-		}),
+  strategyBacktestEvidence: (runId: string) =>
+    request<BacktestEvidence>(`/api/backtest/strategy/runs/${encodeURIComponent(runId)}/evidence`),
+
+  strategyBacktestRun: (payload: {
+    strategy_id: string
+    symbols?: string[] | null
+    start?: string | null
+    end?: string | null
+    params?: Record<string, any> | null
+    overrides?: Record<string, any> | null
+    matching?: 'close_t' | 'open_t+1'
+    entry_fill?: 'close_t' | 'open_t+1' | null
+    exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
+    fees_pct?: number
+    commission_pct?: number
+    stamp_tax_pct?: number
+    slippage_bps?: number
+    max_positions?: number
+    initial_capital?: number
+    position_sizing?: 'equal' | 'score_weight' | 'policy'
+    position_policy?: string | null
+    position_policy_params?: Record<string, number | boolean | string> | null
+    asset_type?: 'stock' | 'etf' | 'index'
+    minute_fill?: boolean
+  }) =>
+    request<StrategyBacktestResult>('/api/backtest/strategy/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
 	positionPolicyList: () => request<{
 		policies: PositionPolicyInfo[]
