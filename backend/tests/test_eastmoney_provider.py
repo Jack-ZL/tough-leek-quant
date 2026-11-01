@@ -9,14 +9,14 @@ secid 双向映射、除权因子推导 (交易所公式 + 同日合并 + 涨跌
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
-import polars as pl
 import pytest
 
 from app.plugins.eastmoney import client as ec
 from app.plugins.eastmoney import provider as ep
 from app.plugins.eastmoney.provider import EastmoneyProvider
+
 
 # ---- 实测录制样例 (2026-11 冒烟) ----
 # clist 快照行: f2最新价 f3涨跌幅% f4涨跌额 f5量(手) f6额(元) f7振幅% f8换手% f12代码
@@ -676,7 +676,12 @@ def test_plugin_registered_by_loader():
         assert custom_sources.provider_has_dataset("eastmoney", ds)
     assert not custom_sources.provider_has_dataset("eastmoney", "minute")  # 未声明 → 回退 tickflow
     provider = custom_sources.get_provider("eastmoney")
-    assert isinstance(provider, EastmoneyProvider) and provider.builtin is True
+    # 合并 main 后: loader 统一用 ManagedProvider 包装 (热替换句柄, __getattr__ 转发到内部实例),
+    # 真实实例在 _current[0]; builtin 是句柄类属性恒 True (内部实例的 builtin 由 loader 打标)。
+    from app.data_providers.custom.managed import ManagedProvider
+
+    assert isinstance(provider, ManagedProvider) and provider.builtin is True
+    assert isinstance(provider._current[0], EastmoneyProvider)
 
 
 def test_capability_matrix_includes_eastmoney():

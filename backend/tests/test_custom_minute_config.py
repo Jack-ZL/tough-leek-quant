@@ -369,9 +369,15 @@ def test_full_minute_dataset_survives_config_and_registration(tmp_path: Path, mo
     assert "full_minute" in cfg.datasets
 
     # 注册表: 真实 load_all 后 provider_has_dataset 必须为 True
+    from app.data_providers.custom.managed import ManagedProvider
+
     saved_providers = dict(custom_loader._PROVIDERS)
     saved_errors = list(custom_loader._LOAD_ERRORS)
     monkeypatch.setattr(custom_loader, "_load_builtin_plugins", lambda: None)
+    # 合并 main 后: load_all 会 close 所有非 external 句柄, 而 ManagedProvider.close
+    # 是永久性的 (句柄复活无门)。teardown 还要把快照塞回注册表, 若不拦截 close,
+    # 塞回的就是死句柄 —— 后续测试经 get_provider 调用即抛 "数据源已停止"。
+    monkeypatch.setattr(ManagedProvider, "close", lambda self: None)
     try:
         custom_loader.load_all(tmp_path)
         assert not custom_loader._LOAD_ERRORS, custom_loader._LOAD_ERRORS
@@ -454,11 +460,14 @@ def test_save_data_source_validates_before_write(monkeypatch, tmp_path):
     """
     from app.api.settings import save_data_source
     from app.data_providers.custom import loader
+    from app.data_providers.custom.managed import ManagedProvider
 
     monkeypatch.setattr(loader, "data_sources_dir", lambda: tmp_path)
     saved_providers = dict(loader._PROVIDERS)
     saved_status = dict(loader._PLUGIN_STATUS)
     monkeypatch.setattr(loader, "_load_builtin_plugins", lambda: None)
+    # 同上: 拦截 ManagedProvider.close, 避免 teardown 塞回已停止的死句柄污染后续测试。
+    monkeypatch.setattr(ManagedProvider, "close", lambda self: None)
     try:
         # 合法: full_minute 缺 amount 映射 → 保存成功且源注册
         ok = CustomSourceIn(
