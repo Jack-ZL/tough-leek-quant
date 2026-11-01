@@ -652,6 +652,26 @@ def _load_builtin_plugins() -> None:
     packages.discover()
 
 
+def _string_list(value) -> list[str]:
+    """清单文本列表字段兜底: 只产出字符串, 守住前端「string[]」契约。
+
+    内置 plugin.yaml 不走外部安装包的严格校验 (packages.inspect_archive 才有
+    「usage_notes 必须是文本列表」), 一个 YAML 笔误 (如 `- 日K未接入: xxx` 被
+    解析成映射) 就会把 dict 漏给设置页, React 渲染对象直接整页崩。映射压成
+    「键: 值」保留作者原意, 其余非文本项跳过; 两种情况都告警, 笔误在日志可见。
+    """
+    out: list[str] = []
+    for item in value or []:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            out.extend(f"{k}: {v}" for k, v in item.items())
+            logger.warning("插件清单文本列表含映射项, 已压成文本: %r", item)
+        else:
+            logger.warning("插件清单文本列表含非文本项, 已跳过: %r", item)
+    return out
+
+
 def _manifest_status(manifest, available, reason, origin="builtin"):
     name = manifest["name"]
     runtime = str(manifest.get("runtime", "none")).lower()
@@ -673,7 +693,7 @@ def _manifest_status(manifest, available, reason, origin="builtin"):
         # 计费提示 (可选): 积分消耗与轮询频率/拉取范围的关系, 设置页按警示样式展示
         "billing_note": manifest.get("billing_note", ""),
         # 使用要点 (可选): 各能力的规模/节奏说明, 设置页详情卡以列表展示
-        "usage_notes": list(manifest.get("usage_notes", []) or []),
+        "usage_notes": _string_list(manifest.get("usage_notes")),
         # Key/账务管理页 (可选): 设置页 Key 配置区展示入口
         "key_manage_url": manifest.get("key_manage_url", ""),
     }
