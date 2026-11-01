@@ -7,12 +7,13 @@
 1. Polars/历史策略限用 `polars/datetime`；矩阵策略限用 `numpy/app.backtest.matrix`。
 2. AI 策略位于 `data/strategies/ai/`，`META.id` 用指定的 `ai_` ID。
 3. 禁止文件读写和 `open/exec/eval/__import__/getattr/…` 等危险调用；含 `__x__` 的名字/字符串(含拼接)与 `pl.os/np.lib` 等模块句柄一律禁用。
-4. `META.params` 只放可调项：必填 `id/label/type/default`；数值项加 `min/max/step`，select 加 `options`。
-5. `META.scoring` 只用真实数值字段或 `ma20_bias`，权重和为 1.0。
-6. `ENTRY_SIGNALS/EXIT_SIGNALS` 只选相关信号，无匹配项可为空。
-7. `RULES` 用中文列出至少 3 条核心逻辑。
-8. 优先 Polars 向量化，避免逐行循环。
-9. `META` 须为顶层字面量字典（可用 `META: dict = {...}`），禁止改名或动态构造。
+4. **禁止未来函数**：`shift/shift_and_fill/diff`（矩阵 `shift/valid_shift`）偏移量**不得为负**（负=偷看未来数据，静态检查直接拒绝）；回看历史用正偏移，如 `shift(1)`。
+5. `META.params` 只放可调项：必填 `id/label/type/default`；数值项加 `min/max/step`，select 加 `options`。
+6. `META.scoring` 只用真实数值字段或 `ma20_bias`，权重和为 1.0。
+7. `ENTRY_SIGNALS/EXIT_SIGNALS` 只选相关信号，无匹配项可为空。
+8. `RULES` 用中文列出至少 3 条核心逻辑。
+9. 优先 Polars 向量化，避免逐行循环。
+10. `META` 须为顶层字面量字典（可用 `META: dict = {...}`），禁止改名或动态构造。
 
 ## 文件结构
 

@@ -291,7 +291,13 @@ def test_iterate_full_flow(monkeypatch):
 
 
 def test_iterate_validation_failure_breaks(monkeypatch):
-    """改进版校验失败 -> 记录 error 并 break, 不落盘坏代码。"""
+    """改进版校验失败且**不属于可回喂修复的类别** -> 记录 error 并 break, 不落盘坏代码。
+
+    这里的错误串故意与 _POLARS_ENTRYPOINT_ERROR 常量不完全一致 (少了
+    "或 filter_history()"), 因此 needs_code_repair 判为不可修复, 不会触发
+    repair_code (FakeGenerator.repair_code 被调用即 AssertionError)。
+    可修复类别 (结构错误 / 未来函数) 的回喂行为见下面两个 P1-16 测试。
+    """
     call_log: list = []
 
     class BadGen(FakeGenerator):
@@ -306,6 +312,92 @@ def test_iterate_validation_failure_breaks(monkeypatch):
         result = asyncio.run(
             AIStrategyIterator(max_rounds=2).iterate("p", engine=engine, data_dir=tmp)
         )
+    assert len(result["rounds"]) == 1
+    assert "校验失败" in result["rounds"][0]["change_summary"]
+    assert engine.reloads == 1  # 只有 v1 落盘
+
+
+# ── P1-16: 校验失败回喂模型自动修复 (有界: 每轮至多 1 次) ────────────
+
+_LOOKAHEAD_ERROR = (
+    "禁止未来函数: 第 5 行 shift(-1) 偏移为负会引用未来数据 "
+    "(回测 look-ahead 偏差); 回看历史请用正偏移, 如 shift(1)"
+)
+
+
+def test_iterate_lookahead_improvement_is_repaired(monkeypatch):
+    """改进版踩未来函数门控 -> 回喂错误修一次, 修好就继续落盘, 不整轮放弃。"""
+    call_log: list = []
+    repairs: list = []
+
+    class LookaheadGen(FakeGenerator):
+        def __init__(self):
+            self.calls = 0
+
+        def validate_code(self, code):
+            self.calls += 1
+            stripped = RealGen._extract_code_block(code)
+            if self.calls == 1:  # 第 1 轮改进版判定为含未来函数
+                return {"code": stripped, "meta": {}, "valid": False,
+                        "error": _LOOKAHEAD_ERROR}
+            return {"code": stripped, "meta": dict(META), "valid": True, "error": None}
+
+        async def repair_code(self, code, error):
+            repairs.append(error)
+            return self.validate_code(code)
+
+    monkeypatch.setattr(it, "AIStrategyGenerator", LookaheadGen)
+    monkeypatch.setattr(it, "generate_ai_text_with_tools", _fake_tool_loop(call_log))
+
+    async def fake_final_backtest(self, data_dir, draft_id):
+        return {"sharpe": 1.1}
+
+    monkeypatch.setattr(AIStrategyIterator, "_backtest_final", fake_final_backtest)
+
+    engine = _FakeEngine()
+    with tempfile.TemporaryDirectory() as tmp:
+        result = asyncio.run(
+            AIStrategyIterator(max_rounds=1).iterate("p", engine=engine, data_dir=tmp)
+        )
+        draft_id = result["draft_strategy_id"]
+        on_disk = (Path(tmp) / "strategies" / "ai" / f"{draft_id}.py").read_text(
+            encoding="utf-8")
+
+    # 回喂了 1 次, 且回喂的正是门控错误原文 (模型据此自改)
+    assert repairs == [_LOOKAHEAD_ERROR]
+    # 修复成功 -> 改进版照常落盘, 轮次记录里写明"已自动修复"
+    assert engine.reloads == 2  # v1 + 修复后的改进版
+    assert "已自动修复" in result["rounds"][0]["change_summary"]
+    assert "禁止未来函数" in result["rounds"][0]["change_summary"]
+    assert "vol_ma5" in on_disk  # 落盘的是改进版 v2
+    # 末轮是改进版 -> 补一次最终版回测作为末行证据
+    assert result["rounds"][-1]["change_summary"] == "最终版回测"
+
+
+def test_iterate_repair_still_invalid_breaks(monkeypatch):
+    """回喂修复后仍不通过 -> 按原逻辑 break, 不落盘坏代码 (有界, 不无限重试)。"""
+    call_log: list = []
+    repairs: list = []
+
+    class UnrepairableGen(FakeGenerator):
+        def validate_code(self, code):
+            return {"code": RealGen._extract_code_block(code), "meta": {},
+                    "valid": False, "error": _LOOKAHEAD_ERROR}
+
+        async def repair_code(self, code, error):
+            repairs.append(error)
+            return self.validate_code(code)
+
+    monkeypatch.setattr(it, "AIStrategyGenerator", UnrepairableGen)
+    monkeypatch.setattr(it, "generate_ai_text_with_tools", _fake_tool_loop(call_log))
+
+    engine = _FakeEngine()
+    with tempfile.TemporaryDirectory() as tmp:
+        result = asyncio.run(
+            AIStrategyIterator(max_rounds=3).iterate("p", engine=engine, data_dir=tmp)
+        )
+
+    assert len(repairs) == 1  # 每轮至多 1 次, 且失败后立即 break 不再重试
     assert len(result["rounds"]) == 1
     assert "校验失败" in result["rounds"][0]["change_summary"]
     assert engine.reloads == 1  # 只有 v1 落盘

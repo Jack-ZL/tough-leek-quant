@@ -170,6 +170,7 @@ The capability matrix (the registry in `backend/app/data_providers/capabilities.
 
 - Signal generation and fill simulation are two phases. The distinction between signal time, fillable time, and the price used must be explicit.
 - Look-ahead bias is strictly forbidden: on a trading day, only data that was already public and available at that time may be used.
+- Look-ahead bias is enforced by two complementary gates, neither of which is a proof: a static AST gate at strategy generation/save/load time (`_detect_lookahead` in `backend/app/strategy/ai_generator.py`) that blocks only provably-negative constant offsets and fails open on ambiguity, plus the post-run evidence audit (`backend/app/backtest/evidence.py`) that catches dynamic offsets and any other future dependency. The division of labor and its boundaries are documented in `docs/backtest-evidence.md`; do not weaken either gate without updating that document and its regression locks.
 - Stock rules must preserve T+1, commissions, slippage, and non-fillable limit-up/limit-down constraints. New fill options must not bypass these rules.
 - A daily backtest must not claim "filled at the moment the signal triggered". Minute-precision fills may only be enabled when minute data fully covers the target window.
 - Exit options such as "same-day close", "next-day open", and "next-minute open" must each be tested for time alignment and missing boundary data.
@@ -220,6 +221,7 @@ The project has repository caches, enriched history caches, realtime aggregation
 - Logs and exception responses must not contain authorization information, full configuration, or sensitive user data.
 - File deletion, overwriting, migration, and batch recomputation are high-risk operations: restrict the target directory, validate paths, provide clear failure reasons, and stay fail-closed.
 - Do not execute SQL, shell, or dynamic Python through unsafe string concatenation.
+- AI-generated and user-supplied strategy code executes in-process, so every generation, manual save, and engine load path runs it through `_validate_safety` in `backend/app/strategy/ai_generator.py`: a closed import whitelist plus forbidden name/attribute blacklists, then the look-ahead gate. Adding a module to `_ALLOWED_IMPORT_MODULES`, or deleting an entry from `_FORBIDDEN_REF_NAMES` / `_FORBIDDEN_ATTR_NAMES`, is a security decision: justify it in the PR and keep the invariant locks in `tests/test_strategy_safety_validation.py` green.
 - Changes to configuration, strategy JSON, Parquet schemas, and API fields require backward compatibility by default. New fields should provide defaults, and readers should tolerate missing fields in historical data.
 - When existing behavior must change, the PR must list the migration approach, degradation behavior, and scope of impact.
 - Path, encoding, recycle-bin, and permission behavior differ across Windows, macOS, Linux, and Docker. For anything involving the filesystem, review the cross-platform failure paths at minimum.
@@ -605,6 +607,7 @@ The measure of following this guide is not how much documentation is written, bu
 
 - 信号生成和成交模拟是两个阶段。必须明确区分信号时间、可成交时间和使用的价格。
 - 严禁未来函数：交易日只能使用当时已经公开且可获得的数据。
+- 未来函数由两道互补门控执行，两者都不是无泄漏证明：策略生成/保存/加载时的静态 AST 门控（`backend/app/strategy/ai_generator.py` 的 `_detect_lookahead`），只拦可静态证明的负偏移常量，偏移算不出来时放行；以及回测后的 evidence 核查（`backend/app/backtest/evidence.py`），负责抓动态偏移和其它形式的未来依赖。分工与边界写在 `docs/backtest-evidence.md`，削弱任一道门控都必须同步更新该文档及其回归锁。
 - 股票规则需保持 T+1、手续费、滑点、涨跌停不可成交等约束；新成交选项不得绕过这些规则。
 - 日线回测不能声称“信号触发瞬间成交”。分钟精确成交只有在分钟数据完整覆盖目标窗口时才能启用。
 - 卖出信号的“当日收盘”“次日开盘”“次分钟开盘”等选项必须分别测试时间对齐和边界数据缺失。
@@ -655,6 +658,7 @@ The measure of following this guide is not how much documentation is written, bu
 - 日志和异常响应不得包含授权信息、完整配置或用户敏感数据。
 - 文件删除、覆盖、迁移和批量回算属于高风险操作：限制目标目录、验证路径、提供清晰失败原因，并保持 fail-closed。
 - 不用不安全的字符串拼接执行 SQL、Shell 或动态 Python。
+- AI 生成和用户提供的策略代码在本进程内执行，因此每条生成、手动保存和引擎加载路径都会过 `backend/app/strategy/ai_generator.py` 的 `_validate_safety`：封闭式 import 白名单加禁用名称/属性黑名单，最后再过未来函数门控。往 `_ALLOWED_IMPORT_MODULES` 增加模块，或从 `_FORBIDDEN_REF_NAMES` / `_FORBIDDEN_ATTR_NAMES` 删除条目，都属于安全决策：PR 里必须说明理由，并保持 `tests/test_strategy_safety_validation.py` 的不变量锁全绿。
 - 配置、策略 JSON、Parquet schema 和 API 字段变化默认需要向后兼容。新增字段优先提供默认值，读取历史数据时允许字段缺失。
 - 必须改变既有行为时，在 PR 中列出迁移方式、降级行为和影响范围。
 - Windows、macOS、Linux 和 Docker 的路径、编码、回收站及权限行为不同；涉及文件系统时至少审查跨平台失败路径。

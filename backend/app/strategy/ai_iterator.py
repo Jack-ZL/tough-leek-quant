@@ -16,7 +16,12 @@ from typing import Any
 
 from app.services import tool_catalog
 from app.services.ai_provider import generate_ai_text_with_tools
-from app.strategy.ai_generator import AIStrategyGenerator, _SYSTEM_PREFIX, find_meta_assignment
+from app.strategy.ai_generator import (
+    _SYSTEM_PREFIX,
+    AIStrategyGenerator,
+    find_meta_assignment,
+    needs_code_repair,
+)
 
 # 每轮 (生成/诊断/修改一次) 内部的工具调用预算: 至少 2 次 LLM 调用
 # (1 次发起 run_backtest, 1 次读结果产出改进版), 留少量检索/换参余量。
@@ -67,7 +72,7 @@ class AIStrategyIterator:
 
         # 1. 生成 v1 (复用现有单次生成 + 结构修复)
         result = await generator.generate(prompt)
-        if generator.needs_structural_repair(result):
+        if needs_code_repair(result):
             result = await generator.repair_code(result["code"], result["error"])
         if not result.get("valid"):
             raise ValueError(f"初始策略生成失败: {result.get('error')}")
@@ -92,6 +97,20 @@ class AIStrategyIterator:
             stats = _extract_backtest_stats(full)
             final_text = _last_assistant_content(full)
             improved = generator.validate_code(final_text)
+            repair_note = ""
+            if not improved.get("valid"):
+                # P1-16: 校验失败不再整轮放弃 — 把错误原文回喂模型修一次。
+                # 有界: 每轮至多 1 次, 且只对 needs_code_repair 认可的错误类别
+                # (结构错误 / 未来函数) 花这次 LLM 调用; 修不好才按原逻辑退出,
+                # 此时 final 仍是本轮已回测过的 current_code。
+                error = str(improved.get("error") or "")
+                if needs_code_repair(improved):
+                    repaired = await generator.repair_code(
+                        improved.get("code") or final_text, error
+                    )
+                    if repaired.get("valid"):
+                        improved = repaired
+                        repair_note = f"；改进版校验失败已自动修复: {error}"
             if not improved.get("valid"):
                 rounds.append({
                     "round": round_no,
@@ -116,7 +135,7 @@ class AIStrategyIterator:
             rounds.append({
                 "round": round_no,
                 "stats": stats,
-                "change_summary": _extract_summary(final_text),
+                "change_summary": _extract_summary(final_text) + repair_note,
             })
             final_backtested = False  # 本轮改进了 current_code, 新的 final 尚未回测
 

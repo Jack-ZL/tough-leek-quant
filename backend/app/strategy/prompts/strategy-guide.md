@@ -296,8 +296,9 @@ REQUIRED_FEATURES = {"ma20", "momentum_20d", "vol_ratio_5d"}
 5. 遵循 A 股 T+1 规则 (当日买入次日才能卖出)
 6. Polars 策略允许 `import polars as pl` 和 `from datetime import date/datetime`；矩阵策略只允许 NumPy 和 `app.backtest.matrix` 协议/算子
 7. 禁止使用 `open()`, `exec()`, `eval()`, `os`, `sys`, `subprocess`
-8. **贴合用户需求优先**：第3/4节的指标列和信号列仅供参考，能用则用；如果用户需求需要自定义计算（如"前高""上次涨停价""N日内某个事件后X天"），直接在 `filter_history()` 中自行设计和计算，不需要局限于已有列
-9. `filter_history()` 中优先用 Polars 向量化语法；仅在复杂状态机无法清晰表达时，才用 `partition_by("symbol")` 逐股票分析；`to_dicts()` 逐行分析的命中行必须以 `pl.DataFrame(hits, schema=df.schema)` 重建，禁止裸 `pl.DataFrame(hits)`（dict 推断类型漂移，见第 2 节关键要点）
+8. **禁止未来函数（硬门控，违者直接拒绝）**：`shift` / `shift_and_fill` / `diff`（矩阵后端 `shift` / `valid_shift`）的偏移量**不得为负**。正偏移 = 回看历史（`pl.col("close").shift(1)` 是昨日收盘，合法），负偏移 = 引用未来（`shift(-1)` 是明日收盘，禁止）。凡常量能算出的负偏移——`shift(-1)`、`shift(1 - 3)`、`N = -1` 后 `shift(N)`、`shift(pl.lit(-1))`——在生成/保存/加载时都会被静态检查拦下并报错；动态偏移即使绕过静态检查，也会被回测的"未来数据扰动"审计（evidence）判定回测不可信。需要未来收益做标签属于研究场景，不要写进策略。
+9. **贴合用户需求优先**：第3/4节的指标列和信号列仅供参考，能用则用；如果用户需求需要自定义计算（如"前高""上次涨停价""N日内某个事件后X天"），直接在 `filter_history()` 中自行设计和计算，不需要局限于已有列
+10. `filter_history()` 中优先用 Polars 向量化语法；仅在复杂状态机无法清晰表达时，才用 `partition_by("symbol")` 逐股票分析；`to_dicts()` 逐行分析的命中行必须以 `pl.DataFrame(hits, schema=df.schema)` 重建，禁止裸 `pl.DataFrame(hits)`（dict 推断类型漂移，见第 2 节关键要点）
 
 ## 7. 策略示例
 

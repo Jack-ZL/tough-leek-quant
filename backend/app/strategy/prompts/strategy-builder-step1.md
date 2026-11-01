@@ -144,6 +144,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
         return df
 
     # 用 shift/over 回溯历史数据，或用 group_by 计算窗口聚合
+    # 重要: shift 偏移必须为正数(回看历史)；负偏移会引用未来数据，被静态检查直接拒绝
     # 重要: 返回所有匹配行，不要只过滤 latest，否则回测只有最后一天有信号
     hist = (
         df.sort(["symbol", "date"])

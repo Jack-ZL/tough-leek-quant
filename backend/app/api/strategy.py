@@ -21,7 +21,11 @@ from pydantic import BaseModel, Field
 from app.backtest.minute_trigger import MINUTE_EXIT_TRIGGER_SIGNALS
 from app.services.ndjson_heartbeat import with_heartbeat
 from app.strategy import config as strategy_config
-from app.strategy.ai_generator import AIStrategyGenerator, find_meta_assignment
+from app.strategy.ai_generator import (
+    AIStrategyGenerator,
+    find_meta_assignment,
+    needs_code_repair,
+)
 from app.strategy.engine import StrategyDef, StrategyEngine
 from app.strategy.monitor import StrategyMonitorService
 from app.strategy.prompt_builder import build_step1, build_step2
@@ -1091,7 +1095,8 @@ async def build_strategy_stream(req: BuildRequest, request: Request):
                 chunks.append(chunk)
                 yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False)
             result = gen.validate_code("".join(chunks))
-            if gen.needs_structural_repair(result):
+            # P1-16: 结构错误与未来函数门控错误都回喂模型自动修一次
+            if needs_code_repair(result):
                 result = await gen.repair_code(result["code"], result["error"])
             if req.step == 1:
                 result = _normalize_build_result(result, req.strategy_id, req.name, req.description)

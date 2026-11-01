@@ -101,6 +101,7 @@ def filter_history(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     hist = (
         df.sort(["symbol", "date"])
         .with_columns([
+            # shift(正数) = 回看历史；负偏移引用未来数据，会被静态检查直接拒绝
             pl.col("open").shift(1).over("symbol").alias("_prev_open"),
             pl.col("high").shift(1).over("symbol").alias("_prev_high"),
             pl.col("close").shift(1).over("symbol").alias("_prev_close"),
