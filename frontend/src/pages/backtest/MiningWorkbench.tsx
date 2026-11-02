@@ -43,6 +43,7 @@ import { QK } from '@/lib/queryKeys'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { useToggleRealtimeQuotes } from '@/lib/useSharedMutations'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { MiningLockControl } from './components/MiningLockControl'
 import { FactorCorrelationHeatmap } from './charts/FactorCorrelationHeatmap'
 import { MiningOosChart } from './charts/MiningOosChart'
 import { RegimeComparisonChart } from './charts/RegimeComparisonChart'
@@ -345,83 +346,6 @@ function FactorTable({ result }: { result: MiningResult }) {
 					</span>
 				</div>
 			))}
-		</div>
-	)
-}
-
-/** 挖掘锁占用横幅: 撞锁降级时展示持有者线索, 满足陈旧判定可强制释放。 */
-function MiningLockBanner() {
-	const queryClient = useQueryClient()
-	const lockQuery = useQuery({
-		queryKey: QK.miningLock,
-		queryFn: api.miningLockStatus,
-		staleTime: 10_000,
-		// 被他人持有时轮询等待恢复; 空闲/自己持有则不轮询
-		refetchInterval: query =>
-			query.state.data?.held && !query.state.data.mine ? 15_000 : false,
-	})
-	const release = useMutation({
-		mutationFn: api.miningForceReleaseLock,
-		onSuccess: () => {
-			toast('已终止持有者并由当前后端接管挖掘锁', 'success')
-			void queryClient.invalidateQueries({ queryKey: QK.miningLock })
-		},
-		onError: (e: Error) => toast(e.message, 'error'),
-	})
-	const data = lockQuery.data
-	if (!data?.held || data.mine) return null
-	const holder = data.holder
-	const idleMin = data.store_idle_seconds != null
-		? Math.max(1, Math.round(data.store_idle_seconds / 60))
-		: null
-	return (
-		<div className="mb-3 rounded-card border border-warning/40 bg-warning/10 px-3 py-2.5">
-			<div className="flex flex-wrap items-center justify-between gap-2">
-				<div className="flex items-start gap-2 text-xs">
-					<AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
-					<div>
-						<div className="font-medium text-foreground">挖掘锁被其他进程占用 — 挖掘暂不可用</div>
-						<div className="mt-0.5 text-[11px] leading-4 text-secondary">
-							{holder ? (
-								<>
-									{data.holder_source === 'os-scan' ? '锁文件无持有者信息, 已通过系统扫描定位: ' : ''}
-									持有者 pid {holder.pid}
-									{holder.role === 'worker'
-										? ' · 挖掘 worker 进程'
-										: holder.role === 'app'
-											? ' · 后端实例'
-											: ''}
-									{idleMin != null ? ` · 挖掘存储已静默约 ${idleMin} 分钟` : ''}
-									{data.force_releasable
-										? ' — 满足陈旧判定, 可强制释放'
-										: ` — 不可强制释放: ${data.reason}`}
-								</>
-							) : (
-								'锁文件为旧格式且无法定位持有进程 — 请手动结束后端残留进程后重启面板'
-							)}
-						</div>
-					</div>
-				</div>
-				{data.force_releasable && (
-					<button
-						type="button"
-						disabled={release.isPending}
-						onClick={() => {
-							if (window.confirm(
-								`确定终止持有挖掘锁的进程 (pid ${holder?.pid}) 并由当前后端接管?\n\n` +
-								'仅当该进程没有进行中的挖掘、且挖掘存储长期无写入时才会允许此操作。\n' +
-								'若它是你正在使用的另一个面板实例, 请改到那边正常退出。',
-							)) release.mutate()
-						}}
-						className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-btn border border-warning/60 bg-warning/20 px-3 text-xs font-medium text-foreground hover:bg-warning/30 disabled:opacity-50"
-					>
-						{release.isPending
-							? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-							: <Square className="h-3.5 w-3.5" />}
-						强制停止并接管
-					</button>
-				)}
-			</div>
 		</div>
 	)
 }
@@ -755,7 +679,7 @@ export function MiningWorkbench() {
 
 	return (
 		<>
-			<MiningLockBanner />
+			<MiningLockControl />
 			<div className="grid min-h-[calc(100vh-9rem)] grid-cols-1 overflow-hidden rounded-card border border-border bg-surface xl:grid-cols-[20rem_minmax(0,1fr)]">
 				<aside className="border-b border-border bg-base/25 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:border-b-0 xl:border-r">
 					<div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -829,7 +753,8 @@ export function MiningWorkbench() {
 							<div className="max-h-32 space-y-1 overflow-y-auto pr-1">
 								{strategies.map(item =>
 									<label key={item.id} className="flex min-w-0 cursor-pointer items-center gap-1.5 text-[9px] text-secondary"><input type="checkbox" className="h-3 w-3 accent-accent" checked={draft.strategyIds.includes(item.id)} onChange={() => toggleStrategy(item.id)} /><span className="truncate" title={item.description}>{item.name}</span></label>)}
-								{strategyQuery.isError && <div className="text-[9px] text-danger">策略目录加载失败</div>}
+								{strategyQuery.isError &&
+									<div className="text-[9px] text-danger">策略目录加载失败</div>}
 								{!strategyQuery.isLoading && !strategyQuery.isError && !strategies.length &&
 									<div className="text-[9px] text-muted">无可用 matrix-native 策略</div>}
 							</div>
@@ -883,7 +808,8 @@ export function MiningWorkbench() {
 
 				<section className="min-w-0 bg-surface xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto">
 					<RunStatus run={task.run} progress={task.progress} error={task.error} reconnecting={task.reconnecting} />
-					{task.run?.request?.auto_screening && <AutoScreeningCard screening={task.run.request.auto_screening} />}
+					{task.run?.request?.auto_screening &&
+						<AutoScreeningCard screening={task.run.request.auto_screening} />}
 					{showingPrevious &&
 						<div className="border-b border-warning/30 bg-warning/5 px-3 py-1.5 text-[10px] text-warning">历史结果 · run {result?.run_id}。当前 run {task.runId} {task.isPending ? '仍在执行' : '未成功完成'}，以下内容仅供参考，候选操作已禁用。</div>}
 
@@ -1037,7 +963,8 @@ export function MiningWorkbench() {
 							<div className="mt-4 flex justify-end gap-2">
 								<button type="button" disabled={regimeRecomputeAndRun.isPending} onClick={() => setRegimeBackfill(null)} className="h-8 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated disabled:opacity-50">取消</button>
 								<button type="button" disabled={regimeRecomputeAndRun.isPending} onClick={() => regimeRecomputeAndRun.mutate(regimeBackfill)} className="inline-flex h-8 items-center gap-1.5 rounded-btn bg-accent px-3 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50">
-									{regimeRecomputeAndRun.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> :
+									{regimeRecomputeAndRun.isPending ?
+										<LoaderCircle className="h-3.5 w-3.5 animate-spin" /> :
 										<Database className="h-3.5 w-3.5" />}
 									补算并重新挖掘
 								</button>

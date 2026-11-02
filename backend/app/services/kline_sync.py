@@ -839,6 +839,11 @@ def sync_adj_factor(
                     asset_type=asset_type,
                     on_chunk_done=on_chunk_done,
                 )
+            except ProviderRequestError:
+                # 数据源明确失败 (凭据/权限/额度/服务端错误) 必须上浮: 契约要求
+                # 「不得转换成成功的空数据」, 否则调用方无法区分「无除权」与「取数失败」。
+                # 与本文件分钟线自定义源分支保持同一范式。
+                raise
             except Exception as e:  # noqa: BLE001
                 # P1-12 layer3: 自定义源整体抛异常 → 全量记失败上浮, 任务不崩
                 logger.warning("adj_factor 自定义源 %s 取数异常, %d 只标的记为失败: %s",

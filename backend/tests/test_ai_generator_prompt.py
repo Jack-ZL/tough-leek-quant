@@ -13,10 +13,13 @@ def test_ai_strategy_generator_uses_compact_guide():
 
     assert "AI 策略生成精简指南" in guide
     assert "策略示例" not in guide
-    # 防膨胀绊线 (非硬 token 上限)。原为 5000, P1-16 加入"禁止未来函数"硬门控
-    # 规则后提到 5200: 该规则必须进精简指南 (它才是生成时真正用的 system prompt),
-    # 事前告知比事后拒绝省一次 LLM 往返。再往上加内容请同步复核这个预算。
-    assert len(guide) < 5200
+    # 防膨胀绊线 (非硬 token 上限)。原为 5000: P1-16 加入"禁止未来函数"硬门控规则,
+    # main 又补了分钟策略约定 → 提到 7000。该指南才是生成时真正用的 system prompt,
+    # 再往上加内容请同步复核这个预算。
+    assert len(guide) < 7000
+    # 不变量锁: 事前告知必须留在精简指南里 (曾被一次合并整体覆盖丢失)。
+    # 少了它模型只能等静态门控拒绝后靠错误回喂才知道, 白多一次 LLM 往返。
+    assert "禁止未来函数" in guide
 
 
 def test_build_step1_keeps_user_prompt_compact():
