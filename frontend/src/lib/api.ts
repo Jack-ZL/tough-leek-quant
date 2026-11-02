@@ -1843,6 +1843,7 @@ export interface MiningLockStatus {
 	holder: {
 		pid: number
 		started_at?: string
+		process_started_at?: number
 		role?: string
 		host?: string
 		schema_version?: number
@@ -2142,53 +2143,53 @@ export interface StrategyBacktestTrade {
 }
 
 export interface BacktestEvidenceCheck {
-  kind: string
-  cutoff: string
-  status: 'completed' | 'error'
-  differences: number
-  compared_values: number
-  error?: string
-  examples: {
-    date: string; symbol: string; field: string; cutoff: string
-    baseline: number | string | boolean | null
-    recomputed: number | string | boolean | null
-  }[]
+	kind: string
+	cutoff: string
+	status: 'completed' | 'error'
+	differences: number
+	compared_values: number
+	error?: string
+	examples: {
+		date: string; symbol: string; field: string; cutoff: string
+		baseline: number | string | boolean | null
+		recomputed: number | string | boolean | null
+	}[]
 }
 
 export interface BacktestEvidence {
-  schema_version: number
-  run_id: string
-  created_at: string
-  runtime: { application: string; python: string; polars: string; numpy: string; code_sha256: string }
-  config: Record<string, unknown>
-  config_sha256: string
-  strategy: { id: string; backend: string; sha256: string; changed_during_run: boolean }
-  data: {
-    sha256: string
-    origin: string
-    asset_type: string
-    daily_price_basis: string
-    datasets: Record<string, {
-      sha256: string; fields: Record<string, string>; rows: number; symbols: number | null
-      start: string | null; end: string | null
-    }>
-  }
-  reproducibility_sha256: string
-  lookahead: {
-    status: 'passed' | 'failed' | 'partial' | 'error' | 'insufficient' | 'cancelled'
-    sampled: boolean
-    differences: number
-    checks: BacktestEvidenceCheck[]
-    reports: { scope: string; status: string; checks: BacktestEvidenceCheck[]; differences: number }[]
-  }
-  persistence: { status: 'saved' | 'error'; error?: string }
-  execution_timing?: {
-    status: 'passed' | 'failed' | 'insufficient'
-    compared_values: number
-    differences: number
-    examples: { symbol: string; side: string; signal_date: string; fill_date: string }[]
-  }
-  limitations: string[]
+	schema_version: number
+	run_id: string
+	created_at: string
+	runtime: { application: string; python: string; polars: string; numpy: string; code_sha256: string }
+	config: Record<string, unknown>
+	config_sha256: string
+	strategy: { id: string; backend: string; sha256: string; changed_during_run: boolean }
+	data: {
+		sha256: string
+		origin: string
+		asset_type: string
+		daily_price_basis: string
+		datasets: Record<string, {
+			sha256: string; fields: Record<string, string>; rows: number; symbols: number | null
+			start: string | null; end: string | null
+		}>
+	}
+	reproducibility_sha256: string
+	lookahead: {
+		status: 'passed' | 'failed' | 'partial' | 'error' | 'insufficient' | 'cancelled'
+		sampled: boolean
+		differences: number
+		checks: BacktestEvidenceCheck[]
+		reports: { scope: string; status: string; checks: BacktestEvidenceCheck[]; differences: number }[]
+	}
+	persistence: { status: 'saved' | 'error'; error?: string }
+	execution_timing?: {
+		status: 'passed' | 'failed' | 'insufficient'
+		compared_values: number
+		differences: number
+		examples: { symbol: string; side: string; signal_date: string; fill_date: string }[]
+	}
+	limitations: string[]
 }
 
 export interface StrategyBacktestResult {
@@ -2408,7 +2409,14 @@ export interface DataSourceItem {
 
 /** 内置可选插件数据源 (plugins/ 目录, 需手动装依赖) */
 export interface SourcePackagePreview {
-	manifest: { name: string; display_name?: string; version: string; author?: string; description?: string; datasets: string[] }
+	manifest: {
+		name: string;
+		display_name?: string;
+		version: string;
+		author?: string;
+		description?: string;
+		datasets: string[]
+	}
 	digest: string
 	errors: string[]
 	installed_version: string | null
@@ -2417,7 +2425,15 @@ export interface SourcePackagePreview {
 }
 
 export interface ExtensionPackagePreview {
-	manifest: { id: string; display_name?: string; version: string; author?: string; description?: string; backend: string; frontend?: string }
+	manifest: {
+		id: string;
+		display_name?: string;
+		version: string;
+		author?: string;
+		description?: string;
+		backend: string;
+		frontend?: string
+	}
 	digest: string
 	revision: string
 	errors: string[]
@@ -2447,7 +2463,10 @@ export type ImportCenterPreview =
 	| { kind: 'backup'; preview: ConfigBackupInspect }
 	| { kind: 'source'; preview: SourcePackagePreview }
 	| { kind: 'extension'; preview: ExtensionPackagePreview }
-	| { kind: 'page'; preview: { filename: string; size: number; digest: string; source: boolean; suggested_id: string } }
+	| {
+		kind: 'page';
+		preview: { filename: string; size: number; digest: string; source: boolean; suggested_id: string }
+	}
 
 export interface PluginDataSourceItem {
 	can_test?: boolean
@@ -3374,7 +3393,14 @@ export const api = {
 
 	/** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置; profile_id 用于把实测结果记进档案 (P1-15) */
 	testAiSettings: (
-		ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string; profile_id?: string },
+		ai: {
+			provider?: string;
+			base_url?: string;
+			api_key?: string;
+			model?: string;
+			protocol?: string;
+			profile_id?: string
+		},
 		opts?: { timeoutMs?: number },
 	) =>
 		request<{
@@ -3426,18 +3452,37 @@ export const api = {
 	importCenterInspect: (files: File[]) => {
 		const body = new FormData()
 		files.forEach(file => body.append('files', file))
-		return request<ImportCenterPreview>('/api/import-center/inspect', { method: 'POST', body, quiet: true, timeoutMs: 120_000 })
+		return request<ImportCenterPreview>('/api/import-center/inspect', {
+			method: 'POST',
+			body,
+			quiet: true,
+			timeoutMs: 120_000
+		})
 	},
 	extensionPackages: () => request<ManagedExtensionPackage[]>('/api/extension-packages'),
 	installExtensionPackage: (file: File, digest: string, revision: string) => {
 		const body = new FormData()
-		body.append('file', file); body.append('digest', digest); body.append('revision', revision); body.append('trusted', 'true')
-		return request<{ id: string; message: string }>('/api/extension-packages/install', { method: 'POST', body, quiet: true })
+		body.append('file', file);
+		body.append('digest', digest);
+		body.append('revision', revision);
+		body.append('trusted', 'true')
+		return request<{ id: string; message: string }>('/api/extension-packages/install', {
+			method: 'POST',
+			body,
+			quiet: true
+		})
 	},
 	extensionPackageFrontend: (file: File, digest: string) => {
 		const body = new FormData()
-		body.append('file', file); body.append('digest', digest); body.append('trusted', 'true')
-		return request<Blob>('/api/extension-packages/frontend', { method: 'POST', body, responseType: 'blob', quiet: true })
+		body.append('file', file);
+		body.append('digest', digest);
+		body.append('trusted', 'true')
+		return request<Blob>('/api/extension-packages/frontend', {
+			method: 'POST',
+			body,
+			responseType: 'blob',
+			quiet: true
+		})
 	},
 	manageExtensionPackage: (id: string, action: string, revision?: string) =>
 		request<{ id: string; message: string }>('/api/extension-packages/' + encodeURIComponent(id) + '/manage', {
@@ -3445,12 +3490,25 @@ export const api = {
 		}),
 	importCenterInstallPage: (file: File, id: string, digest: string, overwrite: boolean) => {
 		const body = new FormData()
-		body.append('file', file); body.append('id', id); body.append('digest', digest)
-		body.append('trusted', 'true'); body.append('overwrite', String(overwrite))
-		return request<RuntimePagePack>('/api/import-center/page', { method: 'POST', body, quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS })
+		body.append('file', file);
+		body.append('id', id);
+		body.append('digest', digest)
+		body.append('trusted', 'true');
+		body.append('overwrite', String(overwrite))
+		return request<RuntimePagePack>('/api/import-center/page', {
+			method: 'POST',
+			body,
+			quiet: true,
+			timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS
+		})
 	},
 	importCenterProjectPage: (namespace: string, id: string, overwrite: boolean) =>
-		request<RuntimePagePack>('/api/import-center/project', { method: 'POST', body: JSON.stringify({ namespace, id, overwrite, trusted: true }), quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS }),
+		request<RuntimePagePack>('/api/import-center/project', {
+			method: 'POST',
+			body: JSON.stringify({ namespace, id, overwrite, trusted: true }),
+			quiet: true,
+			timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS
+		}),
 	inspectSourcePackage: (file: File) => {
 		const body = new FormData()
 		body.append('file', file)
@@ -3461,7 +3519,12 @@ export const api = {
 		body.append('file', file)
 		body.append('digest', digest)
 		if (revision) body.append('revision', revision)
-		return request<{ name: string; message: string }>('/api/custom/source-packages/install', { method: 'POST', body, quiet: true, timeoutMs: 120_000 })
+		return request<{ name: string; message: string }>('/api/custom/source-packages/install', {
+			method: 'POST',
+			body,
+			quiet: true,
+			timeoutMs: 120_000
+		})
 	},
 	manageSourcePackage: (name: string, action: string) =>
 		request<{ name: string; message: string }>(`/api/custom/source-packages/${encodeURIComponent(name)}/manage`, {
@@ -3622,7 +3685,10 @@ export const api = {
 			body: JSON.stringify({ pipeline_regime_enabled: enabled }),
 		}),
 	updateRegimeBatchParams: (params: { batch_days?: number; warmup_days?: number }) =>
-		request<{ regime_batch_days: number; regime_warmup_days: number }>('/api/settings/preferences/regime-batch-params', {
+		request<{
+			regime_batch_days: number;
+			regime_warmup_days: number
+		}>('/api/settings/preferences/regime-batch-params', {
 			method: 'PUT',
 			body: JSON.stringify(params),
 		}),
@@ -3632,7 +3698,12 @@ export const api = {
 			body: JSON.stringify({ symbols }),
 		}),
 	updateRealtimeQuotes: (enabled: boolean) =>
-		request<{ realtime_quotes_enabled: boolean; realtime_allowed?: boolean; mode?: string; error?: string }>('/api/settings/preferences/realtime-quotes', {
+		request<{
+			realtime_quotes_enabled: boolean;
+			realtime_allowed?: boolean;
+			mode?: string;
+			error?: string
+		}>('/api/settings/preferences/realtime-quotes', {
 			method: 'PUT',
 			body: JSON.stringify({ realtime_quotes_enabled: enabled }),
 		}),
@@ -3725,7 +3796,10 @@ export const api = {
 			body: JSON.stringify({ enabled }),
 		}),
 	updateFeishuWebhook: (url: string, secret: string = '') =>
-		request<{ feishu_webhook_url: string; feishu_webhook_secret: string }>('/api/settings/preferences/feishu-webhook', {
+		request<{
+			feishu_webhook_url: string;
+			feishu_webhook_secret: string
+		}>('/api/settings/preferences/feishu-webhook', {
 			method: 'PUT',
 			body: JSON.stringify({ url, secret }),
 		}),
@@ -3735,17 +3809,26 @@ export const api = {
 			body: JSON.stringify({ url }),
 		}),
 	updateDingtalkWebhook: (url: string, secret?: string) =>
-		request<{ dingtalk_webhook_url: string; dingtalk_webhook_secret: string }>('/api/settings/preferences/dingtalk-webhook', {
+		request<{
+			dingtalk_webhook_url: string;
+			dingtalk_webhook_secret: string
+		}>('/api/settings/preferences/dingtalk-webhook', {
 			method: 'PUT',
 			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
 		}),
 	updateCustomWebhook: (url: string, secret?: string) =>
-		request<{ custom_webhook_url: string; custom_webhook_secret_set: boolean }>('/api/settings/preferences/custom-webhook', {
+		request<{
+			custom_webhook_url: string;
+			custom_webhook_secret_set: boolean
+		}>('/api/settings/preferences/custom-webhook', {
 			method: 'PUT',
 			body: JSON.stringify({ url, ...(secret !== undefined ? { secret } : {}) }),
 		}),
 	updateEmailSmtp: (config: EmailSmtpConfig, password?: string) =>
-		request<{ email_smtp_config: EmailSmtpConfig; email_smtp_password_set: boolean }>('/api/settings/preferences/email-smtp', {
+		request<{
+			email_smtp_config: EmailSmtpConfig;
+			email_smtp_password_set: boolean
+		}>('/api/settings/preferences/email-smtp', {
 			method: 'PUT',
 			body: JSON.stringify({ ...config, ...(password !== undefined ? { password } : {}) }),
 		}),
@@ -3765,7 +3848,10 @@ export const api = {
 			body: JSON.stringify({ bot_id: botId, secret, enabled }),
 		}),
 	toggleWecomBot: (enabled: boolean) =>
-		request<{ wecom_bot_enabled: boolean; wecom_bot_status: WecomBotStatus }>('/api/settings/preferences/wecom-bot-toggle', {
+		request<{
+			wecom_bot_enabled: boolean;
+			wecom_bot_status: WecomBotStatus
+		}>('/api/settings/preferences/wecom-bot-toggle', {
 			method: 'PUT',
 			body: JSON.stringify({ enabled }),
 		}),
@@ -3805,13 +3891,20 @@ export const api = {
 			body: JSON.stringify({ enabled, hour, minute }),
 		}),
 	updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
-		request<{ review_push_channels: string[]; review_push_mode: 'auto' | 'manual' }>('/api/settings/preferences/review-push', {
+		request<{
+			review_push_channels: string[];
+			review_push_mode: 'auto' | 'manual'
+		}>('/api/settings/preferences/review-push', {
 			method: 'PUT',
 			body: JSON.stringify({ channels, mode: mode ?? null }),
 		}),
 	/** 复盘系统提示词: 自定义值 + 内置默认全文(按需拉取, 供「填入默认模板」) */
 	getMarketRecapPrompt: () =>
-		request<{ custom: string; default: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt'),
+		request<{
+			custom: string;
+			default: string;
+			customized: boolean
+		}>('/api/settings/preferences/market-recap-prompt'),
 	/** 保存自定义复盘系统提示词; 空串 = 恢复内置默认模板 */
 	updateMarketRecapPrompt: (prompt: string) =>
 		request<{ custom: string; customized: boolean }>('/api/settings/preferences/market-recap-prompt', {
@@ -4475,9 +4568,15 @@ export const api = {
 	miningLockStatus: () =>
 		request<MiningLockStatus>('/api/backtest/mining/lock', { quiet: true }),
 
-	miningForceReleaseLock: () =>
+	miningRecoverLock: () =>
+		request<MiningLockStatus>('/api/backtest/mining/lock/recover', { method: 'POST', quiet: true }),
+
+	miningForceReleaseLock: (expectedPid?: number) =>
 		request<{ released: boolean; terminated_pid: number; reacquired: boolean }>(
-			'/api/backtest/mining/lock/force-release', { method: 'POST' },
+			'/api/backtest/mining/lock/force-release', {
+			method: 'POST', quiet: true,
+			...(expectedPid == null ? {} : { body: JSON.stringify({ expected_pid: expectedPid }) }),
+		},
 		),
 
 	miningRuns: () =>
@@ -4567,35 +4666,35 @@ export const api = {
 			method: 'DELETE',
 		}),
 
-  strategyBacktestEvidence: (runId: string) =>
-    request<BacktestEvidence>(`/api/backtest/strategy/runs/${encodeURIComponent(runId)}/evidence`),
+	strategyBacktestEvidence: (runId: string) =>
+		request<BacktestEvidence>(`/api/backtest/strategy/runs/${encodeURIComponent(runId)}/evidence`),
 
-  strategyBacktestRun: (payload: {
-    strategy_id: string
-    symbols?: string[] | null
-    start?: string | null
-    end?: string | null
-    params?: Record<string, any> | null
-    overrides?: Record<string, any> | null
-    matching?: 'close_t' | 'open_t+1'
-    entry_fill?: 'close_t' | 'open_t+1' | null
-    exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
-    fees_pct?: number
-    commission_pct?: number
-    stamp_tax_pct?: number
-    slippage_bps?: number
-    max_positions?: number
-    initial_capital?: number
-    position_sizing?: 'equal' | 'score_weight' | 'policy'
-    position_policy?: string | null
-    position_policy_params?: Record<string, number | boolean | string> | null
-    asset_type?: 'stock' | 'etf' | 'index'
-    minute_fill?: boolean
-  }) =>
-    request<StrategyBacktestResult>('/api/backtest/strategy/run', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+	strategyBacktestRun: (payload: {
+		strategy_id: string
+		symbols?: string[] | null
+		start?: string | null
+		end?: string | null
+		params?: Record<string, any> | null
+		overrides?: Record<string, any> | null
+		matching?: 'close_t' | 'open_t+1'
+		entry_fill?: 'close_t' | 'open_t+1' | null
+		exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
+		fees_pct?: number
+		commission_pct?: number
+		stamp_tax_pct?: number
+		slippage_bps?: number
+		max_positions?: number
+		initial_capital?: number
+		position_sizing?: 'equal' | 'score_weight' | 'policy'
+		position_policy?: string | null
+		position_policy_params?: Record<string, number | boolean | string> | null
+		asset_type?: 'stock' | 'etf' | 'index'
+		minute_fill?: boolean
+	}) =>
+		request<StrategyBacktestResult>('/api/backtest/strategy/run', {
+			method: 'POST',
+			body: JSON.stringify(payload),
+		}),
 
 	positionPolicyList: () => request<{
 		policies: PositionPolicyInfo[]
@@ -5242,7 +5341,8 @@ export const api = {
 			try {
 				const j = JSON.parse(await res.text())
 				detail = j.detail ?? j.message ?? ''
-			} catch { /* ignore */ }
+			} catch { /* ignore */
+			}
 			const msg = detail || `${res.status} ${res.statusText}`
 			toast(msg, 'error')
 			throw new Error(msg)
@@ -5263,7 +5363,8 @@ export const api = {
 				if (!s) continue
 				try {
 					yield JSON.parse(s) as DebateStreamEvent
-				} catch { /* ignore */ }
+				} catch { /* ignore */
+				}
 			}
 		}
 	},
@@ -6004,7 +6105,7 @@ export const api = {
 		description?: string
 		direction?: string
 		rules?: string
-		execution_backend?: 'polars_expr' | 'matrix_native'
+		execution_backend?: 'polars_expr' | 'matrix_native' | 'minute_filter'
 		max_rounds?: number
 	}) =>
 		request<AiIterateResult>('/api/strategies/ai/iterate', {
