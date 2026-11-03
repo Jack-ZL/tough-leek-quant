@@ -166,6 +166,35 @@ def test_safe_division_yields_null() -> None:
     assert all(value is None for value in values.to_list())
 
 
+def test_horizontal_min_max_propagate_null() -> None:
+    """横向 min/max 必须传播 null (P1-17 第 3 批)。
+
+    Polars 的 `max_horizontal` 默认**忽略** null, 于是 `max(close - ts_delay(close,1), 0)`
+    在每个 symbol 的首根返回 0 而不是 null —— 凭空造出一个合法数值, 还会被当成初值
+    喂进下游递推算子 (SMA/EMA), 残差按 (1-alpha)^k 衰减, 要上百根才洗掉而暖机远短于此。
+    通达信遇到无效操作数是不画线的, 这里对齐。RSI 模板正是踩在这个坑上。
+    """
+    values = _eval("max(close - ts_delay(close, 1), 0)").to_list()
+    # 面板是两个 symbol 各 6 根: 每组首根无前收 → 必须是 null, 不能是 0
+    assert values[0] is None and values[6] is None
+    assert values[1] == 1.0                      # A 组 11-10=1, max(1,0)=1
+    assert values[8] == 0.0                      # B 组 80-90=-10, max(-10,0)=0
+    assert _eval("min(close - ts_delay(close, 1), 0)").to_list()[0] is None
+
+
+def test_nested_window_warmup_sums_along_path() -> None:
+    """嵌套窗口沿路径求和, 并列窗口取最大 (P1-17 第 3 批)。
+
+    旧口径对整棵 AST 取全局 max, 嵌套时欠暖机: `ts_mean(ts_mean(close,5),20)` 报 21
+    而真实需要 24 —— 内层首个有效值在下标 4, 外层要 20 个有效内层值, 头几根直接是 null。
+    并列的两个窗口各自独立回看, 取 max 就够, 不能相加。
+    """
+    assert compile_formula("ts_mean(ts_mean(close,5),20)").warmup_bars == 26
+    assert compile_formula("ts_std(ts_mean(close,5),10)").warmup_bars == 16
+    assert compile_formula("ts_mean(close,5) - ts_mean(close,20)").warmup_bars == 21
+    assert compile_formula("ts_mean(close,20)").warmup_bars == 21
+
+
 def test_if_else_and_comparison() -> None:
     values = _eval("if_else(close > 12, 1, 0)")
     assert values[:6].to_list() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]

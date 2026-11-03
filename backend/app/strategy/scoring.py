@@ -295,6 +295,7 @@ def materialize_scoring_columns(
     from app.factors.dsl import FACTOR_COLUMN, compile_formula_cached
     from app.factors.materialize_cache import cache_key, get_cached, put_cached
     from app.factors.py_expr import compile_python_expression_cached
+    from app.factors.tdx.translate import compile_tdx_formula_cached
 
     # 两段式: 命中列一次批量附着 (成本与因子数无关 — 每列一次 with_columns
     # 会随 K 线性拷贝帧); 未命中的逐个现算 (帧变换有依赖顺序)。
@@ -304,8 +305,12 @@ def materialize_scoring_columns(
         spec = _registry_get_factor(str(name))
         if spec is None or spec.kind != "custom" or name in frame.columns:
             continue
-        if getattr(spec, "lang", "dsl") == "python":
+        # P1-17: 三档语言分派; tdx 档编译产物与 dsl 同形, 下游零改动
+        lang = getattr(spec, "lang", "dsl")
+        if lang == "python":
             compiled = compile_python_expression_cached(spec.formula_text)
+        elif lang == "tdx":
+            compiled = compile_tdx_formula_cached(spec.formula_text)
         else:
             compiled = compile_formula_cached(spec.formula_text)
         if not getattr(compiled, "ok", True):
