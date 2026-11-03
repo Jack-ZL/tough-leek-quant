@@ -5,22 +5,7 @@
  */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import {
-	Settings2,
-	Trash2,
-	RefreshCw,
-	Bell,
-	Volume2,
-	ExternalLink,
-	ZoomIn,
-	Minus,
-	Plus,
-	ShieldCheck,
-	RotateCcw,
-	ChevronDown,
-	Layers,
-	Upload
-} from 'lucide-react'
+import { Settings2, Trash2, RefreshCw, Bell, Volume2, ExternalLink, ZoomIn, Minus, Plus, ShieldCheck, RotateCcw, ChevronDown, Layers, Upload, MemoryStick } from 'lucide-react'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { api } from '@/lib/api'
 import type { UpgradeGuardCategory } from '@/lib/api'
@@ -31,8 +16,7 @@ import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 import { refreshAlertToastConfig } from '@/components/AlertToast'
 import { mergeSoundOptions, previewSound, CUSTOM_SOUND_PREFIX } from '@/lib/notificationSound'
 import { setUiPref } from '@/lib/uiPrefs'
-import {
-	setKlineBatchLimits,
+import { setKlineBatchLimits,
 	DAILY_BATCH_SYMBOLS_MIN,
 	DAILY_BATCH_SYMBOLS_MAX,
 	MINUTE_BATCH_SYMBOLS_MIN,
@@ -43,6 +27,10 @@ import {
 } from '@/lib/voiceBroadcast'
 import { loadStockExternalTemplate, saveStockExternalTemplate } from '@/lib/stock-external-link'
 import { ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, getPageZoom, setPageZoom } from '@/lib/pageZoom'
+
+// 回测 worker RSS 内存上限 (GiB) 界面范围; 与后端 BacktestWorkerRssLimitIn 校验一致
+const BACKTEST_RSS_LIMIT_GIB_MIN = 0
+const BACKTEST_RSS_LIMIT_GIB_MAX = 64
 
 export function SettingsSystemPanel() {
 	const qc = useQueryClient()
@@ -60,58 +48,34 @@ export function SettingsSystemPanel() {
 	}, [])
 
 	const [toastEnabled, setToastEnabled] = useState(() => {
-		try {
-			return localStorage.getItem('alert_toast_enabled') !== '0'
-		} catch {
-			return true
-		}
+		try { return localStorage.getItem('alert_toast_enabled') !== '0' } catch { return true }
 	})
 	const [toastMax, setToastMax] = useState(() => {
 		try {
 			const v = parseInt(localStorage.getItem('alert_toast_max') || '', 10)
 			return v >= 1 && v <= 5 ? v : 3
-		} catch {
-			return 3
-		}
+		} catch { return 3 }
 	})
 	const [soundEnabled, setSoundEnabled] = useState(() => {
-		try {
-			return localStorage.getItem('alert_sound_enabled') !== '0'
-		} catch {
-			return true
-		}
+		try { return localStorage.getItem('alert_sound_enabled') !== '0' } catch { return true }
 	})
 	const [soundType, setSoundType] = useState(() => {
-		try {
-			return localStorage.getItem('alert_sound') || 'ding'
-		} catch {
-			return 'ding'
-		}
+		try { return localStorage.getItem('alert_sound') || 'ding' } catch { return 'ding' }
 	})
 	const [voiceEnabled, setVoiceEnabled] = useState(() => {
-		try {
-			return localStorage.getItem('voice_broadcast_enabled') === '1'
-		} catch {
-			return false
-		}
+		try { return localStorage.getItem('voice_broadcast_enabled') === '1' } catch { return false }
 	})
 	const [voices, setVoices] = useState(listZhVoices())
 	// 下拉值: 用户手选的 voiceURI (空=默认偏好)。回显只用这一份, 不再动态解析默认
 	// 语音当 value —— 否则手选 X 后「默认偏好」的 value 也变成 X, 选中项被吞掉。
 	const [voiceConfigured, setVoiceConfigured] = useState(() => {
-		try {
-			return localStorage.getItem('voice_broadcast_voice') || ''
-		} catch {
-			return ''
-		}
+		try { return localStorage.getItem('voice_broadcast_voice') || '' } catch { return '' }
 	})
 	const [voiceRate, setVoiceRate] = useState(() => {
 		try {
 			const v = parseFloat(localStorage.getItem('voice_broadcast_rate') || '')
 			return v >= 0.5 && v <= 2 ? v : 1
-		} catch {
-			return 1
-		}
+		} catch { return 1 }
 	})
 
 	// ===== 自定义语音包 (上传提示音, 存后端 data/sound_packs, 跨设备可用) =====
@@ -190,6 +154,15 @@ export function SettingsSystemPanel() {
 		mutationFn: (size: number) => api.updateMinuteBatchSymbols(size),
 		onSuccess: ({ minute_batch_symbols }) => {
 			setKlineBatchLimits({ minute: minute_batch_symbols })
+			qc.invalidateQueries({ queryKey: QK.preferences })
+		},
+		onError: (e: Error) => toast(e.message || '保存失败', 'error'),
+	})
+
+	// 回测内存上限: worker 每任务启动时从后端读取, 保存后下一个回测/优化任务即生效
+	const saveBacktestRssLimit = useMutation({
+		mutationFn: (gib: number) => api.updateBacktestWorkerRssLimit(gib),
+		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: QK.preferences })
 		},
 		onError: (e: Error) => toast(e.message || '保存失败', 'error'),
@@ -377,10 +350,7 @@ export function SettingsSystemPanel() {
 					onChange={(v) => {
 						setUiPref('voice_broadcast_enabled', v ? '1' : '0')
 						setVoiceEnabled(v)
-						if (v) {
-							activateVoice();
-							previewVoice()
-						}   // 开启即激活 + 试听一句
+						if (v) { activateVoice(); previewVoice() }   // 开启即激活 + 试听一句
 					}}
 				/>
 
@@ -512,6 +482,32 @@ export function SettingsSystemPanel() {
 
 			<section className="rounded-card border border-border bg-surface p-5 mt-6">
 				<div className="flex items-center gap-2 mb-4">
+					<MemoryStick className="h-4 w-4 text-accent" />
+					<h3 className="text-sm font-medium text-foreground">性能与内存</h3>
+				</div>
+
+				<p className="text-[11px] leading-relaxed text-muted mb-3">
+					回测 / 稳健优化 / 因子挖掘在独立进程运行，内存超过上限会被中止并提示
+					（避免把整机拖入卡顿）。保存后对新发起的任务生效，无需重启。
+				</p>
+
+				<BatchSymbolsRow
+					label="回测内存上限"
+					desc="默认 6 · 0 = 不限制"
+					min={BACKTEST_RSS_LIMIT_GIB_MIN}
+					max={BACKTEST_RSS_LIMIT_GIB_MAX}
+					value={prefs?.backtest_worker_rss_limit_gib ?? 6}
+					saving={saveBacktestRssLimit.isPending}
+					onSave={(gib) => saveBacktestRssLimit.mutate(gib)}
+					warnAt={16}
+					warnText="上限超过物理内存时会触发系统交换（swap），回测速度反而断崖式下降；内存不足时优先缩小回测时间范围/标的数量。"
+					unit="GiB"
+					rangeUnit="GiB"
+				/>
+			</section>
+
+			<section className="rounded-card border border-border bg-surface p-5 mt-6">
+				<div className="flex items-center gap-2 mb-4">
 					<Trash2 className="h-4 w-4 text-accent" />
 					<h3 className="text-sm font-medium text-foreground">缓存</h3>
 				</div>
@@ -527,8 +523,8 @@ export function SettingsSystemPanel() {
 						onClick={handleClearCache}
 						disabled={clearing}
 						className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                       bg-elevated text-secondary hover:text-foreground transition-colors
-                       disabled:opacity-50 shrink-0"
+											 bg-elevated text-secondary hover:text-foreground transition-colors
+											 disabled:opacity-50 shrink-0"
 					>
 						{clearing ? (
 							<RefreshCw className="h-3.5 w-3.5 animate-spin" />
@@ -558,7 +554,7 @@ export function SettingsSystemPanel() {
 							<button
 								onClick={() => setPageZoomState(setPageZoom(1))}
 								className="px-2.5 py-1.5 rounded-btn text-xs bg-elevated text-secondary
-                           hover:text-foreground transition-colors"
+													 hover:text-foreground transition-colors"
 							>
 								重置
 							</button>
@@ -568,8 +564,8 @@ export function SettingsSystemPanel() {
 							disabled={pageZoom <= ZOOM_MIN}
 							aria-label="缩小界面"
 							className="inline-flex items-center justify-center h-7 w-7 rounded-btn
-                         bg-elevated text-secondary hover:text-foreground transition-colors
-                         disabled:opacity-40 disabled:cursor-not-allowed"
+												 bg-elevated text-secondary hover:text-foreground transition-colors
+												 disabled:opacity-40 disabled:cursor-not-allowed"
 						>
 							<Minus className="h-3.5 w-3.5" />
 						</button>
@@ -581,8 +577,8 @@ export function SettingsSystemPanel() {
 							disabled={pageZoom >= ZOOM_MAX}
 							aria-label="放大界面"
 							className="inline-flex items-center justify-center h-7 w-7 rounded-btn
-                         bg-elevated text-secondary hover:text-foreground transition-colors
-                         disabled:opacity-40 disabled:cursor-not-allowed"
+												 bg-elevated text-secondary hover:text-foreground transition-colors
+												 disabled:opacity-40 disabled:cursor-not-allowed"
 						>
 							<Plus className="h-3.5 w-3.5" />
 						</button>
@@ -652,8 +648,7 @@ function UpgradeGuardCard() {
 			try {
 				await api.upgradeGuardRestore(reportId, f.relpath)
 				ok += 1
-			} catch { /* 单个失败继续其余 */
-			}
+			} catch { /* 单个失败继续其余 */ }
 		}
 		toast(`已恢复 ${ok}/${files.length} 个文件`, ok === files.length ? 'success' : 'error')
 		await refresh()
@@ -790,6 +785,8 @@ function BatchSymbolsRow({
 	onSave,
 	warnAt,
 	warnText,
+	unit = '只/批',
+	rangeUnit = '只',
 }: {
 	label: string
 	desc: string
@@ -800,6 +797,10 @@ function BatchSymbolsRow({
 	onSave: (size: number) => void
 	warnAt: number
 	warnText: string
+	/** 值药丸的单位后缀; 默认「只/批」, 回测内存等场景传 'GiB' */
+	unit?: string
+	/** 范围提示「可设 min–max …」的单位后缀 */
+	rangeUnit?: string
 }) {
 	const [editing, setEditing] = useState(false)
 	const [draft, setDraft] = useState(String(value))
@@ -815,18 +816,8 @@ function BatchSymbolsRow({
 			setHint(`请输入 ${min}–${max} 之间的整数`)
 			return
 		}
-		if (raw < min) {
-			setHint(`已按最小值 ${min} 保存`);
-			onSave(min);
-			setEditing(false);
-			return
-		}
-		if (raw > max) {
-			setHint(`已按上限 ${max} 保存`);
-			onSave(max);
-			setEditing(false);
-			return
-		}
+		if (raw < min) { setHint(`已按最小值 ${min} 保存`); onSave(min); setEditing(false); return }
+		if (raw > max) { setHint(`已按上限 ${max} 保存`); onSave(max); setEditing(false); return }
 		setHint(null)
 		onSave(raw)
 		setEditing(false)
@@ -839,7 +830,7 @@ function BatchSymbolsRow({
 			<div className="flex items-center justify-between gap-4">
 				<div className="min-w-0">
 					<div className="text-sm text-foreground">{label}</div>
-					<div className="text-[11px] text-muted">{desc} · 可设 {min}–{max} 只</div>
+					<div className="text-[11px] text-muted">{desc} · 可设 {min}–{max} {rangeUnit}</div>
 				</div>
 				{editing ? (
 					<div className="flex shrink-0 items-center gap-1.5">
@@ -852,27 +843,21 @@ function BatchSymbolsRow({
 							onChange={(e) => setDraft(e.target.value)}
 							onKeyDown={(e) => {
 								if (e.key === 'Enter') commit()
-								if (e.key === 'Escape') {
-									setEditing(false);
-									setHint(null)
-								}
+								if (e.key === 'Escape') { setEditing(false); setHint(null) }
 							}}
 							className="w-24 h-8 px-2 rounded-btn border border-border bg-base text-right font-mono text-xs
-                         text-foreground tabular-nums focus:border-accent/50 focus:outline-none"
+												 text-foreground tabular-nums focus:border-accent/50 focus:outline-none"
 						/>
 						<button
 							onClick={commit}
 							disabled={saving}
 							className="px-2.5 py-1.5 rounded-btn text-xs bg-accent/15 text-accent
-                         hover:bg-accent/25 transition-colors disabled:opacity-50"
+												 hover:bg-accent/25 transition-colors disabled:opacity-50"
 						>
 							{saving ? '…' : '保存'}
 						</button>
 						<button
-							onClick={() => {
-								setEditing(false);
-								setHint(null)
-							}}
+							onClick={() => { setEditing(false); setHint(null) }}
 							className="px-2 py-1.5 rounded-btn text-xs bg-elevated text-muted hover:text-foreground transition-colors"
 						>
 							取消
@@ -882,10 +867,10 @@ function BatchSymbolsRow({
 					<button
 						onClick={() => setEditing(true)}
 						className="shrink-0 px-2.5 py-1 rounded-btn border border-border bg-surface font-mono text-xs
-                       text-foreground tabular-nums hover:border-accent/50 transition-colors"
+											 text-foreground tabular-nums hover:border-accent/50 transition-colors"
 						title="点击修改"
 					>
-						{value} 只/批
+						{value} {unit}
 					</button>
 				)}
 			</div>
@@ -922,12 +907,14 @@ function ToggleRow({
 			<button
 				onClick={() => onChange(!checked)}
 				disabled={disabled}
-				className={`relative inline-flex h-5 w-9 items-center rounded-full shrink-0 transition-colors duration-200 disabled:opacity-50 ${checked ? 'bg-accent' : 'bg-elevated'
-					}`}
+				className={`relative inline-flex h-5 w-9 items-center rounded-full shrink-0 transition-colors duration-200 disabled:opacity-50 ${
+					checked ? 'bg-accent' : 'bg-elevated'
+				}`}
 			>
 				<span
-					className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
-						}`}
+					className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+						checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
+					}`}
 				/>
 			</button>
 		</div>

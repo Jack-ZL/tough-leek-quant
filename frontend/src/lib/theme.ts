@@ -5,11 +5,15 @@
 //   - 手动切换 (dark/light) 为 24h 临时覆盖, 到期后自动恢复到 auto
 //   - 状态存 localStorage: 'tf-theme' 存模式 (auto|dark|light),
 //     'tf-theme-manual-at' 存最近一次手动切换的时间戳 (ms)
+//   - 'tf-theme' 另有后端偏好副本 (uiPrefs, REMOTE_FIRST): 桌面版端口递增会换
+//     origin, localStorage 读不到时由后端回填; 回填值按"用户明确选择"对待,
+//     补一个新时间戳进入 24h 覆盖窗口 (见 useTheme 里的 hydrate 回调)
 //   - 生效方式: html.dark class (index.css 的 CSS variables + Tailwind darkMode:class)
 //   - index.html 里有预渲染内联脚本, 首屏前就解析好 class, 避免闪烁 (FOUC)
 //   - UI token (bg-surface/text-foreground 等) 自动跟随;
 //     图表画布不吃 CSS 变量, 统一走 useChartTheme() 取调色板
 import { useEffect, useState } from 'react'
+import { hydrateUiPrefs, setUiPref } from '@/lib/uiPrefs'
 
 const KEY = 'tf-theme'
 const AT_KEY = 'tf-theme-manual-at'
@@ -46,7 +50,8 @@ function systemDark(): boolean {
   }
 }
 
-function applyTheme(theme: Theme) {
+/** 只切换 html.dark class。恢复后端偏好时用它, 不会把默认值重新写回后端。 */
+export function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle('dark', theme === 'dark')
 }
 
@@ -61,12 +66,19 @@ export function getTheme(): Theme {
   return systemDark() ? 'dark' : 'light'
 }
 
-/** 手动切换主题: 写入模式并记录时间, 24h 后 getTheme() 自动回落 auto。 */
+/**
+ * 手动切换主题: 记录时间戳 (24h 后 getTheme() 自动回落 auto), 写 localStorage
+ * 即时缓存 + 后端偏好副本, 再广播事件让本页与跨标签页的 useTheme 订阅者同步。
+ *
+ * setUiPref 内部已同步写了 localStorage[KEY], 所以这里只补 AT_KEY; 而它**不派发
+ * 事件**, 事件必须自己发 —— 否则 Layout 的 useTheme 与图表的 useChartTheme 不会
+ * 重渲染 (切换后图标和图表配色都不跟着变)。
+ */
 export function setTheme(theme: Theme) {
   try {
-    localStorage.setItem(KEY, theme)
     localStorage.setItem(AT_KEY, String(Date.now()))
   } catch { /* ignore */ }
+  setUiPref(KEY, theme)
   applyTheme(theme)
   window.dispatchEvent(new CustomEvent(EVENT, { detail: theme }))
 }
@@ -81,13 +93,31 @@ export function toggleTheme(): Theme {
 export function useTheme(): Theme {
   const [theme, set] = useState<Theme>(getTheme)
   useEffect(() => {
+    let active = true
     const sync = () => {
+      if (!active) return
       const next = getTheme()
       applyTheme(next)
       set(next)
     }
     window.addEventListener(EVENT, sync)
-    window.addEventListener('storage', sync)  // 跨标签页同步
+
+    // 跨标签页同步。另一个标签页刚做出的 dark/light 选择等同于「此刻的手动切换」,
+    // 若它没带 manual-at (旧版页面, 或绕过 setTheme 直接写 localStorage), 在这里补
+    // 一个时间戳 —— 否则 getTheme() 会按「旧版遗留」判为过期而回落 auto, 同步不过来。
+    // 补戳只能放在 storage 事件里: 放进 sync 会让 24h 到期定时器每次触发都给自己续期,
+    // 「到期恢复 auto」就永远不发生了。同 origin 的遗留值不触发 storage 事件, 迁移规则不受影响。
+    const onStorage = (e: StorageEvent) => {
+      if (!active) return
+      if ((e.key === KEY || e.key === null) && readMode() !== 'auto' && readManualAt() == null) {
+        try {
+          localStorage.setItem(AT_KEY, String(Date.now()))
+        } catch { /* ignore */ }
+      }
+      sync()
+    }
+    window.addEventListener('storage', onStorage)
+
     const mql = window.matchMedia('(prefers-color-scheme: dark)')
     mql.addEventListener('change', sync)      // auto 模式下跟随系统
 
@@ -103,9 +133,26 @@ export function useTheme(): Theme {
     }
     schedule()
 
+    // 登录页在同一 SPA 内跳转，首次回填若为 401，挂载后仍须重新恢复主题。
+    void hydrateUiPrefs().then(() => {
+      if (!active) return
+      // 后端回填的主题是用户在别的 origin/会话里做出的明确选择, 补一个时间戳让它
+      // 进入 24h 覆盖窗口; 否则 getTheme() 会因缺 manual-at 判为「旧版已过期」而
+      // 回落 auto —— 桌面版换端口重启后主题就保不住 (AT_KEY 只存 localStorage,
+      // 不随后端偏好走)。同 origin 的遗留值不经回填, 仍按过期处理。
+      if (readMode() !== 'auto' && readManualAt() == null) {
+        try {
+          localStorage.setItem(AT_KEY, String(Date.now()))
+        } catch { /* ignore */ }
+      }
+      sync()
+      schedule()  // 回填可能改变了 mode, 到期定时器要重排
+    })
+
     return () => {
+      active = false
       window.removeEventListener(EVENT, sync)
-      window.removeEventListener('storage', sync)
+      window.removeEventListener('storage', onStorage)
       mql.removeEventListener('change', sync)
       if (timer != null) clearTimeout(timer)
     }

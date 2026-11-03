@@ -7,6 +7,7 @@ import { Fragment, type ReactNode } from 'react'
  * - 标题 # ## ### ####
  * - 加粗 **text**
  * - 行内代码 `code`
+ * - 链接 [text](https://example.com)，仅允许 HTTP/HTTPS，不执行原始 HTML
  * - 无序列表 - / *
  * - 有序列表 1.
  * - 表格 | a | b |
@@ -29,7 +30,10 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   // 涨跌语义 token: 带符号百分比/涨跌停词/方向词/金额数字。词表有意收窄 —
   // 只染有明确方向或语义的片段, 避免整段文字变成圣诞树; 无符号百分比
   // (换手率等)数值本身无方向, 不着色。语义色对齐 A 股口径(红涨绿跌)。
-  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|([+-]\d+(?:\.\d+)?%)|(涨停|跌停)|(上涨|下跌|高开|低开|走强|走弱)|(〖([^〗]*)※〗)|(\d[\d,]*(?:\.\d+)?)(?=[元亿万])/g
+  // 分支顺序即捕获组编号, 改动时务必同步下面 m[n] 的引用:
+  // 1/2 加粗, 3/4 行内代码, 5 带符号百分比, 6 涨跌停, 7 方向词,
+  // 8/9 闸门高亮 〖数字※〗, 10 金额数字, 11/12/13 markdown 链接(整体/文本/URL)
+  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|([+-]\d+(?:\.\d+)?%)|(涨停|跌停)|(上涨|下跌|高开|低开|走强|走弱)|(〖([^〗]*)※〗)|(\d[\d,]*(?:\.\d+)?)(?=[元亿万])|(\[([^\]\n]+)\]\(([^\s)]+)\))/g
   let last = 0
   let m: RegExpExecArray | null
   let i = 0
@@ -84,6 +88,18 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
           ⚠ {m[9]}
         </span>,
       )
+    } else if (m[11]) {
+      // markdown 链接: 只放行 http/https, 其余原样输出文本 (不执行原始 HTML)
+      let safe = false
+      try {
+        safe = ['http:', 'https:'].includes(new URL(m[13]).protocol)
+      } catch { /* 非完整网址保留原文 */ }
+      nodes.push(safe ? (
+        <a key={`${keyBase}-a-${i}`} href={m[13]} target="_blank" rel="noopener noreferrer"
+          className="break-words text-accent underline underline-offset-2 hover:decoration-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+          {renderInline(m[12], `${keyBase}-a-${i}`)}
+        </a>
+      ) : <Fragment key={`${keyBase}-a-${i}`}>{m[11]}</Fragment>)
     } else {
       // 金额数字: 等宽(设计语言: 数字等宽); 单位留在 span 外
       nodes.push(
@@ -123,7 +139,7 @@ function parseTable(lines: string[], start: number): { rows: string[][]; consume
 
 // ===== 主渲染 =====
 
-export function MarkdownRenderer({ content }: { content: string }) {
+export function MarkdownRenderer({ content, compact = false }: { content: string; compact?: boolean }) {
   const lines = content.replace(/\r\n/g, '\n').split('\n')
   const blocks: ReactNode[] = []
   let i = 0
@@ -282,5 +298,5 @@ export function MarkdownRenderer({ content }: { content: string }) {
 
   // 注意:外层不加 space-y-*,否则会覆盖各块自己的 margin-top 导致间距失效。
   // 让各块的 my-* 自然叠加(margin collapse),间距更可控。
-  return <div>{blocks}</div>
+  return <div className={compact ? 'min-w-0 break-words [&>p]:my-2 [&>p]:text-xs [&>p]:text-secondary [&>ul]:my-2 [&>ol]:my-2 [&_li]:text-xs [&_li]:text-secondary [&>div]:my-2 [&>div]:text-sm [&>blockquote]:my-2 [&>hr]:my-3 [&>:first-child]:mt-0 [&>:last-child]:mb-0' : undefined}>{blocks}</div>
 }
