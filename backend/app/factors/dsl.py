@@ -54,6 +54,11 @@ OPERATORS: dict[str, tuple[int, tuple[str, ...]]] = {
     "ts_cov": (2, ("n",)),
     "ts_quantile": (1, ("n", "q")),
     "decay_linear": (1, ("n",)),
+    # P1-17 第 2 批: 通达信 EMA/SMA/BARSLAST/BARSSINCE 需要的递归算子
+    "ts_ema": (1, ("n",)),            # 指数加权, alpha = 2/(n+1)
+    "ts_sma": (1, ("n", "m")),        # 通达信 SMA(X,N,M), alpha = m/n
+    "ts_barslast": (1, ()),           # 上次条件成立到当前的 bar 数
+    "ts_barssince": (1, ()),          # 首次条件成立到当前的 bar 数
     "rank": (1, ()),
     "zscore": (1, ()),
     "winsorize": (1, ("k",)),  # k 可省略, 默认 3
@@ -70,8 +75,18 @@ OPERATORS: dict[str, tuple[int, tuple[str, ...]]] = {
 TS_OPERATORS = frozenset({
     "ts_mean", "ts_std", "ts_sum", "ts_max", "ts_min", "ts_delay", "ts_delta",
     "ts_rank", "ts_zscore", "ts_corr", "ts_cov", "ts_quantile", "decay_linear",
+    "ts_ema", "ts_sma", "ts_barslast", "ts_barssince",
 })
 CROSS_OPERATORS = frozenset({"rank", "zscore", "winsorize"})
+
+# 递归/无限记忆算子的预热 (P1-17 第 2 批)。
+# 通用推断 `n+1` 对滚动窗口够用, 但对递归算子是**严重低估**:
+#   ts_ema/ts_sma 是指数衰减, k 根 bar 后残差权重 (1-alpha)^k; 取 4n 时残差
+#     已 < 4e-4 (alpha=2/(n+1) → (1-alpha)^(4n) ≈ e^-8), 再放大收益极小;
+#   ts_barslast/ts_barssince 记忆无上界, 给一个与最长既有因子 (position_240d
+#     的 241) 同量级的保守值, 避免窗口起点处取到"还没出现过"的错误结果。
+RECURSIVE_WARMUP_FACTOR: dict[str, int] = {"ts_ema": 4, "ts_sma": 4}
+RECURSIVE_WARMUP_FLOOR: dict[str, int] = {"ts_barslast": 250, "ts_barssince": 250}
 
 
 @dataclass
@@ -229,6 +244,14 @@ class _Parser:
             if error:
                 return None, error
             return {"kind": "unary", "value": "-", "children": [operand], "offset": token[2]}, None
+        # P1-17: 一元 not (此前 not 在 _KEYWORDS 里却无产生式, 属声明未实现的死关键字;
+        # 通达信 NOT 需要它, 故在此补齐, 语义为逻辑取反)
+        if token and token[0] == "ident" and token[1] == "not":
+            self._next()
+            operand, error = self._unary()
+            if error:
+                return None, error
+            return {"kind": "unary", "value": "not", "children": [operand], "offset": token[2]}, None
         return self._primary()
 
     def _primary(self):
@@ -355,6 +378,16 @@ def _check_call(node: dict, errors: list[DslError]) -> dict[str, float]:
                 ))
     if "q" in constants and not (0.0 < constants["q"] < 1.0):
         errors.append(DslError("E004", "ts_quantile 的 q 必须在 (0,1) 开区间内", offset=node["offset"], detail={"q": constants["q"]}))
+    if name == "ts_sma" and "m" in constants:
+        # 通达信 SMA(X,N,M) 要求 1 ≤ M ≤ N: M>N 会让 alpha>1, 递推发散 (P1-17 第 2 批)
+        m_value = constants["m"]
+        n_value = constants.get("n")
+        if m_value != int(m_value) or m_value < 1 or (n_value is not None and m_value > n_value):
+            errors.append(DslError(
+                "E004",
+                f"ts_sma 的 m 必须是满足 1 ≤ m ≤ n 的整数 (实际 m={m_value:g}, n={n_value or 0:g})",
+                offset=node["offset"], detail={"m": m_value, "n": n_value},
+            ))
     if "c" in constants and abs(constants["c"]) > POWER_ABS_MAX:
         errors.append(DslError("E010", f"power 指数 |c| ≤ {POWER_ABS_MAX}", offset=node["offset"], detail={"c": constants["c"]}))
     if "k" in constants and not (WINSORIZE_K_RANGE[0] <= constants["k"] <= WINSORIZE_K_RANGE[1]):
@@ -391,6 +424,36 @@ def _safe_div(numerator: pl.Expr, denominator: pl.Expr) -> pl.Expr:
     )
 
 
+def _horizontal_null_safe(fn, args: list[pl.Expr]) -> pl.Expr:
+    """横向 min/max 的 null 传播版 (P1-17 第 3 批)。
+
+    Polars 的 `min_horizontal`/`max_horizontal` **忽略 null**, 于是
+    `max(close - ts_delay(close,1), 0)` 在首根 (无前收) 返回 0 而不是 null ——
+    凭空造出一个合法数值。单看那一根只是小错, 但它会被当成初值喂进下游递推算子
+    (SMA/EMA), 残差按 (1-alpha)^k 衰减, 要上百根才洗掉, 而暖机远短于此。
+    通达信遇到无效操作数是不画线的, 这里对齐: 任一操作数为 null 则结果 null。
+    """
+    if not args:
+        return pl.lit(None, dtype=pl.Float64)
+    valid = args[0].is_not_null()
+    for arg in args[1:]:
+        valid = valid & arg.is_not_null()
+    return pl.when(valid).then(fn(*args)).otherwise(None)
+
+
+def _bars_since(cond: pl.Expr, *, first: bool) -> pl.Expr:
+    """条件成立到当前的 bar 数; first=False 取最近一次, True 取第一次。
+
+    只用「序号 - 命中位置」配合 forward_fill/cum_min —— 都是分区内可传播的累积
+    算子, 所以外层单个 over("symbol") 就够, 不需要嵌套窗口。命中位置为 null
+    (从未出现过) 时结果自然是 null, 与其余算子的 null 传播口径一致。
+    """
+    seq = pl.int_range(pl.len())
+    hit = pl.when(cond).then(seq).otherwise(None).forward_fill()
+    position = hit.cum_min() if first else hit
+    return (seq - position).cast(pl.Float64)
+
+
 def _rolling_apply(inner: pl.Expr, op: str, n: int, extra: dict[str, float]) -> pl.Expr:
     """对无 over 的内层序列应用窗口逻辑; 返回值同样不挂 over。"""
     if op == "ts_mean":
@@ -415,6 +478,19 @@ def _rolling_apply(inner: pl.Expr, op: str, n: int, extra: dict[str, float]) -> 
         return pl.when(std > 0).then((inner - mean) / std).otherwise(None)
     if op == "ts_quantile":
         return inner.rolling_quantile(extra.get("q", 0.5), window_size=n, min_samples=n)
+    if op == "ts_ema":
+        # 通达信 EMA(X,N): Y_t = (2*X_t + (N-1)*Y_{t-1})/(N+1), 即 alpha=2/(N+1)
+        # 的 EWMA。adjust=False + ignore_nulls=True 与通达信递推**逐位一致**
+        # (前导 null 从首个有效值起算; 中间 null 不推进递推) — 已实测核对。
+        return inner.ewm_mean(span=n, adjust=False, ignore_nulls=True)
+    if op == "ts_sma":
+        # 通达信 SMA(X,N,M): Y_t = (M*X_t + (N-M)*Y_{t-1})/N, 即 alpha=M/N。
+        # 注意这不是简单移动平均 — 通达信的 SMA 是递归指数平滑。
+        return inner.ewm_mean(alpha=extra.get("m", 1.0) / n, adjust=False, ignore_nulls=True)
+    if op == "ts_barslast":
+        return _bars_since(inner, first=False)
+    if op == "ts_barssince":
+        return _bars_since(inner, first=True)
     if op == "decay_linear":
         # 近端权重大: 权重 n, n-1, ..., 1, 总权 n(n+1)/2
         weighted = None
@@ -442,6 +518,9 @@ def _compile_node(node: dict) -> tuple[pl.Expr | None, bool, bool]:
         operand, needs_window, _ = _compile_node(node["children"][0])
         if operand is None:
             return None, False, False
+        if node["value"] == "not":
+            # P1-17: 逻辑取反, 结果仍是布尔 (与 and/or 分支同口径)
+            return operand.not_(), needs_window, True
         return -operand, needs_window, False
     if kind == "bin":
         op = node["value"]
@@ -480,7 +559,7 @@ def _compile_call(node: dict) -> tuple[pl.Expr | None, bool, bool]:
     n_expr, _ = OPERATORS[name]
 
     if name in TS_OPERATORS:
-        inner, _, _ = _compile_node(children[0])
+        inner, _, inner_bool = _compile_node(children[0])
         if inner is None:
             return None, False, False
         if name in ("ts_corr", "ts_cov"):
@@ -494,6 +573,10 @@ def _compile_call(node: dict) -> tuple[pl.Expr | None, bool, bool]:
                 else pl.rolling_cov(inner, second, window_size=n)
             )
             return expr, True, False
+        # 通达信里"条件"就是数值 (非 0 即真), 所以 BARSLAST(VOL) 这类写法也要能跑:
+        # 非布尔入参统一按 != 0 转成条件, 与通达信口径一致。
+        if name in ("ts_barslast", "ts_barssince") and not inner_bool:
+            inner = inner != 0
         expr = _rolling_apply(inner, name, int(constants.get("n", 0)), constants)
         return expr, True, False
 
@@ -554,9 +637,9 @@ def _compile_call(node: dict) -> tuple[pl.Expr | None, bool, bool]:
     if name == "clamp":
         return first.clip(constants.get("lo"), constants.get("hi")), False, False
     if name == "min":
-        return pl.min_horizontal(*resolved), False, False
+        return _horizontal_null_safe(pl.min_horizontal, list(resolved)), False, False
     if name == "max":
-        return pl.max_horizontal(*resolved), False, False
+        return _horizontal_null_safe(pl.max_horizontal, list(resolved)), False, False
     return None, False, False
 
 
@@ -593,6 +676,7 @@ def compile_formula(text: str) -> CompiledFormula:
 
     dependencies: set[str] = set()
     referenced_factors: set[str] = set()
+    factor_warmup: dict[str, int] = {}
     warmup = 1
     cross_sectional = False
     for name in identifiers:
@@ -604,12 +688,44 @@ def compile_formula(text: str) -> CompiledFormula:
             continue
         referenced_factors.add(name)
         dependencies.update(factor_dependencies([name]))
+        factor_warmup[name] = spec.warmup_bars
         warmup = max(warmup, spec.warmup_bars)
 
-    for node_constants in constants_by_call.values():
-        n_value = node_constants.get("n")
-        if n_value is not None and n_value == int(n_value) and int(n_value) > 0:
-            warmup = max(warmup, int(n_value) + 1)
+    # 预热推断: 滚动窗口按 n+1; 递归算子按 RECURSIVE_WARMUP_* 放大 (P1-17 第 2 批)。
+    # 必须走 AST 才能拿到算子名 —— constants_by_call 的 value 里没有名字。
+    #
+    # 累加口径 (P1-17 第 3 批修正): **沿路径求和, 兄弟之间取最大**。
+    # 并列的两个窗口 `ts_mean(close,5)-ts_mean(close,20)` 各自独立回看, 取 max 就够;
+    # 但嵌套的 `ts_mean(ts_mean(close,5),20)` 里, 外层要的是**已经算好的**内层值, 内层
+    # 自己还得再往前看 —— 必须相加。旧的全局 max 给 21, 而实测能出非 null 值的最小
+    # bar 数是 24, 差的那几根直接是 null; 嵌套递归算子 (MACD 的 DEA、KDJ 的 D) 同理。
+    #
+    # 求和在「回看数」空间做而不是在 warmup 空间做: warmup_bars 的口径是「回看数 + 1」
+    # (含当前 bar), 直接相加会把当前 bar 重复计一次 —— 引用因子 warmup=1 意为「不需要
+    # 额外历史」, 加上去就凭空多出一根。
+    #
+    # 注意每层仍有 1 根富余, 这是**沿用既有口径**不是本批引入的: 窗口 n 的滚动均值在
+    # 第 n 根就能出值, 而仓库一直按 n+1 报 (单层 21 vs 实测最小 20)。嵌套后富余按层数
+    # 累加 (双层 26 vs 24、三层 13 vs 10), 方向是多加载历史, 安全。
+    def _lookback_of(node: dict) -> int:
+        own = 0
+        if node["kind"] == "call":
+            op_name = node["value"]
+            node_constants = constants_by_call.get(id(node), {})
+            n_value = node_constants.get("n")
+            if n_value is not None and n_value == int(n_value) and int(n_value) > 0:
+                n_int = int(n_value)
+                own = n_int  # 窗口 n → warmup n+1 → 回看 n
+                factor = RECURSIVE_WARMUP_FACTOR.get(op_name)
+                if factor:
+                    own = max(own, n_int * factor - 1)
+            own = max(own, RECURSIVE_WARMUP_FLOOR.get(op_name, 0) - 1)
+        elif node["kind"] == "col":
+            # 引用的因子是叶子: 它自己的回看要加到外层窗口头上, 而不是跟外层取 max
+            own = max(0, factor_warmup.get(str(node["value"]), 1) - 1)
+        return own + max((_lookback_of(child) for child in node["children"]), default=0)
+
+    warmup = max(warmup, 1 + _lookback_of(ast))
 
     def _find_cross(node: dict) -> None:
         nonlocal cross_sectional

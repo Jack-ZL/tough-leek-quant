@@ -14,6 +14,9 @@ from app.factors import store
 from app.factors.dsl import FACTOR_COLUMN, compile_formula
 from app.factors.py_expr import compile_python_expression
 from app.factors.registry import all_factors, unregister_factor
+from app.factors.tdx.builtins import compatibility_table
+from app.factors.tdx.templates import tdx_templates
+from app.factors.tdx.translate import compile_tdx_formula
 from app.market_time import cn_today
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
@@ -61,7 +64,16 @@ def list_factors(request: Request, asset_type: str | None = Query(default=None, 
 
 class FormulaValidateRequest(BaseModel):
     formula: str = Field(..., min_length=1, max_length=2000)
-    lang: str = Field(default="dsl", pattern="^(dsl|python)$")
+    lang: str = Field(default="dsl", pattern="^(dsl|python|tdx)$")
+
+
+def _compile_by_lang(formula: str, lang: str):
+    """按语言分派编译器 (P1-17: 三档产物同形, 消费方无需区分)。"""
+    if lang == "python":
+        return compile_python_expression(formula)
+    if lang == "tdx":
+        return compile_tdx_formula(formula)
+    return compile_formula(formula)
 
 
 def _compiled_payload(compiled) -> dict:
@@ -79,10 +91,20 @@ def _compiled_payload(compiled) -> dict:
 def validate_formula(req: FormulaValidateRequest) -> dict:
     """公式校验: 语法/语义/窗口纪律/依赖推导, 编译期 fail-closed。
 
-    lang=dsl → 受限公式; lang=python → T2 表达式级 Python (P3)。"""
-    if req.lang == "python":
-        return _compiled_payload(compile_python_expression(req.formula))
-    return _compiled_payload(compile_formula(req.formula))
+    lang=dsl → 受限公式; lang=python → T2 表达式级 Python (P3);
+    lang=tdx → 通达信公式 (P1-17, 翻译成 DSL 后编译)。"""
+    return _compiled_payload(_compile_by_lang(req.formula, req.lang))
+
+
+@router.get("/tdx/meta")
+def tdx_meta() -> dict:
+    """通达信档的静态元数据: 函数兼容表 + 公式模板 (P1-17 第 3 批)。
+
+    两者都是进程内常量且同时被「写公式」界面用到, 合成一个端点省一次往返。
+    数据分别来自 builtins 的映射/拒绝表与 templates.TDX_TEMPLATES, 此处不另抄一份,
+    避免与翻译层实际能力脱节。
+    """
+    return {"compatibility": compatibility_table(), "templates": tdx_templates()}
 
 
 class FormulaTrialRequest(FormulaValidateRequest):
@@ -93,9 +115,7 @@ class FormulaTrialRequest(FormulaValidateRequest):
 @router.post("/trial")
 def trial_formula(req: FormulaTrialRequest, request: Request) -> dict:
     """公式试算: 最近 N 个交易日截面 Rank IC 快照 (复用回测面板与虚拟因子物化路径)。"""
-    compiled = (
-        compile_python_expression(req.formula) if req.lang == "python" else compile_formula(req.formula)
-    )
+    compiled = _compile_by_lang(req.formula, req.lang)
     if not compiled.ok:
         raise HTTPException(status_code=400, detail={"errors": [error.to_dict() for error in compiled.errors]})
 
@@ -214,6 +234,8 @@ class CustomFactorCreateRequest(BaseModel):
     formula: str = Field(..., min_length=1, max_length=2000)
     description: str = Field(default="", max_length=500)
     direction: str = Field(default="none", pattern="^(high|low|none)$")
+    # P1-17: 公式语言; 不传按 dsl (老客户端行为不变)
+    lang: str | None = Field(default=None, pattern="^(dsl|python|tdx)$")
 
 
 class CompositeFactorCreateRequest(BaseModel):
@@ -255,9 +277,9 @@ def _next_version(data_dir, factor_id: str) -> int:
     return 1
 
 
-def _trial_nonempty(request: Request, formula: str, asset_type: str = "stock") -> None:
+def _trial_nonempty(request: Request, formula: str, asset_type: str = "stock", lang: str = "dsl") -> None:
     """保存前置校验: 公式在最近 40 个交易日有非空输出 (设计 §3.5, fail-closed)。"""
-    compiled = compile_formula(formula)
+    compiled = _compile_by_lang(formula, lang)
     if not compiled.ok:
         raise HTTPException(status_code=400, detail={"errors": [e.to_dict() for e in compiled.errors]})
     from app.api.backtest import _get_engine
@@ -292,6 +314,7 @@ def create_custom_factor(req: CustomFactorCreateRequest, request: Request) -> di
         "formula": req.formula,
         "description": req.description,
         "direction": req.direction,
+        "lang": req.lang or "dsl",
         "status": "draft",
         "created_at": store._now(),
         "updated_at": store._now(),
@@ -300,7 +323,7 @@ def create_custom_factor(req: CustomFactorCreateRequest, request: Request) -> di
         store.to_spec(definition)  # 先做 schema/id/编译校验
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _trial_nonempty(request, req.formula)
+    _trial_nonempty(request, req.formula, lang=str(definition["lang"]))
     try:
         store.register_definition(definition)
     except ValueError as exc:
@@ -341,6 +364,8 @@ class CustomFactorUpdateRequest(BaseModel):
     formula: str = Field(..., min_length=1, max_length=2000)
     description: str = Field(default="", max_length=500)
     direction: str = Field(default="none", pattern="^(high|low|none)$")
+    # P1-17: 不传则沿用已存语言, 避免编辑时把 tdx 因子静默降级成 dsl
+    lang: str | None = Field(default=None, pattern="^(dsl|python|tdx)$")
 
 
 @router.post("/custom/{factor_id}/update")
@@ -360,14 +385,19 @@ def update_custom_factor(factor_id: str, req: CustomFactorUpdateRequest, request
     if str(target.get("kind", "custom")) != "custom":
         raise HTTPException(status_code=400, detail=f"仅自定义因子支持公式编辑 (kind={target.get('kind')})")
     formula_changed = str(target.get("formula")) != req.formula
-    if formula_changed:
-        _trial_nonempty(request, req.formula)
+    # P1-17: 语言不传则沿用已存值, 避免把 tdx/python 因子静默降级成 dsl
+    stored_lang = str(target.get("lang", "dsl"))
+    lang = req.lang or stored_lang
+    # 换语言但公式文本没变时也要重新试算: 同一段文本在不同语言下语义不同
+    if formula_changed or lang != stored_lang:
+        _trial_nonempty(request, req.formula, lang=lang)
     target.update({
         "label": req.label,
         "group": req.group,
         "formula": req.formula,
         "description": req.description,
         "direction": req.direction,
+        "lang": lang,
         "version": int(target.get("version", 1)) + 1,  # 版本提升 → 注册表允许覆盖
         "status": "draft" if formula_changed else str(target.get("status", "draft")),
         "updated_at": store._now(),
