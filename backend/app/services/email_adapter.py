@@ -40,9 +40,15 @@ def send_email(
     subject: str,
     body: str,
     *,
+    html_body: str | None = None,
     max_attempts: int = _MAX_ATTEMPTS,
 ) -> bool:
-    """Send one UTF-8 plain-text email through SSL, STARTTLS, or plain SMTP."""
+    """Send one UTF-8 email through SSL, STARTTLS, or plain SMTP.
+
+    ``body`` is always sent as the plain-text part. When ``html_body`` is given it is
+    attached as a multipart/alternative HTML part so rich clients render it while
+    plain-text clients keep the original body unchanged.
+    """
     if not is_configured(config):
         return False
 
@@ -69,6 +75,8 @@ def send_email(
     message["From"] = sender
     message["To"] = ", ".join(recipients)
     message.set_content(str(body or ""))
+    if html_body:
+        message.add_alternative(str(html_body), subtype="html")
 
     last_err = ""
     for attempt in range(1, max_attempts + 1):

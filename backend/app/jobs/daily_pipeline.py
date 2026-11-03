@@ -1297,7 +1297,7 @@ def _maybe_push_review(content: str, meta: dict) -> None:
     """
     try:
         from app import secrets_store
-        from app.services import email_adapter, preferences, webhook_adapter
+        from app.services import email_adapter, markdown_html, preferences, webhook_adapter
 
         channels = preferences.get_review_push_channels()
         if not channels:
@@ -1360,11 +1360,13 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     logger.info("review push(email) skipped: SMTP not configured")
                     continue
                 email_body = (f"{subtitle}\n\n{content}" if subtitle else content)
+                # 邮件客户端直接展示 Markdown 会出现 ### / ** 等原始标记, 附带 HTML 版
                 ok = email_adapter.send_email(
                     config,
                     secrets_store.get_email_smtp_password(),
                     "每日复盘",
                     email_body,
+                    html_body=markdown_html.markdown_to_html(email_body),
                 )
                 logger.info("review push(email) %s", "sent" if ok else "failed")
             # 未来更多渠道在此追加分支

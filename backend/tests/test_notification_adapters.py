@@ -101,6 +101,82 @@ def test_email_adapter_uses_starttls_login_and_multiple_recipients(monkeypatch):
     assert smtp.calls[-1] == ("quit",)
 
 
+def test_email_adapter_attaches_html_alternative_when_html_body_given(monkeypatch):
+    captured = []
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            captured.append(message)
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(email_adapter.smtplib, "SMTP_SSL", FakeSmtp)
+    config = {
+        "host": "smtp.example.com",
+        "port": 465,
+        "security": "ssl",
+        "username": "bot@example.com",
+        "from_address": "bot@example.com",
+        "to_addresses": ["one@example.com"],
+    }
+
+    assert email_adapter.send_email(
+        config, "pw", "每日复盘", "纯文本正文", html_body="<html><body>富文本</body></html>"
+    )
+    message = captured[0]
+    assert message.is_multipart()
+    subtypes = [part.get_content_subtype() for part in message.get_payload()]
+    assert subtypes == ["plain", "html"]
+    plain = message.get_payload()[0].get_payload(decode=True).decode("utf-8")
+    rich = message.get_payload()[1].get_payload(decode=True).decode("utf-8")
+    assert plain.strip() == "纯文本正文"
+    assert "富文本" in rich
+
+
+def test_email_adapter_stays_plain_text_without_html_body(monkeypatch):
+    captured = []
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            captured.append(message)
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(email_adapter.smtplib, "SMTP_SSL", FakeSmtp)
+    config = {
+        "host": "smtp.example.com",
+        "port": 465,
+        "security": "ssl",
+        "username": "bot@example.com",
+        "from_address": "bot@example.com",
+        "to_addresses": ["one@example.com"],
+    }
+
+    assert email_adapter.send_email(config, "pw", "监控告警", "正文")
+    assert not captured[0].is_multipart()
+    assert captured[0].get_content_subtype() == "plain"
+
+
 def _unreachable(*_args, **_kwargs):
     raise ConnectionError("unreachable")
 

@@ -220,13 +220,17 @@ def test_review_pushes_custom_webhook_and_email(monkeypatch):
         "app.services.webhook_adapter.send_custom",
         lambda *args: calls.append(("custom", args)) or True,
     )
-    monkeypatch.setattr(
-        "app.services.email_adapter.send_email",
-        lambda *args: calls.append(("email", args)) or True,
-    )
+    def fake_send_email(*args, **kwargs):
+        calls.append(("email", args, kwargs))
+        return True
+
+    monkeypatch.setattr("app.services.email_adapter.send_email", fake_send_email)
 
     daily_pipeline._maybe_push_review("复盘正文", {"as_of": "2026-07-18"})
 
-    assert [channel for channel, _ in calls] == ["custom", "email"]
+    assert [channel for channel, *_ in calls] == ["custom", "email"]
     assert calls[0][1][3] == "market_review"
     assert calls[1][1][2] == "每日复盘"
+    # 邮件需附带 HTML 版正文, 避免客户端直接展示 Markdown 原始标记
+    html_body = calls[1][2]["html_body"]
+    assert html_body.startswith("<!DOCTYPE html>") and "复盘正文" in html_body
