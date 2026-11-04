@@ -2,21 +2,22 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-	Database,
-	Play,
-	Square,
-	Loader2,
-	HardDrive,
-	Clock,
-	Calendar,
-	CheckSquare,
-	Trash2,
-	Plus,
-	Wifi,
-	SlidersHorizontal,
-	AlertTriangle,
-	Info,
-	WandSparkles,
+  Database,
+  Play,
+  Square,
+  Loader2,
+  HardDrive,
+  Clock,
+  Calendar,
+  CheckSquare,
+  Trash2,
+  Plus,
+  Wifi,
+  SlidersHorizontal,
+  AlertTriangle,
+  Info,
+  WandSparkles,
+  Upload,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { EndpointTestDialog } from '@/components/EndpointTestDialog'
@@ -62,6 +63,7 @@ import { Skeleton } from '@/components/data/Skeleton'
 import { ExtDataStatCard } from '@/components/ext-data/ExtDataStatCard'
 import { CreateExtDialog } from '@/components/ext-data/CreateExtDialog'
 import { EditExtDialog } from '@/components/ext-data/EditExtDialog'
+import { ExtConfigImportDialog } from '@/components/ext-data/ExtConfigTransfer'
 
 export function Data() {
 	const qc = useQueryClient()
@@ -74,14 +76,14 @@ export function Data() {
 	// 测试端点仅探测 TickFlow 通道 — 未配置 TickFlow Key 时隐藏入口
 	const hasTickflowKey = settings.data?.has_tickflow_key ?? settings.data?.mode === 'api_key'
 
-	const status = useDataStatus({
-		refetchInterval: (query) => {
-			const data = query.state.data
-			// 指标异步预热中 或 有活跃 job → 加快轮询到 2s
-			if (activeJobId || data?.indicators_ready === false) return 2_000
-			return 30_000
-		},
-	})
+  const status = useDataStatus({
+    refetchInterval: (query) => {
+      const data = query.state.data
+      // 指标预热、统计后台刷新或活跃 job 期间加快轮询。
+      if (activeJobId || data?.indicators_ready === false || data?.stats_pending) return 2_000
+      return 30_000
+    },
+  })
 
 	// 市场环境(regime) 覆盖画像 —— 走独立接口(/api/regime/coverage), 不在 data/status 内。
 	// 同步任务完成后刷新一次; 平时 30s 轮询与 status 对齐。
@@ -159,17 +161,18 @@ export function Data() {
 		},
 	})
 
-	const [openSettings, setOpenSettings] = useState<string | null>(null)
-	const [showScheduleEdit, setShowScheduleEdit] = useState(false)
-	const [showInstScheduleEdit, setShowInstScheduleEdit] = useState(false)
-	const [indexExtendValue, setIndexExtendValue] = useState(6)
-	const [indexExtendUnit, setIndexExtendUnit] = useState<'month' | 'year'>('month')
-	const [schemaTable, setSchemaTable] = useState<string | null>(null)
-	const [showEndpointTest, setShowEndpointTest] = useState(false)
-	const [showCreateExt, setShowCreateExt] = useState(false)
-	const [showRepair, setShowRepair] = useState(false)
-	const [editingExt, setEditingExt] = useState<ExtDataConfig | null>(null)
-	const [indexBatchInput, setIndexBatchInput] = useState('100')
+  const [openSettings, setOpenSettings] = useState<string | null>(null)
+  const [showScheduleEdit, setShowScheduleEdit] = useState(false)
+  const [showInstScheduleEdit, setShowInstScheduleEdit] = useState(false)
+  const [indexExtendValue, setIndexExtendValue] = useState(6)
+  const [indexExtendUnit, setIndexExtendUnit] = useState<'month' | 'year'>('month')
+  const [schemaTable, setSchemaTable] = useState<string | null>(null)
+  const [showEndpointTest, setShowEndpointTest] = useState(false)
+  const [showCreateExt, setShowCreateExt] = useState(false)
+  const [showImportExt, setShowImportExt] = useState(false)
+  const [showRepair, setShowRepair] = useState(false)
+  const [editingExt, setEditingExt] = useState<ExtDataConfig | null>(null)
+  const [indexBatchInput, setIndexBatchInput] = useState('100')
 
 	const extConfigs = useQuery({
 		queryKey: QK.extData,
@@ -965,24 +968,30 @@ export function Data() {
 					</div>
 				</div>
 
-				{/* 数据画像 */}
-				<div>
-					<SectionTitle icon={Database}>数据画像</SectionTitle>
-					<div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 items-stretch">
-						{getCardOrder().filter(k => cardVisible[k]).map((k: CardKey) => (
-							<Fragment key={k}>{renderStatCard(k)}</Fragment>
-						))}
-						{(extConfigs.data?.items ?? []).map((ext) => (
-							<ExtDataStatCard
-								key={ext.id}
-								config={ext}
-								onDelete={() => deleteExt.mutate(ext.id)}
-								deleting={deleteExt.isPending}
-								onEdit={() => setEditingExt(ext)}
-							/>
-						))}
-					</div>
-				</div>
+        {/* 数据画像 */}
+        <div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle icon={Database}>数据画像</SectionTitle>
+            <button type="button" onClick={() => setShowImportExt(true)}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-btn border border-border px-3 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+              <Upload className="h-3.5 w-3.5" />导入扩展配置
+            </button>
+          </div>
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 items-stretch">
+            {getCardOrder().filter(k => cardVisible[k]).map((k: CardKey) => (
+              <Fragment key={k}>{renderStatCard(k)}</Fragment>
+            ))}
+            {(extConfigs.data?.items ?? []).map((ext) => (
+              <ExtDataStatCard
+                key={ext.id}
+                config={ext}
+                onDelete={() => deleteExt.mutate(ext.id)}
+                deleting={deleteExt.isPending}
+                onEdit={() => setEditingExt(ext)}
+              />
+            ))}
+          </div>
+        </div>
 
 				{/* 同步历史 */}
 				<div>
@@ -1039,14 +1048,15 @@ export function Data() {
 				/>
 			)}
 
-			<AnimatePresence>
-				{showCreateExt && (
-					<CreateExtDialog onClose={() => setShowCreateExt(false)} />
-				)}
-				{editingExt && (
-					<EditExtDialog config={editingExt} onClose={() => setEditingExt(null)} />
-				)}
-			</AnimatePresence>
+      <AnimatePresence>
+        {showImportExt && <ExtConfigImportDialog onClose={() => setShowImportExt(false)} />}
+        {showCreateExt && (
+          <CreateExtDialog onClose={() => setShowCreateExt(false)} />
+        )}
+        {editingExt && (
+          <EditExtDialog config={editingExt} onClose={() => setEditingExt(null)} />
+        )}
+      </AnimatePresence>
 
 			<AnimatePresence>
 				{openSettings === 'daily' && (
