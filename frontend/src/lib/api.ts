@@ -17,13 +17,15 @@ type RequestOptions = RequestInit & {
 }
 
 export class ApiError extends Error {
-	readonly status: number
+  readonly status: number
+  readonly retryAfterMs?: number
 
-	constructor(message: string, status: number) {
-		super(message)
-		this.name = 'ApiError'
-		this.status = status
-	}
+  constructor(message: string, status: number, retryAfterMs?: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.retryAfterMs = retryAfterMs
+  }
 }
 
 /**
@@ -48,55 +50,55 @@ const COMPUTE_REQUEST_TIMEOUT_MS = 300_000
 const extPullTimeoutMs = (timeoutSeconds?: number) => (timeoutSeconds ?? 30) * 1000 + 10_000
 
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
-	const { quiet, responseType = 'json', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {}
-	const isFormData = fetchInit.body instanceof FormData
-	const headers: Record<string, string> = {}
-	if (!isFormData) headers['Content-Type'] = 'application/json'
-	// 合并调用方传入的 headers (此前会被整体覆盖丢弃)
-	Object.assign(headers, fetchInit.headers as Record<string, string> | undefined)
-	// 自带 signal 的调用方 (上传/串行队列) 由其自行控制中止; 其余走默认超时。
-	const ctl = timeoutMs == null || fetchInit.signal ? undefined : new AbortController()
-	const timeoutSeconds = Math.round((timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) / 1000)
-	let timer: number | undefined
-	if (ctl && timeoutMs != null) timer = window.setTimeout(() => ctl.abort(), timeoutMs)
-	let res: Response
-	try {
-		res = await fetch(`${BASE}${path}`, {
-			...fetchInit,
-			headers,
-			...(ctl ? { signal: ctl.signal } : {}),
-		})
-	} catch (err) {
-		if (ctl && err instanceof DOMException && err.name === 'AbortError') {
-			const msg = `请求超时（${timeoutSeconds}s）· ${path.split('?')[0]}`
-			if (!quiet) toast(msg, 'error')
-			throw new ApiError(msg, 0)
-		}
-		throw err
-	} finally {
-		if (timer !== undefined) window.clearTimeout(timer)
-	}
-	if (!res.ok) {
-		let detail = ''
-		try {
-			const j = JSON.parse(await res.text())
-			const raw = j.detail ?? j.message ?? ''
-			if (Array.isArray(raw)) {
-				// FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
-				detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
-			} else if (typeof raw === 'string') {
-				detail = raw
-			} else if (raw && typeof raw === 'object') {
-				detail = JSON.stringify(raw)
-			}
-		} catch { /* ignore */
-		}
-		const msg = detail || `${res.status} ${res.statusText}`
-		// 401 (未登录/会话过期) 不弹 toast — 由全局认证拦截器统一跳登录页, 避免刷屏
-		if (res.status !== 401 && !quiet) toast(msg, 'error')
-		throw new ApiError(msg, res.status)
-	}
-	return (responseType === 'blob' ? res.blob() : res.json()) as Promise<T>
+  const { quiet, responseType = 'json', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {}
+  const isFormData = fetchInit.body instanceof FormData
+  const headers: Record<string, string> = {}
+  if (!isFormData) headers['Content-Type'] = 'application/json'
+  // 合并调用方传入的 headers (此前会被整体覆盖丢弃)
+  Object.assign(headers, fetchInit.headers as Record<string, string> | undefined)
+  // 自带 signal 的调用方 (上传/串行队列) 由其自行控制中止; 其余走默认超时。
+  const ctl = timeoutMs == null || fetchInit.signal ? undefined : new AbortController()
+  const timeoutSeconds = Math.round((timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) / 1000)
+  let timer: number | undefined
+  if (ctl && timeoutMs != null) timer = window.setTimeout(() => ctl.abort(), timeoutMs)
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...fetchInit,
+      headers,
+      ...(ctl ? { signal: ctl.signal } : {}),
+    })
+  } catch (err) {
+    if (ctl && err instanceof DOMException && err.name === 'AbortError') {
+      const msg = `请求超时（${timeoutSeconds}s）· ${path.split('?')[0]}`
+      if (!quiet) toast(msg, 'error')
+      throw new ApiError(msg, 0)
+    }
+    throw err
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer)
+  }
+  if (!res.ok) {
+    let detail = ''
+    try {
+      const j = JSON.parse(await res.text())
+      const raw = j.detail ?? j.message ?? ''
+      if (Array.isArray(raw)) {
+        // FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
+        detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
+      } else if (typeof raw === 'string') {
+        detail = raw
+      } else if (raw && typeof raw === 'object') {
+        detail = JSON.stringify(raw)
+      }
+    } catch { /* ignore */ }
+    const msg = detail || `${res.status} ${res.statusText}`
+    // 401 (未登录/会话过期) 不弹 toast — 由全局认证拦截器统一跳登录页, 避免刷屏
+    if (res.status !== 401 && !quiet) toast(msg, 'error')
+    const retryAfter = Number(res.headers.get('Retry-After'))
+    throw new ApiError(msg, res.status, retryAfter > 0 && Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined)
+  }
+  return (responseType === 'blob' ? res.blob() : res.json()) as Promise<T>
 }
 
 // ===== Capabilities =====
@@ -609,35 +611,39 @@ export interface ScreenerResult {
 }
 
 export interface ScreenerResultSummary {
-	total: number
-	as_of: string
-	/** 渐进式 run_all 写入的计算时间戳 (Unix ms); 监控实时叠加等来源无此字段 */
-	computed_at?: number | null
+  total: number
+  as_of: string
+  /** 渐进式 run_all 写入的计算时间戳 (Unix ms); 监控实时叠加等来源无此字段 */
+  computed_at?: number | null
+  available_at?: number | null
 }
 
 export interface ScreenerCachedSummary {
-	as_of: string | null
-	results: Record<string, ScreenerResultSummary>
-	today_ever_counts: Record<string, number>
-	updated_at: number | null
-	/** 分钟策略后台批量计算中尚未完成的策略 (结果不落盘, 由 handle 快照合入) */
-	minute_pending?: string[]
+  as_of: string | null
+  results: Record<string, ScreenerResultSummary>
+  today_ever_counts: Record<string, number>
+  updated_at: number | null
+  /** 分钟策略后台批量计算中尚未完成的策略 (结果不落盘, 由 handle 快照合入) */
+  minute_pending?: string[]
+  task?: { id: string; pending: string[]; errors: Record<string, string>; error: string | null; complete: boolean } | null
 }
 
 /** run_all 渐进式返回: 快策略已算完, 慢策略后台继续算 */
 export interface ScreenerRunAllSummary {
-	as_of: string | null
-	results: Record<string, ScreenerResultSummary>
-	/** 尚未算完的策略 (后台继续, 逐个写入缓存) */
-	pending?: string[]
-	/** 全部算完时为 true */
-	complete?: boolean
-	/** 后台执行出错时的错误信息 (部分结果仍会返回) */
-	error?: string | null
-	/** 本次执行起点 (Unix ms, 后端时钟), 用于判断缓存结果是否属于本轮 */
-	started_at?: number | null
-	/** 已跳过的失效策略 ID (策略池残留, 前端应从池中移除) */
-	skipped_unknown?: string[]
+  as_of: string | null
+  results: Record<string, ScreenerResultSummary>
+  /** 尚未算完的策略 (后台继续, 逐个写入缓存) */
+  pending?: string[]
+  /** 全部算完时为 true */
+  complete?: boolean
+  /** 后台执行出错时的错误信息 (部分结果仍会返回) */
+  error?: string | null
+  errors?: Record<string, string>
+  /** 本次执行起点 (Unix ms, 后端时钟), 用于判断缓存结果是否属于本轮 */
+  started_at?: number | null
+  task_id?: string
+  /** 已跳过的失效策略 ID (策略池残留, 前端应从池中移除) */
+  skipped_unknown?: string[]
 }
 
 export interface ScreenerCachedResult {
@@ -4018,10 +4024,11 @@ export const api = {
 			body: JSON.stringify({ columns }),
 		}),
 
-	capabilities: () => request<CapabilitiesResponse>('/api/capabilities'),
-	version: () => request<{ version: string }>('/api/data/version'),
-	redetectCapabilities: () =>
-		request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
+  capabilities: () => request<CapabilitiesResponse>('/api/capabilities'),
+  version: () => request<{ version: string }>('/api/data/version'),
+  workload: () => request<{ uptime_s: number; groups: Record<string, Record<string, number>>; resources: Record<string, Record<string, number | string>> }>('/api/data/workload'),
+  redetectCapabilities: () =>
+    request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
 
 	klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string) =>
 		request<KlineDailyResponse>(
@@ -4296,7 +4303,7 @@ export const api = {
 		)
 		return { presets: data.strategies, load_errors: data.load_errors, legacy_migration: data.legacy_migration }
 	},
-	screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+	screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d', ensure = false) =>
 		request<ScreenerResult>('/api/screener/run_preset', {
 			method: 'POST',
 			timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
@@ -4306,7 +4313,8 @@ export const api = {
 				as_of: asOf ?? null,
 				ext_columns: extColumns || null,
 				asset_type: assetType,
-				timeframe
+				timeframe,
+				ensure
 			}),
 		}),
 	screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' = 'stock') =>
@@ -4322,7 +4330,7 @@ export const api = {
 				asset_type: assetType
 			}),
 		}),
-	screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+	screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d', ensure = false) =>
 		request<ScreenerRunAllSummary>(
 			'/api/screener/run_all', {
 			method: 'POST',
@@ -4332,13 +4340,14 @@ export const api = {
 				strategy_ids: strategyIds ?? null,
 				asset_type: assetType,
 				timeframe,
-				summary_only: true
+				summary_only: true,
+				ensure
 			})
 		},
 		),
-	screenerCachedSummary: () =>
-		request<ScreenerCachedSummary>('/api/screener/cached-summary'),
-	screenerCachedResult: (strategyId: string, extColumns?: string) =>
+	screenerCachedSummary: (taskId?: string) =>
+        request<ScreenerCachedSummary>('/api/screener/cached-summary' + (taskId ? `?task_id=${encodeURIComponent(taskId)}` : '')),
+    screenerCachedResult: (strategyId: string, extColumns?: string) =>
 		request<ScreenerCachedResult>(
 			extColumns
 				? `/api/screener/cached-result/${encodeURIComponent(strategyId)}?ext_columns=${encodeURIComponent(extColumns)}`
@@ -5050,14 +5059,30 @@ export const api = {
 	extDataDelete: (id: string) =>
 		request<{ status: string }>(`/api/ext-data/${id}`, { method: 'DELETE' }),
 
-	extDataUpload: (id: string, file: File, snapshotDate?: string) => {
-		const fd = new FormData()
-		fd.append('file', file)
-		return request<{ status: string; rows: number; date: string }>(
-			`/api/ext-data/${id}/upload${snapshotDate ? `?snapshot_date=${snapshotDate}` : ''}`,
-			{ method: 'POST', body: fd },
-		)
-	},
+  extDataConfigExport: (id: string) =>
+    request<Blob>(`/api/ext-data/${encodeURIComponent(id)}/config/export`, { responseType: 'blob', quiet: true }),
+
+  extDataConfigInspect: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<ExtDataConfigPreview>('/api/ext-data/config/inspect', { method: 'POST', body, quiet: true })
+  },
+
+  extDataConfigImport: (file: File, id: string) => {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('config_id', id)
+    return request<ExtDataConfig>('/api/ext-data/config/import', { method: 'POST', body, quiet: true })
+  },
+
+  extDataUpload: (id: string, file: File, snapshotDate?: string) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<{ status: string; rows: number; date: string }>(
+      `/api/ext-data/${id}/upload${snapshotDate ? `?snapshot_date=${snapshotDate}` : ''}`,
+      { method: 'POST', body: fd },
+    )
+  },
 
 	extDataIngest: (id: string, body: { date?: string; rows: Record<string, unknown>[] }) =>
 		request<{ status: string; rows: number; date: string }>(
@@ -6216,57 +6241,57 @@ interface InstrumentsStats {
 }
 
 export interface DataStatus {
-	daily: TableStats | null
-	enriched: TableStats | null
-	index_daily: TableStats | null
-	index_enriched: TableStats | null
-	index_instruments: InstrumentsStats | null
-	etf_daily: TableStats | null
-	etf_enriched: TableStats | null
-	etf_instruments: InstrumentsStats | null
-	minute: TableStats | null
-	adj_factor: TableStats | null
-	instruments: InstrumentsStats | null
-	financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
-	storage: {
-		daily_files: number
-		daily_size_mb: number
-		enriched_files: number
-		enriched_size_mb: number
-		index_daily_files?: number
-		index_daily_size_mb?: number
-		index_enriched_files?: number
-		index_enriched_size_mb?: number
-		index_instruments_files?: number
-		index_instruments_size_mb?: number
-		etf_daily_files?: number
-		etf_daily_size_mb?: number
-		etf_enriched_files?: number
-		etf_enriched_size_mb?: number
-		etf_instruments_files?: number
-		etf_instruments_size_mb?: number
-		etf_adj_factor_files?: number
-		etf_adj_factor_size_mb?: number
-		minute_files: number
-		minute_size_mb: number
-		adj_factor_files: number
-		adj_factor_size_mb: number
-		instruments_files: number
-		instruments_size_mb: number
-		financials_files?: number
-		financials_size_mb?: number
-		ext_data_files?: number
-		ext_data_size_mb?: number
-		total_size_mb: number
-	} | null  // busy 降级 (预热/同步/修复期间) 且冷启动缓存未热时为 null, 不代表无数据
-	next_pipeline_run: string | null
-	next_instruments_run: string | null
-	last_pipeline_run: string | null
-	last_instruments_run: string | null
-	checked_at: string
-	/** 预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
-	stats_pending?: boolean
-	indicators_ready?: boolean
+  daily: TableStats | null
+  enriched: TableStats | null
+  index_daily: TableStats | null
+  index_enriched: TableStats | null
+  index_instruments: InstrumentsStats | null
+  etf_daily: TableStats | null
+  etf_enriched: TableStats | null
+  etf_instruments: InstrumentsStats | null
+  minute: TableStats | null
+  adj_factor: TableStats | null
+  instruments: InstrumentsStats | null
+  financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
+  storage: {
+    daily_files: number
+    daily_size_mb: number
+    enriched_files: number
+    enriched_size_mb: number
+    index_daily_files?: number
+    index_daily_size_mb?: number
+    index_enriched_files?: number
+    index_enriched_size_mb?: number
+    index_instruments_files?: number
+    index_instruments_size_mb?: number
+    etf_daily_files?: number
+    etf_daily_size_mb?: number
+    etf_enriched_files?: number
+    etf_enriched_size_mb?: number
+    etf_instruments_files?: number
+    etf_instruments_size_mb?: number
+    etf_adj_factor_files?: number
+    etf_adj_factor_size_mb?: number
+    minute_files: number
+    minute_size_mb: number
+    adj_factor_files: number
+    adj_factor_size_mb: number
+    instruments_files: number
+    instruments_size_mb: number
+    financials_files?: number
+    financials_size_mb?: number
+    ext_data_files?: number
+    ext_data_size_mb?: number
+    total_size_mb: number
+  } | null  // 后台统计尚未生成快照时为 null, 不代表无数据
+  next_pipeline_run: string | null
+  next_instruments_run: string | null
+  last_pipeline_run: string | null
+  last_instruments_run: string | null
+  checked_at: string
+  /** 后台刷新或预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
+  stats_pending?: boolean
+  indicators_ready?: boolean
 }
 
 export interface EnrichedField {
@@ -6426,6 +6451,20 @@ export interface ExtDataConfig {
 	/** 生效序列粒度 (显式声明 > 数据形态判断): intraday | daily; snapshot 表为 null */
 	granularity_effective?: 'intraday' | 'daily' | null
 	pull?: PullConfig | null
+}
+
+export interface ExtDataConfigPreview {
+  id: string
+  label: string
+  mode: 'snapshot' | 'timeseries'
+  fields: ExtDataField[]
+  field_count: number
+  conflict: boolean
+  requires_key: boolean
+  has_pull: boolean
+  pull_url?: string | null
+  pull_method?: string | null
+  warnings: string[]
 }
 
 export interface ExtDataRowsResult {
