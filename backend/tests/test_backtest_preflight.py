@@ -363,3 +363,26 @@ def test_run_no_warnings_key_when_plan_healthy(client, monkeypatch):
     })
     assert resp.status_code == 200, resp.text
     assert "preflight_warnings" not in resp.json()
+
+
+def test_strategy_run_attaches_warnings_to_result(client, monkeypatch):
+    """/strategy/run 走 worker 路径, 同样要把 warning 挂到 preflight_warnings。
+
+    合并 main 时这一行曾被 main 的 `return _stamp_daily_data(...)` 覆盖
+    (pf_warnings 算了却不用), 用本测试锁住。
+    """
+    import app.api.backtest as backtest_api
+    import app.backtest.worker as worker
+
+    monkeypatch.setattr(backtest_api, "admit_request", lambda *_a, **_k: None)
+    monkeypatch.setattr(backtest_api, "_daily_data_revisions", lambda: {})
+    monkeypatch.setattr(worker, "make_worker_task", lambda *a, **k: {"kind": "backtest"})
+    monkeypatch.setattr(worker, "run_worker_task", lambda task: {"metrics": {}})
+
+    resp = client.post("/api/backtest/strategy/run", json={
+        "strategy_id": "ma_cross", "start": "2024-01-01", "end": "2024-01-20",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("preflight_warnings"), body
+    assert any("样本太少" in w for w in body["preflight_warnings"])

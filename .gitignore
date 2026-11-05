@@ -43,6 +43,10 @@ backend/app/static/
 # ===== Project data (Parquet/DuckDB) =====
 backend/data/**
 !backend/data/.gitkeep
+# 测试把裸 MagicMock 当 repo 时, os.fspath(mock) 得到相对路径
+# 'MagicMock/mock.app.state.repo.store.data_dir/<id>', 落盘代码据此建目录,
+# 会在 backend/ 下写出 part.parquet 垃圾 (已被 _isolate_cwd 夹具挡住, 此处兜底)
+backend/MagicMock/
 data/**
 !data/.gitkeep
 # data/ 下所有内容(含 ext_data 概念/行业)均不入库:
