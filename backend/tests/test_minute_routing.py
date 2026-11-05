@@ -18,9 +18,22 @@ from unittest.mock import MagicMock
 
 import httpx
 import polars as pl
+import pytest
 from polars.testing import assert_frame_equal
 
 from app.services import kline_sync
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path, monkeypatch):
+    """把 cwd 切到临时目录, 防止 mock 落盘污染仓库。
+
+    本文件多处用裸 MagicMock 当 repo (未设 store.data_dir), 而
+    os.fspath(MagicMock) 返回的是 'MagicMock/mock.app.state.repo.store.data_dir/<id>'
+    这种**相对路径**; 分钟K落盘 (kline_sync._write_minute_partition) 据此建目录,
+    就会把 part.parquet 写进 backend/MagicMock/... (曾被误提交进版本库)。
+    """
+    monkeypatch.chdir(tmp_path)
 
 
 # ---------- 辅助 ----------
