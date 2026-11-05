@@ -191,6 +191,50 @@ def current_attribution() -> dict:
     }
 
 
+# ── AI 调用审计日志 ────────────────────────────────────────────────────────
+# 排查「token 到底被谁消耗」时, httpx 的访问日志只有 URL: 分不清是哪个档案、
+# 哪种调用 (报告/助手/研判/连通性探测), 更看不到 prompt 规模。这里在每次真实
+# 出站调用前后各留一行 [AI-AUDIT], 统一前缀便于 grep 与后续做用量台账。
+# 铁律: 只记长度与归属, **绝不记 prompt/响应正文** (隐私, 见
+# tests/test_assistant_codex.py 对 "private prompt" 不得入日志的锁定),
+# 也绝不记 API Key。
+def _log_ai_request(
+    kind: str,
+    *,
+    model: str,
+    base_url: str,
+    messages: Sequence[Message],
+) -> None:
+    """出站 LLM 调用前留痕: 档案归属 + 目标网关域名 + prompt 规模。"""
+    attr = current_attribution()
+    host = urlsplit(base_url or "").hostname or "-"
+    prompt_chars = sum(len(str(m.get("content") or "")) for m in messages)
+    logger.info(
+        "[AI-AUDIT] %s model=%s profile=%s provider=%s host=%s prompt_chars=%d msgs=%d",
+        kind,
+        model or "-",
+        attr.get("profile_id") or "-",
+        attr.get("provider") or "-",
+        host,
+        prompt_chars,
+        len(messages),
+    )
+
+
+def _log_ai_usage(kind: str, *, model: str, usage: object) -> None:
+    """调用返回后记上游回报的 token 用量; 无 usage 字段 (如流式) 则跳过。"""
+    if usage is None:
+        return
+    logger.info(
+        "[AI-AUDIT] %s done model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+        kind,
+        model or "-",
+        getattr(usage, "prompt_tokens", "-"),
+        getattr(usage, "completion_tokens", "-"),
+        getattr(usage, "total_tokens", "-"),
+    )
+
+
 # ── P1-15 第三批: 密钥健康记录器 ──────────────────────────────────────────
 # 401/403 鉴权失败不再只把错误抛回调用方: 同时留 ERROR 日志 + 内存记录,
 # 设置页"红横幅"据此提示最近的密钥问题 (连通性测试成功后清除对应记录)。
@@ -779,11 +823,11 @@ async def _run_openai_message_once(
 
     client = _openai_client(ai_key, timeout)
     model = current_ai_model()
+    base_url = secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)
+    _log_ai_request("chat", model=model, base_url=base_url, messages=messages)
     req_messages = (
-        prepare_tool_messages(
-            messages, model=model,
-            base_url=secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
-        ) if tools else list(messages)
+        prepare_tool_messages(messages, model=model, base_url=base_url)
+        if tools else list(messages)
     )
     kwargs = _openai_kwargs(
         temperature=temperature,
@@ -807,6 +851,7 @@ async def _run_openai_message_once(
             if _is_openai_transport_error(exc):
                 raise RuntimeError(_format_openai_error(exc)) from exc
             raise
+    _log_ai_usage("chat", model=model, usage=getattr(resp, "usage", None))
     if not resp.choices:
         return None
     return resp.choices[0].message
@@ -827,6 +872,7 @@ async def _stream_openai(
     client = _openai_client(ai_key, timeout)
     model = current_ai_model()
     base_url = secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)
+    _log_ai_request("stream", model=model, base_url=base_url, messages=messages)
     req_messages = list(messages)
 
     kwargs = _openai_kwargs(
@@ -987,6 +1033,8 @@ async def probe_ai_config(
         default_headers={"User-Agent": user_agent},
     )
     prompt = [{"role": "user", "content": "Reply exactly: OK"}]
+    # 探测也烧 token, 同样留痕; model/base_url 用表单草稿值 (可能与激活档案不同)。
+    _log_ai_request("probe", model=model, base_url=base_url, messages=prompt)
     if protocol == RESPONSES_PROTOCOL:
         resp = await client.responses.create(model=model, input=prompt)
         return str(getattr(resp, "output_text", "") or "")
@@ -1287,6 +1335,13 @@ async def _run_codex_cli(
     model_override: str | None = None,
     output_schema: dict | None = None,
 ) -> str:
+    # Codex CLI 走本地子进程 (host 记 "-"), 但同样消耗额度, 一并留痕。
+    _log_ai_request(
+        "codex",
+        model=model_override or current_codex_model(),
+        base_url="",
+        messages=messages,
+    )
     prompt = _codex_prompt(messages, max_tokens=max_tokens)
     _sweep_stale_codex_run_dirs()
     run_path = Path(tempfile.mkdtemp(prefix="tickflow-codex-run-"))
