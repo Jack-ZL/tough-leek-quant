@@ -22,8 +22,8 @@ export function ExtDataApiPanel({ config, copied, setCopied }: {
   }
   const exampleJson = JSON.stringify(exampleBody, null, 2)
   const curlCmd = `curl -X POST http://localhost:${window.location.port || '3018'}/api/ext-data/${config.id}/ingest \\
-  -H 'Content-Type: application/json' \\
-  -d '${JSON.stringify(exampleBody)}'`
+    -H 'Content-Type: application/json' \\
+    -d '${JSON.stringify(exampleBody)}'`
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -31,7 +31,6 @@ export function ExtDataApiPanel({ config, copied, setCopied }: {
       setTimeout(() => setCopied(false), 2000)
     })
   }
-
   return (
     <div className="space-y-2.5">
       <div>
