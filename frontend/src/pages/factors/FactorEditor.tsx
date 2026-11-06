@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, CircleAlert, CircleCheck, FlaskConical, PenLine, Play, Save, ShieldQuestion } from 'lucide-react'
 import { toast } from '@/components/Toast'
-import { api, type FactorTrialResponse, type FactorValidateResponse } from '@/lib/api'
+import { api, type FactorLang, type FactorTrialResponse, type FactorValidateResponse } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { TdxPanel } from './TdxPanel'
 
 const INPUT_CLS = 'w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none'
 const CHIP_CLS = 'shrink-0 rounded-btn border border-border bg-base/60 px-1.5 py-0.5 font-mono text-[10px] text-secondary transition-colors hover:border-accent/40 hover:text-accent cursor-pointer'
@@ -26,14 +27,50 @@ const TEMPLATES: { label: string; formula: string; note: string }[] = [
   { label: '换手稳定', formula: 'rank(-ts_std(turnover_rate, 20))', note: '换手率波动最低 (筹码稳定)' },
 ]
 
-/** 后端 dsl.OPERATORS 的全部 25 个算子, 按家族分组; name=chip 名, sig=完整签名, desc=中文说明。
- *  chips 面板负责点击插入, 速查表负责阅读 — 同一份数据两个视图。 */
+/** 三档公式语言 (P1-17): 对应后端 /api/factors/validate 的 lang 参数, 三档产物同形。
+ *  同一段文本在不同档位下语义不同 (`MA(C,5)` 在 DSL 档是未定义算子), 所以切档必须
+ *  清掉上一档的校验/试算结果 —— 把旧上下文的结果当当前结果是误导。 */
+const LANGS: { value: FactorLang; label: string; sample: string; placeholder: string; hint: string }[] = [
+  {
+    value: 'dsl',
+    label: 'DSL 公式',
+    sample: DEFAULT_FORMULA,
+    placeholder: '例如: rank(-ts_sum(change_pct, 5))',
+    hint: '受限公式语言: 算子白名单 + 窗口纪律, 一切可静态分析。',
+  },
+  {
+    value: 'tdx',
+    label: '通达信',
+    sample: 'DIF:=EMA(C,12)-EMA(C,26);\nDEA:=EMA(DIF,9);\nMACD柱:(DIF-DEA)*2;',
+    placeholder: '例如: MA(C,5)>REF(MA(C,5),1)  也可直接粘贴整段通达信公式',
+    hint: '粘贴通达信/同花顺公式, 后端翻译成等价 DSL 再计算; 未来函数一律拒绝。存盘保存的是你写的原文。',
+  },
+  {
+    value: 'python',
+    label: 'Python',
+    sample: 'ctx.col("close") / ctx.col("close").rolling_mean(window_size=20).over("symbol") - 1',
+    placeholder: '例如: ctx.col("close").rolling_mean(window_size=20).over("symbol")',
+    hint: 'T2 表达式级 Python: 只能返回 Polars 表达式, 可用名字仅 ctx / pl, 禁 import、def、lambda、推导式。',
+  },
+]
+
+/** 通达信档的标准列名 (后端 COLUMN_ALIASES 的反向); 其余列名原样透传给 DSL, 同样可用 */
+const TDX_COLUMN_ALIAS: Record<string, string> = {
+  close: 'CLOSE', open: 'OPEN', high: 'HIGH', low: 'LOW', volume: 'VOL', amount: 'AMOUNT',
+}
+
+/** 后端 dsl.OPERATORS 的全部 29 个算子, 按家族分组; name=chip 名, sig=完整签名, desc=中文说明。
+ *  chips 面板负责点击插入, 速查表负责阅读 — 同一份数据两个视图。
+ *  P1-17 第 4 批补齐 ts_ema/ts_sma/ts_barslast/ts_barssince (第 2 批为通达信翻译加的),
+ *  此前前端少 4 个 → 后端能编译的算子在编辑器里点不出来, 只能靠手打。 */
 const OPERATOR_GROUPS: { label: string; ops: { name: string; sig: string; desc: string }[] }[] = [
   {
     label: '时序', ops: [
       { name: 'ts_mean', sig: 'ts_mean(x,n)', desc: '滚动均值 · n∈[2,512]' },
       { name: 'ts_sum', sig: 'ts_sum(x,n)', desc: '滚动求和 · n∈[2,512]' },
       { name: 'ts_std', sig: 'ts_std(x,n)', desc: '滚动标准差 · n∈[2,512]' },
+      { name: 'ts_ema', sig: 'ts_ema(x,n)', desc: '指数加权均值 · α=2/(n+1) · 即通达信 EMA' },
+      { name: 'ts_sma', sig: 'ts_sma(x,n,m)', desc: '通达信 SMA 递归平滑 · α=m/n · 1≤m≤n' },
       { name: 'ts_max', sig: 'ts_max(x,n)', desc: '滚动最大值 · n∈[2,512]' },
       { name: 'ts_min', sig: 'ts_min(x,n)', desc: '滚动最小值 · n∈[2,512]' },
       { name: 'ts_delay', sig: 'ts_delay(x,n)', desc: 'n 期前的值 · n≤512' },
@@ -43,6 +80,8 @@ const OPERATOR_GROUPS: { label: string; ops: { name: string; sig: string; desc: 
       { name: 'ts_corr', sig: 'ts_corr(x,y,n)', desc: '滚动相关系数' },
       { name: 'ts_cov', sig: 'ts_cov(x,y,n)', desc: '滚动协方差' },
       { name: 'ts_quantile', sig: 'ts_quantile(x,n,q)', desc: '滚动分位 · q∈(0,1)' },
+      { name: 'ts_barslast', sig: 'ts_barslast(c)', desc: '上次条件成立至今的 bar 数' },
+      { name: 'ts_barssince', sig: 'ts_barssince(c)', desc: '首次条件成立至今的 bar 数' },
       { name: 'decay_linear', sig: 'decay_linear(x,n)', desc: '线性衰减加权 · 近端权重大' },
     ],
   },
@@ -84,6 +123,7 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [formula, setFormula] = useState(DEFAULT_FORMULA)
+  const [lang, setLang] = useState<FactorLang>('dsl')
   const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
   const [validation, setValidation] = useState<FactorValidateResponse | null>(null)
   const [trial, setTrial] = useState<FactorTrialResponse | null>(null)
@@ -96,6 +136,7 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
   const [savedId, setSavedId] = useState('')
   const [savedVersion, setSavedVersion] = useState<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const activeLang = LANGS.find(item => item.value === lang) ?? LANGS[0]
 
   const library = useQuery({
     queryKey: QK.factorLibrary('all'),
@@ -124,6 +165,8 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
       version: item.version,
     })
     setFormula(item.formula)
+    // 语言档位跟着因子走: 同一段文本在 dsl/tdx 下语义不同, 恢复错了会静默错译
+    setLang(item.lang ?? 'dsl')
     setSaveLabel(item.label)
     setSaveGroup(item.group)
     setSaveId(item.id)
@@ -143,11 +186,11 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
   }, [editId, customFactors.length])
 
   const validate = useMutation({
-    mutationFn: () => api.factorValidate(formula),
+    mutationFn: () => api.factorValidate(formula, lang),
     onSuccess: data => setValidation(data),
   })
   const runTrial = useMutation({
-    mutationFn: () => api.factorTrial({ formula, asset_type: assetType, days: 40 }),
+    mutationFn: () => api.factorTrial({ formula, asset_type: assetType, days: 40, lang }),
     onSuccess: data => setTrial(data),
   })
   const save = useMutation({
@@ -158,6 +201,7 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
         formula,
         description: saveDescription.trim(),
         direction,
+        lang,
       }
       return editing
         ? api.factorCustomUpdate(editing.id, payload)
@@ -181,6 +225,8 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
   }
   const canTrial = validation?.ok === true && !runTrial.isPending
   const formulaDirty = editing != null && editing.formula !== formula
+  // 模板与「我的因子」都分语言: 把 DSL 模板塞进通达信档只会得到一条报错公式
+  const langFactors = customFactors.filter(item => (item.lang ?? 'dsl') === lang)
 
   // 点击错误 → 聚焦并选中出错位置附近的片段
   const locateError = (offset: number | undefined) => {
@@ -214,12 +260,33 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
 
   // 模板/我的因子整体替换公式; 非初始内容时先确认, 防误触丢失半成品
   const applyTemplate = (next: string) => {
-    const untouched = !editing && (formula === DEFAULT_FORMULA || formula.trim() === '')
+    const untouched = !editing && (formula === activeLang.sample || formula.trim() === '')
     if (!untouched && !window.confirm('当前公式将被整体替换, 继续?')) return
     setFormula(next)
     setValidation(null)
     setTrial(null)
     setSavedId('')
+  }
+
+  // 切语言档位: 公式内容尽量保留 (那是用户写的东西), 但上一档的校验/试算/保存结果一律作废
+  const switchLang = (next: FactorLang) => {
+    if (next === lang) return
+    const target = LANGS.find(item => item.value === next) ?? LANGS[0]
+    // 还是本档样例 (或空) 时跟着换样例, 否则切过去就是一条必然报错的公式
+    const untouched = !editing && (formula.trim() === '' || formula === activeLang.sample || formula === DEFAULT_FORMULA)
+    if (untouched) setFormula(target.sample)
+    setLang(next)
+    setValidation(null)
+    setTrial(null)
+    setSavedId('')
+    setSavedVersion(null)
+  }
+
+  // 字段 chip 的插入文本随档位变: python 要 ctx.col(), 通达信用标准列名 (其余列名原样透传给 DSL)
+  const fieldSnippet = (columnId: string) => {
+    if (lang === 'python') return `ctx.col("${columnId}")`
+    if (lang === 'tdx') return TDX_COLUMN_ALIAS[columnId] ?? columnId
+    return columnId
   }
 
   return (
@@ -255,48 +322,80 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
 
         <div>
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-            <label className="shrink-0 text-xs font-medium text-secondary">公式 (DSL)</label>
-            <select
-              className="h-7 shrink-0 rounded-input border border-border bg-surface px-1.5 text-[10px] text-secondary"
-              onChange={event => {
-                const value = event.target.value
-                if (!value) return
-                const mine = value.startsWith('my:') ? customFactors.find(f => f.id === value.slice(3)) : undefined
-                const template = TEMPLATES.find(item => item.label === value)
-                const next = mine?.formula ?? template?.formula
-                if (next != null) applyTemplate(next)
-                event.target.value = ''
-              }}
-              aria-label="从模板开始"
+            {/* 语言档位 (P1-17): 决定后端用哪套编译器; 切档会作废上一档的校验/试算结果 */}
+            <div
+              className="flex shrink-0 items-center gap-0.5 rounded-btn border border-border bg-base/60 p-0.5"
+              role="group"
+              aria-label="公式语言"
             >
-              <option value="">从模板开始 / 我的因子…</option>
-              <optgroup label="经典模板">
-                {TEMPLATES.map(template => (
-                  <option key={template.label} value={template.label}>{template.label} · {template.note}</option>
-                ))}
-              </optgroup>
-              {customFactors.length > 0 && (
-                <optgroup label={`我的因子 (${customFactors.length})`}>
-                  {customFactors.map(item => (
-                    <option key={item.id} value={`my:${item.id}`}>{item.label} ({item.id})</option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
+              {LANGS.map(item => (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => switchLang(item.value)}
+                  aria-pressed={lang === item.value}
+                  title={item.hint}
+                  className={`h-6 cursor-pointer whitespace-nowrap rounded px-2 text-[10px] font-medium transition-colors ${
+                    lang === item.value ? 'bg-accent text-white' : 'text-secondary hover:text-accent'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {(lang === 'dsl' || langFactors.length > 0) && (
+              <select
+                className="h-7 shrink-0 rounded-input border border-border bg-surface px-1.5 text-[10px] text-secondary"
+                onChange={event => {
+                  const value = event.target.value
+                  if (!value) return
+                  const mine = value.startsWith('my:') ? langFactors.find(f => f.id === value.slice(3)) : undefined
+                  const template = TEMPLATES.find(item => item.label === value)
+                  const next = mine?.formula ?? template?.formula
+                  if (next != null) applyTemplate(next)
+                  event.target.value = ''
+                }}
+                aria-label="从模板开始"
+              >
+                <option value="">从模板开始 / 我的因子…</option>
+                {/* 经典模板全是 DSL 写法; 通达信模板在下方 TdxPanel 里 (来自后端 /tdx/meta) */}
+                {lang === 'dsl' && (
+                  <optgroup label="经典模板">
+                    {TEMPLATES.map(template => (
+                      <option key={template.label} value={template.label}>{template.label} · {template.note}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {langFactors.length > 0 && (
+                  <optgroup label={`我的因子 (${langFactors.length})`}>
+                    {langFactors.map(item => (
+                      <option key={item.id} value={`my:${item.id}`}>{item.label} ({item.id})</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            )}
           </div>
+          <div className="mb-1 text-[10px] leading-relaxed text-muted">{activeLang.hint}</div>
           <textarea
             ref={textareaRef}
             value={formula}
             onChange={event => { setFormula(event.target.value); setValidation(null); setTrial(null); setSavedId('') }}
             spellCheck={false}
-            rows={5}
+            rows={lang === 'tdx' ? 7 : 5}
             className="w-full resize-y rounded-input border border-border bg-base/60 px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus:border-accent focus:outline-none"
-            placeholder="例如: rank(-ts_sum(change_pct, 5))"
+            placeholder={activeLang.placeholder}
+            aria-label={`公式 (${activeLang.label})`}
           />
         </div>
 
+        {/* 通达信档专属: 模板 / 翻译预览 / 函数兼容表 (数据来自后端 /api/factors/tdx/meta) */}
+        {lang === 'tdx' && <TdxPanel dslText={validation?.dsl_text ?? ''} onApplyTemplate={applyTemplate} />}
+
         {/* 算子/字段点选插入: 写公式不用背名字 */}
         <div className="space-y-1.5">
+          {/* Python 档写的是 Polars 表达式, 插 DSL 算子名只会得到语法错误 → 整块不显示 */}
+          {lang !== 'python' && (
           <details
             ref={el => { if (el) el.open = true }}
             className="group rounded-btn border border-border/60 bg-base/40 px-2.5 py-1.5 text-[10px]"
@@ -327,8 +426,12 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
                 </div>
               ))}
             </div>
-            <div className="mt-1.5 text-muted">四则运算 <code className="font-mono text-accent">+ - * /</code> · 除零→空值 · 括号可任意分组</div>
+            <div className="mt-1.5 text-muted">
+              四则运算 <code className="font-mono text-accent">+ - * /</code> · 除零→空值 · 括号可任意分组
+              {lang === 'tdx' && ' · 通达信档也可直接写这些 DSL 算子名 (原样透传), 通达信函数名见上方兼容表'}
+            </div>
           </details>
+          )}
           <details className="group rounded-btn border border-border/60 bg-base/40 px-2.5 py-1.5 text-[10px]">
             <summary className="flex cursor-pointer select-none items-center gap-1 font-medium text-foreground transition-colors hover:text-accent [&::-webkit-details-marker]:hidden">
               <ChevronRight className="h-3 w-3 shrink-0 text-accent transition-transform group-open:rotate-90" />
@@ -344,11 +447,11 @@ export function FactorEditor({ editId = '' }: { editId?: string }) {
                         key={col.id}
                         type="button"
                         title={`${col.label} — ${col.desc}`}
-                        onClick={() => insertSnippet(col.id)}
+                        onClick={() => insertSnippet(fieldSnippet(col.id))}
                         className={CHIP_CLS}
                       >
                         <span className="font-sans text-secondary">{col.label}</span>
-                        <span className="ml-1 font-mono text-muted/70">{col.id}</span>
+                        <span className="ml-1 font-mono text-muted/70">{fieldSnippet(col.id)}</span>
                       </button>
                     ))}
                   </div>

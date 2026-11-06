@@ -16,7 +16,7 @@ from app.factors.py_expr import compile_python_expression
 from app.factors.registry import all_factors, unregister_factor
 from app.factors.tdx.builtins import compatibility_table
 from app.factors.tdx.templates import tdx_templates
-from app.factors.tdx.translate import compile_tdx_formula
+from app.factors.tdx.translate import compile_tdx_formula, translate_tdx
 from app.market_time import cn_today
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
@@ -56,6 +56,9 @@ def list_factors(request: Request, asset_type: str | None = Query(default=None, 
                 "status": status_by_id.get(spec.id),
                 "scale_free": spec.scale_free,
                 "dependencies": sorted(spec.dependencies),
+                # P1-17 第 4 批: 编辑器要靠它恢复语言档位 — 同一段文本在 dsl/tdx
+                # 下语义不同, 少了这个字段编辑通达信因子会被静默当成 DSL 校验。
+                "lang": spec.lang,
             }
             for spec in specs
         ]
@@ -76,7 +79,7 @@ def _compile_by_lang(formula: str, lang: str):
     return compile_formula(formula)
 
 
-def _compiled_payload(compiled) -> dict:
+def _compiled_payload(compiled, *, dsl_text: str = "") -> dict:
     return {
         "ok": compiled.ok,
         "errors": [error.to_dict() for error in compiled.errors],
@@ -84,6 +87,9 @@ def _compiled_payload(compiled) -> dict:
         "referenced_factors": sorted(compiled.referenced_factors),
         "warmup_bars": compiled.warmup_bars,
         "cross_sectional": compiled.cross_sectional,
+        # P1-17 第 4 批: 通达信档的「翻译预览」— 让用户看见自己的公式被译成了什么,
+        # 而不是黑盒。非 tdx 档恒为空串 (原文本身就是可执行文本, 无需预览)。
+        "dsl_text": dsl_text,
     }
 
 
@@ -92,8 +98,13 @@ def validate_formula(req: FormulaValidateRequest) -> dict:
     """公式校验: 语法/语义/窗口纪律/依赖推导, 编译期 fail-closed。
 
     lang=dsl → 受限公式; lang=python → T2 表达式级 Python (P3);
-    lang=tdx → 通达信公式 (P1-17, 翻译成 DSL 后编译)。"""
-    return _compiled_payload(_compile_by_lang(req.formula, req.lang))
+    lang=tdx → 通达信公式 (P1-17, 翻译成 DSL 后编译), 响应附带 dsl_text 翻译预览。"""
+    compiled = _compile_by_lang(req.formula, req.lang)
+    # 这里重新 translate 一次而不是从 compiled 取: CompiledFormula.formula_text 对
+    # tdx 档刻意保留用户原文 (报错偏移要指回原文), 生成的 DSL 不在其中。
+    # 不看 compiled.ok — 翻译成功但 DSL 编译失败时, 预览正是排错最需要的东西。
+    dsl_text = translate_tdx(req.formula).dsl_text if req.lang == "tdx" else ""
+    return _compiled_payload(compiled, dsl_text=dsl_text)
 
 
 @router.get("/tdx/meta")

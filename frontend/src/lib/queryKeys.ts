@@ -86,6 +86,8 @@ export const QK = {
 	backtestCandidates: ['backtest-candidates'] as const,
 	factorColumns: ['backtest-factor-columns'] as const,
 	factorLibrary: (assetType: string) => ['factors-library', assetType] as const,
+	/** 通达信兼容表/模板: 无入参, 单键即可 (P1-17 第 4 批) */
+	factorTdxMeta: ['factors-tdx-meta'] as const,
 	/** 统一定义目录 (信号+因子, P4) — 定义选择器数据源 */
 	definitions: ['definitions'] as const,
 	resourceCatalog: ['resource-catalog'] as const,
