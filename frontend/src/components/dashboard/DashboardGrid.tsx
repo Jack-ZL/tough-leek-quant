@@ -24,16 +24,17 @@ import { getPageScale } from '@/lib/pageZoom'
  *  界面缩放挂在 #root (见 lib/pageZoom.ts), dashboard 网格在缩放层内, 不补偿则
  *  缩放≠100% 时拖拽跟手速度偏差 1/scale。 */
 function scaledStrategy(scale: number) {
-  return {
-    type: 'transform' as const,
-    scale,
-    calcStyle: (pos: Parameters<typeof setTransform>[0]) => setTransform(pos),
-    calcDragPosition: (clientX: number, clientY: number, offsetX: number, offsetY: number) => ({
-      left: (clientX - offsetX) / scale,
-      top: (clientY - offsetY) / scale,
-    }),
-  }
+	return {
+		type: 'transform' as const,
+		scale,
+		calcStyle: (pos: Parameters<typeof setTransform>[0]) => setTransform(pos),
+		calcDragPosition: (clientX: number, clientY: number, offsetX: number, offsetY: number) => ({
+			left: (clientX - offsetX) / scale,
+			top: (clientY - offsetY) / scale,
+		}),
+	}
 }
+
 import 'react-grid-layout/css/styles.css'
 import './grid.css'
 import { X } from 'lucide-react'
@@ -43,120 +44,126 @@ import { DEFAULT_LAYOUT, isKnownWidgetType, minSizeOf, widgetDef } from './regis
 import type { WidgetCtx } from './registry'
 
 export function normalizeDashboardLayout(blob: unknown): DashboardItem[] {
-  return normalizeLayout(blob, DEFAULT_LAYOUT, isKnownWidgetType, minSizeOf)
+	return normalizeLayout(blob, DEFAULT_LAYOUT, isKnownWidgetType, minSizeOf)
 }
 
 export interface DashboardGridProps {
-  ctx: WidgetCtx
-  items: DashboardItem[]
-  onItemsChange: (items: DashboardItem[]) => void
-  /** 编辑态由 Dashboard 页头部控制组持有, 受控传入 */
-  editing: boolean
+	ctx: WidgetCtx
+	items: DashboardItem[]
+	onItemsChange: (items: DashboardItem[]) => void
+	/** 编辑态由 Dashboard 页头部控制组持有, 受控传入 */
+	editing: boolean
 }
 
 export function DashboardGrid({ ctx, items, onItemsChange, editing }: DashboardGridProps) {
-  const { width, containerRef, mounted } = useContainerWidth({ measureBeforeMount: true })
+	const { width, containerRef, mounted } = useContainerWidth({ measureBeforeMount: true })
 
-  const rglLayout = useMemo(
-    () => items.map(it => {
-      const min = minSizeOf(it.t)
-      return { i: it.i, x: it.x, y: it.y, w: it.w, h: it.h, minW: min.w, minH: min.h }
-    }),
-    [items],
-  )
+	const rglLayout = useMemo(
+		() => items.map(it => {
+			const min = minSizeOf(it.t)
+			return { i: it.i, x: it.x, y: it.y, w: it.w, h: it.h, minW: min.w, minH: min.h }
+		}),
+		[items],
+	)
 
-  const handleLayoutChange = useCallback((layout: Layout) => {
-    // RGL 回传全量布局(含 compact 后坐标); props 不在 layout 里, 从当前 items 续接。
-    // compactLayout 兜底消重叠后再写回持久化(与 normalizeLayout 加载侧同一防线),
-    // 确保存进后端的坐标永不互相压盖。
-    const map = new Map(layout.map(l => [l.i, l]))
-    const next = items.map(it => {
-      const l = map.get(it.i)
-      return l ? { ...it, x: l.x, y: l.y, w: l.w, h: l.h } : it
-    })
-    onItemsChange(compactLayout(next))
-  }, [items, onItemsChange])
+	const handleLayoutChange = useCallback((layout: Layout) => {
+		// RGL 回传全量布局(含 compact 后坐标); props 不在 layout 里, 从当前 items 续接。
+		// compactLayout 兜底消重叠后再写回持久化(与 normalizeLayout 加载侧同一防线),
+		// 确保存进后端的坐标永不互相压盖。
+		const map = new Map(layout.map(l => [l.i, l]))
+		const next = items.map(it => {
+			const l = map.get(it.i)
+			return l ? { ...it, x: l.x, y: l.y, w: l.w, h: l.h } : it
+		})
+		onItemsChange(compactLayout(next))
+	}, [items, onItemsChange])
 
-  const removeItem = useCallback((id: string) => {
-    onItemsChange(items.filter(it => it.i !== id))
-  }, [items, onItemsChange])
+	const removeItem = useCallback((id: string) => {
+		onItemsChange(items.filter(it => it.i !== id))
+	}, [items, onItemsChange])
 
-  const renderWidget = (it: DashboardItem): ReactNode => {
-    const def = widgetDef(it.t)
-    return def ? def.render(ctx, it) : null
-  }
+	const renderWidget = (it: DashboardItem): ReactNode => {
+		const def = widgetDef(it.t)
+		return def ? def.render(ctx, it) : null
+	}
 
-  const isMobile = mounted && width < 768
+	const isMobile = mounted && width < 768
 
-  return (
-    <div ref={containerRef as unknown as React.RefObject<HTMLDivElement>} className={cn('dash-grid relative', editing && 'dash-grid-editing')}>
-      {/* 编辑态操作提示 (入口与控制组在页面头部「重载」右侧) */}
-      {editing && (
-        <div className="mb-1.5 text-[11px] text-muted">
-          拖动组件任意位置移动 · 悬停卡片四边/四角调宽高 · 自动吸附网格 · 改动自动保存
-        </div>
-      )}
+	return (
+		<div ref={containerRef as unknown as React.RefObject<HTMLDivElement>} className={cn('dash-grid relative', editing && 'dash-grid-editing')}>
+			{/* 编辑态操作提示 (入口与控制组在页面头部「重载」右侧) */}
+			{editing && (
+				<div className="mb-1.5 text-[11px] text-muted">
+					拖动组件任意位置移动 · 悬停卡片四边/四角调宽高 · 自动吸附网格 · 改动自动保存
+				</div>
+			)}
 
-      {!mounted ? (
-        <div className="h-32" />
-      ) : isMobile ? (
-        /* 移动端: 不挂网格, 纵排 */
-        <div className="space-y-1.5">
-          {items.map(it => (
-            <div key={it.i} className="min-h-16">{renderWidget(it)}</div>
-          ))}
-        </div>
-      ) : (
-        <GridLayout
-          width={width}
-          layout={rglLayout}
-          positionStrategy={scaledStrategy(getPageScale())}
-          gridConfig={{ cols: GRID_COLS, rowHeight: GRID_ROW_HEIGHT, margin: [GRID_MARGIN, GRID_MARGIN], containerPadding: null, maxRows: Infinity }}
-          dragConfig={{
-            enabled: editing,
-            // 整卡可拖(不限把手); ✕ 移除钮不触发拖拽 — RGL 自动并入 .react-resizable-handle
-            cancel: '.dash-widget-remove',
-            threshold: 3,
-          }}
-          resizeConfig={{ enabled: editing, handles: ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'] }}
-          onLayoutChange={editing ? handleLayoutChange : undefined}
-        >
-          {items.map(it => {
-            const def = widgetDef(it.t)
-            const Icon = def?.icon
-            return (
-              <div
-                key={it.i}
-                className={cn(
-                  // overflow-hidden 根除内容溢出压盖相邻组件(卡片内容自然高度可能大于格子);
-                  editing && 'cursor-grab select-none rounded-card ring-1 ring-accent/30 hover:ring-accent/60 active:cursor-grabbing',
-                )}
-                style={{ overflow: 'hidden' }}
-              >
-                {editing && (
-                  <div className="absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-between rounded-t-card bg-surface/95 pl-2 pr-5 text-[10px] text-secondary shadow-sm">
-                    <span className="flex min-w-0 items-center gap-1">
-                      {Icon && <Icon className="h-3 w-3 shrink-0 text-accent" />}
-                      <span className="truncate">{def?.label ?? it.t}{it.t === 'ext-link' && it.p?.title ? ` · ${it.p.title}` : ''}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeItem(it.i)}
-                      className="dash-widget-remove flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted hover:bg-danger/15 hover:text-danger"
-                      title="移除组件"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                )}
-                {/* 编辑态阻断组件内部交互(点击/悬停/iframe), 拖拽由外层网格项接管;
-                    卡片撑满格子(h-full), 内容超出格子时在本组件边界内裁切 */}
-                <div className={cn('h-full [&>div]:h-full', editing && 'pointer-events-none')}>{renderWidget(it)}</div>
-              </div>
-            )
-          })}
-        </GridLayout>
-      )}
-    </div>
-  )
+			{!mounted ? (
+				<div className="h-32" />
+			) : isMobile ? (
+				/* 移动端: 不挂网格, 纵排 */
+				<div className="space-y-1.5">
+					{items.map(it => (
+						<div key={it.i} className="min-h-16">{renderWidget(it)}</div>
+					))}
+				</div>
+			) : (
+				<GridLayout
+					width={width}
+					layout={rglLayout}
+					positionStrategy={scaledStrategy(getPageScale())}
+					gridConfig={{
+						cols: GRID_COLS,
+						rowHeight: GRID_ROW_HEIGHT,
+						margin: [GRID_MARGIN, GRID_MARGIN],
+						containerPadding: null,
+						maxRows: Infinity
+					}}
+					dragConfig={{
+						enabled: editing,
+						// 整卡可拖(不限把手); ✕ 移除钮不触发拖拽 — RGL 自动并入 .react-resizable-handle
+						cancel: '.dash-widget-remove',
+						threshold: 3,
+					}}
+					resizeConfig={{ enabled: editing, handles: ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw'] }}
+					onLayoutChange={editing ? handleLayoutChange : undefined}
+				>
+					{items.map(it => {
+						const def = widgetDef(it.t)
+						const Icon = def?.icon
+						return (
+							<div
+								key={it.i}
+								className={cn(
+									// overflow-hidden 根除内容溢出压盖相邻组件(卡片内容自然高度可能大于格子);
+									editing && 'cursor-grab select-none rounded-card ring-1 ring-accent/30 hover:ring-accent/60 active:cursor-grabbing',
+								)}
+								style={{ overflow: 'hidden' }}
+							>
+								{editing && (
+									<div className="absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-between rounded-t-card bg-surface/95 pl-2 pr-5 text-[10px] text-secondary shadow-sm">
+										<span className="flex min-w-0 items-center gap-1">
+											{Icon && <Icon className="h-3 w-3 shrink-0 text-accent" />}
+											<span className="truncate">{def?.label ?? it.t}{it.t === 'ext-link' && it.p?.title ? ` · ${it.p.title}` : ''}</span>
+										</span>
+										<button
+											type="button"
+											onClick={() => removeItem(it.i)}
+											className="dash-widget-remove flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted hover:bg-danger/15 hover:text-danger"
+											title="移除组件"
+										>
+											<X className="h-3 w-3" />
+										</button>
+									</div>
+								)}
+								{/* 编辑态阻断组件内部交互(点击/悬停/iframe), 拖拽由外层网格项接管;
+			           卡片撑满格子(h-full), 内容超出格子时在本组件边界内裁切 */}
+								<div className={cn('h-full [&>div]:h-full', editing && 'pointer-events-none')}>{renderWidget(it)}</div>
+							</div>
+						)
+					})}
+				</GridLayout>
+			)}
+		</div>
+	)
 }
