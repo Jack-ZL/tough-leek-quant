@@ -492,3 +492,104 @@ def test_capability_gate_label_marks_complement(monkeypatch):
     usable, label = capability_gate("realtime", tickflow_tier="free")
     assert usable is True
     assert "静态互补" in label and "腾讯" in label
+
+
+# ---------------------------------------------------------------------------
+# 单标的复权因子路由 (daily_bootstrap.ensure_history 的取数点)
+# ---------------------------------------------------------------------------
+
+def _adj_capset_with_complement(provider_name: str) -> CapabilitySet:
+    """模拟免费档: TickFlow 原生无 ADJ_FACTOR, 由静态互补源补授。"""
+    capset = CapabilitySet()
+    capset.grant_complement(Cap.ADJ_FACTOR, provider_name)
+    return capset
+
+
+def _patch_adj_sources(monkeypatch, has_dataset, provider=None) -> None:
+    """同时打桩 loader 内部与 custom 包出口的 provider_has_dataset。
+
+    resolve_with_complement 在 loader 模块内引用全局 provider_has_dataset,
+    而 kline_sync 经 custom 包出口调用, 两处是不同模块对象, 必须一起替换。
+    """
+    monkeypatch.setattr(loader_mod, "provider_has_dataset", has_dataset)
+    monkeypatch.setattr(custom_sources, "provider_has_dataset", has_dataset)
+    if provider is not None:
+        monkeypatch.setattr(custom_sources, "get_provider", lambda name: provider)
+
+
+def test_fetch_adj_factor_single_routes_to_complement(monkeypatch):
+    """互补授权下走免费内置源, 不得误调 TickFlow SDK。"""
+    from app.services import kline_sync, preferences
+
+    frame = pl.DataFrame({"symbol": ["600519.SH"], "trade_date": ["2024-05-10"],
+                          "ex_factor": [1.1]})
+    provider = SimpleNamespace(get_adj_factors=MagicMock(return_value=frame))
+    get_client = MagicMock(side_effect=AssertionError("互补授权下不应调用 TickFlow SDK"))
+
+    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
+    _patch_adj_sources(
+        monkeypatch,
+        lambda name, ds: name == "eastmoney" and ds == "adj_factor",
+        provider,
+    )
+    monkeypatch.setattr(kline_sync, "get_client", get_client)
+
+    capset = _adj_capset_with_complement("eastmoney")
+    result = kline_sync.fetch_adj_factor_single("600519.SH", capset=capset, strict=True)
+
+    assert result.height == 1
+    provider.get_adj_factors.assert_called_once()
+    get_client.assert_not_called()
+
+
+def test_fetch_adj_factor_single_complement_etf_empty_no_sdk(monkeypatch):
+    """互补源对 ETF 空返回时直接采信, 不回落 TickFlow (原生本就无该能力)。"""
+    from app.services import kline_sync, preferences
+
+    provider = SimpleNamespace(get_adj_factors=MagicMock(return_value=pl.DataFrame()))
+    get_client = MagicMock(side_effect=AssertionError("互补授权下不应调用 TickFlow SDK"))
+
+    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
+    _patch_adj_sources(
+        monkeypatch,
+        lambda name, ds: name == "eastmoney" and ds == "adj_factor",
+        provider,
+    )
+    monkeypatch.setattr(kline_sync, "get_client", get_client)
+
+    capset = _adj_capset_with_complement("eastmoney")
+    result = kline_sync.fetch_adj_factor_single(
+        "510300.SH", asset_type="etf", capset=capset)
+
+    assert result.is_empty()
+    get_client.assert_not_called()
+
+
+def test_fetch_adj_factor_single_native_tickflow_still_uses_sdk(monkeypatch):
+    """无互补源 (TickFlow 原生具备能力) 时维持原有 SDK 路径。"""
+    from app.services import kline_sync, preferences
+
+    tf = SimpleNamespace(klines=SimpleNamespace(ex_factors=MagicMock(return_value=None)))
+    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
+    _patch_adj_sources(monkeypatch, lambda name, ds: False)
+    monkeypatch.setattr(kline_sync, "get_client", lambda: tf)
+
+    capset = CapabilitySet({Cap.ADJ_FACTOR: CapabilityLimits()})
+    result = kline_sync.fetch_adj_factor_single("600519.SH", capset=capset)
+
+    assert result.is_empty()
+    tf.klines.ex_factors.assert_called_once()
+
+
+def test_fetch_adj_factor_single_tolerates_capset_stub(monkeypatch):
+    """capset 替身缺 complement_of 时不报错, 退回选定源语义。"""
+    from app.services import kline_sync, preferences
+
+    tf = SimpleNamespace(klines=SimpleNamespace(ex_factors=MagicMock(return_value=None)))
+    monkeypatch.setattr(preferences, "get_adj_factor_provider", lambda: "tickflow")
+    _patch_adj_sources(monkeypatch, lambda name, ds: False)
+    monkeypatch.setattr(kline_sync, "get_client", lambda: tf)
+
+    stub = SimpleNamespace(has=lambda cap: True)
+    assert kline_sync.fetch_adj_factor_single("600519.SH", capset=stub).is_empty()
+    tf.klines.ex_factors.assert_called_once()

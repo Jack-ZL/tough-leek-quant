@@ -11,10 +11,11 @@ from functools import lru_cache
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import anyio
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app.db_safe import is_valid_ext_ident
-from app.indicators.pipeline import compute_enriched, compute_enriched_single
+from app.indicators.pipeline import compute_enriched_single
 from app.market_time import cn_now, cn_today, in_continuous_session
 from app.price_limits import (
     is_no_limit_day,
@@ -529,43 +530,57 @@ def get_daily(
     df = repo.get_daily_asset(asset_type, symbol, start, end)
 
     if df.is_empty():
+        from app.services import daily_bootstrap
+        from app.tickflow.capabilities import CapabilitySet
+
+        capset = getattr(request.app.state, "capabilities", None) or CapabilitySet()
         try:
-            raw = kline_sync.sync_daily_batch([symbol], count=days + 30)
+            qs = getattr(request.app.state, "quote_service", None)
+            enriched = daily_bootstrap.ensure_history(
+                repo,
+                capset,
+                symbol,
+                asset_type,
+                start,
+                end,
+                on_updated=qs.notify_data_updated if qs else None,
+            )
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
-        if raw.is_empty():
+            from app.services.heavy_job_limiter import HeavyJobLimitTimeoutError
+            from app.services.shared_work import WorkBusyError
+
+            if isinstance(e, (WorkBusyError, HeavyJobLimitTimeoutError)):
+                raise HTTPException(
+                    503, "日K补齐繁忙，请稍后重试", headers={"Retry-After": "2"}
+                ) from e
+            raise HTTPException(
+                status_code=502, detail="日K数据源获取失败，请检查数据源配置或稍后重试"
+            ) from e
+        if enriched.is_empty():
             return _gzip_payload(
                 request,
-                {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": []},
+                {
+                    "symbol": symbol,
+                    "asset_type": asset_type,
+                    "name": stock_name,
+                    "stock_info": stock_info,
+                    "rows": [],
+                },
                 pref_key="daily_batch_compress",
             )
-        # 拉除权因子做前复权 (Starter+ 有权限), 否则空 df → compute_enriched 退回未复权
-        factors = pl.DataFrame()
-        capset = getattr(request.app.state, "capabilities", None)
-        try:
-            from app.tickflow.capabilities import Cap
-
-            if capset and capset.has(Cap.ADJ_FACTOR):
-                # P1-12 layer1: 静态互补 — 能力由免费内置源补授时直接调互补源
-                # (fetch_adj_factor_single 是 TickFlow 专用, 互补授权下会误调 SDK)。
-                complement = capset.complement_of(Cap.ADJ_FACTOR)
-                if complement:
-                    from app.data_providers import custom as custom_sources
-
-                    provider = custom_sources.get_provider(complement)
-                    factors = provider.get_adj_factors(
-                        [symbol], start_time=None, end_time=None, asset_type=asset_type,
-                    )
-                else:
-                    factors = kline_sync.fetch_adj_factor_single(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
-        enriched = compute_enriched(raw, factors=factors)
-        rows = enriched.tail(days).to_dicts()
+        rows = (
+            enriched.filter(
+                (pl.col("symbol") == symbol) & pl.col("date").is_between(start, end),
+            )
+            .sort("date")
+            .to_dicts()
+        )
         # 即使 live 模式也尝试追加实时蜡烛
-        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+        if end >= cn_today():
+            rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
         resp = {
             "symbol": symbol,
+            "asset_type": asset_type,
             "name": stock_name,
             "stock_info": stock_info,
             "rows": rows,
@@ -580,10 +595,12 @@ def get_daily(
     rows = df.to_dicts()
 
     # 追加/覆盖今日实时蜡烛
-    rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+    if end >= cn_today():
+        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
 
     resp = {
         "symbol": symbol,
+        "asset_type": asset_type,
         "name": stock_name,
         "stock_info": stock_info,
         "rows": rows,
@@ -722,6 +739,18 @@ def _latest_live_candle(
     ):
         if key in q and q[key] is not None:
             live_row[key] = q[key]
+    # 当前价变化时同步替换异动判定字段；缺失/无涨跌停时显式清空，不能残留旧标记。
+    for key in (
+        "raw_low",
+        "raw_close",
+        "limit_down_price",
+        "signal_limit_down",
+        "signal_limit_down_recovery",
+        "signal_limit_up",
+        "signal_broken_limit_up",
+        "consecutive_limit_ups",
+    ):
+        live_row[key] = q.get(key)
     return live_row
 
 
@@ -758,6 +787,7 @@ def get_daily_latest(
     row = _latest_live_candle(request, symbol, asset_type, refresh_asset=False)
     return {
         "symbol": symbol,
+        "asset_type": asset_type,
         "row": row,
         "source": "live" if row is not None else "none",
     }
@@ -1044,8 +1074,12 @@ def get_minute_batch(request: Request, body: dict):
         raw_basis = minute_adjust.minute_basis_is_raw(repo.store.data_dir)
         from app.services.minute_shared_pull import pull
 
-        df_live = pull(repo, sym_list, asset_type=asset, start=start, end=session_end,
-                       batch_size=lim.batch, rpm=lim.rpm, raw_basis=raw_basis)
+        qs = getattr(request.app.state, "quote_service", None)
+        df_live = pull(
+            repo, sym_list, asset_type=asset, start=start, end=session_end,
+            batch_size=lim.batch, rpm=lim.rpm, raw_basis=raw_basis,
+            on_updated=qs.notify_data_updated if qs else None,
+        )
         if df_live.is_empty():
             return
         if raw_basis:
@@ -1624,8 +1658,6 @@ async def sync_minute_single(request: Request, body: dict):
     body: { "symbol": "000001.SZ" }
     用于个股分时图"获取数据"按钮: 本地无数据时单独拉取并持久化。
     """
-    import asyncio
-
     from app.services.preferences import get_minute_sync_days
 
     symbol = body.get("symbol", "").strip()
@@ -1644,7 +1676,8 @@ async def sync_minute_single(request: Request, body: dict):
 
     # 指数分钟K无本地存储, 落库会污染股票分钟表 kline_minute;
     # 指数分钟数据走 /api/index/minute 实时读取, 此端点显式拒绝。
-    if repo.resolve_asset_type(symbol) == "index":
+    asset_type = repo.resolve_asset_type(symbol)
+    if asset_type == "index":
         raise HTTPException(
             status_code=400,
             detail="指数分钟K不支持落库同步 (指数分钟数据走 /api/index/minute 实时读取)",
@@ -1654,19 +1687,20 @@ async def sync_minute_single(request: Request, body: dict):
         raise HTTPException(status_code=403, detail="需要 Pro+ 权限")
 
     days = requested_days if requested_days is not None else get_minute_sync_days()
-    loop = asyncio.get_event_loop()
+    from app.services.minute_shared_pull import sync_history
 
-    def _run():
-        return kline_sync.sync_and_persist_minute(
-            [symbol], repo, capset, days=days, force_full_days=True
+    qs = getattr(request.app.state, "quote_service", None)
+    written = await anyio.to_thread.run_sync(
+        lambda: sync_history(
+            repo, capset, symbol, asset_type, days,
+            on_updated=qs.notify_data_updated if qs else None,
         )
-
-    written = await loop.run_in_executor(_long_task_executor, _run)
+    )
 
     # 刷新视图
     from app.jobs.daily_pipeline import _refresh_single_view
 
-    _refresh_single_view(repo, "kline_minute")
+    _refresh_single_view(repo, "kline_etf_minute" if asset_type == "etf" else "kline_minute")
 
     return {"status": "ok", "symbol": symbol, "rows": written}
 

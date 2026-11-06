@@ -9,6 +9,7 @@ import { feedReviewEvent } from './reviewStore'
 import { createEnrichedThrottler } from './enrichedInvalidateThrottle'
 import { createRevisionTracker, retryDelay } from './refreshPolicy'
 import type { KlineDailyResponse, StrategyAlertEvent } from './api'
+import { useDataVersions } from './useDataVersions'
 
 // ===== 全局 SSE 连接状态 (模块级 store, 仿 AlertToast.tsx 模式) =====
 // 实时行情 SSE 断开时 UI 无感知 → 会漏掉策略告警。这里暴露连接状态,
@@ -78,14 +79,15 @@ export function useQuoteStream(
 	sseRefreshPages: Record<string, boolean> | undefined,
 	onAlert?: (alerts: StrategyAlertEvent[]) => void,
 ) {
-	const qc = useQueryClient()
-	const esRef = useRef<EventSource | null>(null)
-	const retryRef = useRef<ReturnType<typeof setTimeout>>()
-	const pagesRef = useRef(sseRefreshPages)
-	pagesRef.current = sseRefreshPages
-	// watchlist-enriched 单独节流 5s: SSE 每秒到达, 该前缀整表重拉代价最大
-	const enrichedThrottlerRef = useRef(createEnrichedThrottler())
-	const strategyThrottlerRef = useRef(createEnrichedThrottler(6000))
+  useDataVersions()
+  const qc = useQueryClient()
+  const esRef = useRef<EventSource | null>(null)
+  const retryRef = useRef<ReturnType<typeof setTimeout>>()
+  const pagesRef = useRef(sseRefreshPages)
+  pagesRef.current = sseRefreshPages
+  // watchlist-enriched 单独节流 5s: SSE 每秒到达, 该前缀整表重拉代价最大
+  const enrichedThrottlerRef = useRef(createEnrichedThrottler())
+  const strategyThrottlerRef = useRef(createEnrichedThrottler(6000))
 
 	const handleAlerts = useCallback((alerts: StrategyAlertEvent[]) => {
 		// depth 系统接管通知: 单独处理, 不走 strategy 回调
@@ -151,15 +153,16 @@ export function useQuoteStream(
 			const es = new EventSource('/api/intraday/stream')
 			esRef.current = es
 
-			es.onopen = () => {
-				// 连接成功: 重置退避与 toast 标记
-				failCount = 0
-				toastFired = false
-				_setStatus('connected')
-				// Reconnect may have missed a notification; read snapshots without creating work.
-				invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
-				refreshStrategies()
-			}
+      es.onopen = () => {
+        // 连接成功: 重置退避与 toast 标记
+        failCount = 0
+        toastFired = false
+        _setStatus('connected')
+        // Reconnect may have missed a notification; read snapshots without creating work.
+        invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+        refreshStrategies()
+        void qc.invalidateQueries({ queryKey: QK.dataVersions })
+      }
 
 			// sse-starlette ping 心跳走 SSE comment，不会到达这里
 
@@ -223,12 +226,16 @@ export function useQuoteStream(
 				qc.invalidateQueries({ queryKey: QK.dataStatus })
 			})
 
-			es.addEventListener('depth_updated', () => {
-				// 五档修正完成: 刷新连板梯队 + 看板封单数据。
-				// 不受实时行情开关限制 — 修正轮询独立于行情轮询, 用户开了修正就想看实时封单。
-				qc.invalidateQueries({ queryKey: ['limit-ladder'], refetchType: refetchType() })
-				qc.invalidateQueries({ queryKey: ['overview-market'], refetchType: refetchType() })
-			})
+      es.addEventListener('data_updated', () => {
+        void qc.invalidateQueries({ queryKey: QK.dataVersions })
+      })
+
+      es.addEventListener('depth_updated', () => {
+        // 五档修正完成: 刷新连板梯队 + 看板封单数据。
+        // 不受实时行情开关限制 — 修正轮询独立于行情轮询, 用户开了修正就想看实时封单。
+        qc.invalidateQueries({ queryKey: ['limit-ladder'], refetchType: refetchType() })
+        qc.invalidateQueries({ queryKey: ['overview-market'], refetchType: refetchType() })
+      })
 
 			es.addEventListener('strategy_alert', (e: MessageEvent) => {
 				try {
@@ -277,13 +284,14 @@ export function useQuoteStream(
 			}
 		}
 
-		const onVisibility = () => {
-			if (document.visibilityState === 'hidden') return
-			invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
-			refreshStrategies()
-		}
-		document.addEventListener('visibilitychange', onVisibility)
-		connect()
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') return
+      void qc.invalidateQueries({ queryKey: QK.dataVersions })
+      invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+      refreshStrategies()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    connect()
 
 		return () => {
 			clearTimeout(retryRef.current)
