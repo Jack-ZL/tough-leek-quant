@@ -26,6 +26,7 @@ P0–P3 已全部实现并通过验证（后端 98 项因子相关测试 + 全�
 | --- | --- | --- |
 | 本文（factor-platform-plan.md） | **产品与架构总体方案**：两线架构、导航与页面、交互设计、功能全集、路线图 | 本文 §2–§8 生效后，`factor-system-design.md` §11 的"不新增顶层页面"结论**由本文取代** |
 | `factor-system-design.md` | **后端技术 spec**：FactorSpec schema、DSL 文法与算子表、统计口径（NW/BH-FDR/DSR）、API 契约、缓存键、测试矩阵 | 除 §11 外全部继续有效；本文引用不复制 |
+| `factor-tdx-guide.md` | **面向用户的通达信档说明**：三档语言怎么选、函数兼容表、翻译预览、空值与暖机语义、报错速查 | 用户向口径以该文为准；技术细节仍回溯 `factor-system-design.md` §3.6 |
 
 两文冲突时：产品/前端/导航以本文为准；后端 schema、统计公式、API 字段以旧文为准。
 
