@@ -603,6 +603,7 @@ PORT=3018                      # 服务端口
 | [策略体系](./docs/strategy.md) | 策略体系(全自定义化 + 三种扩展方式 + 文件结构) |
 | [AI 策略迭代](./docs/strategy-iteration.md) | AI 策略迭代协议:台账 / 证据包 / 门槛判定 / 提示词卡片 |
 | [因子与策略挖掘](./docs/mining.md) | 因子与策略挖掘口径、防泄漏、任务隔离和发布边界 |
+| [用通达信公式写因子](./docs/factor-tdx-guide.md) | 因子编辑器三档语言、通达信函数兼容表、翻译预览、空值与暖机语义、报错速查 |
 | [市场环境](./docs/market-phase.md) | 市场情绪周期 6 阶段与概念/行业主线识别的口径与设计 |
 | [策略编写规范](./backend/app/strategy/prompts/strategy-guide.md) | 策略开发完整规范(AI 生成与手写) |
 

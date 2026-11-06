@@ -50,7 +50,8 @@ class FactorSpec:
     null_policy: Literal["keep", "drop_row"] = "keep"
     stability: Stability = "stable"
     tags: tuple[str, ...] = ()
-    # 公式语言: "dsl" (受限公式) | "python" (T2 表达式级 Python, P3)
+    # 公式语言: "dsl" (受限公式) | "tdx" (通达信, 翻译成 DSL 后编译) | "python" (T2 表达式级 Python, P3)
+    # 三档编译产物同形, 消费方无需区分; 详见 docs/factor-system-design.md §3.6
     lang: str = "dsl"
     # composite 专用: ((成员 id, 权重), ...); 其余类型为空
     components: tuple[tuple[str, float], ...] = ()

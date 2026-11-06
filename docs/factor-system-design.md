@@ -194,8 +194,18 @@ factor_value_exprs(available_cols) -> dict[str, pl.Expr | None]
 | `ts_corr(x,y,n)` / `ts_cov(x,y,n)` | 滚动相关/协方差 | 顶层函数 `pl.rolling_corr(x,y,window_size=n)` / `pl.rolling_cov`【已验证：Expr 上无此方法，必须走顶层函数，§17】 |
 | `ts_quantile(x,n,q)` | 滚动分位（q ∈ (0,1) 常量） | `rolling_quantile` |
 | `decay_linear(x,n)` | 线性衰减加权均值（近端权重大） | 手写权重组合表达式 |
+| `ts_ema(x,n)` | 指数加权均值，α = 2/(n+1)，即通达信 `EMA(X,N)` 的 `Y_t = (2·X_t + (N−1)·Y_{t−1})/(N+1)` | `ewm_mean(span=n, adjust=False, ignore_nulls=True)`【P1-17 第 2 批，与通达信递推逐位核对一致】 |
+| `ts_sma(x,n,m)` | 通达信 `SMA(X,N,M)`，α = m/n 的**递归指数平滑**（不是简单移动平均）；m 必须是满足 `1 ≤ m ≤ n` 的整数，否则 E004（m>n 会让 α>1、递推发散） | `ewm_mean(alpha=m/n, adjust=False, ignore_nulls=True)`【P1-17 第 2 批】 |
+| `ts_barslast(c)` | 条件 c **上次**成立到当前的 bar 数；c 非布尔时按 `≠0` 转条件（对齐通达信"非 0 即真"） | 序号 − `forward_fill(命中序号)`【P1-17 第 2 批】 |
+| `ts_barssince(c)` | 条件 c **首次**成立到当前的 bar 数 | 序号 − `cum_min(forward_fill(命中序号))`【P1-17 第 2 批】 |
 
-**v1 不提供的时序算子及原因**：`ts_argmax/ts_argmin`——Polars 无向量化实现（`rolling_map` 为逐窗 Python 回调，违反向量化约束，已验证 Expr 无 `rolling_arg_max`）；"距极值天数"类需求以具体因子的组合表达式实现（如 `distance_to_high_60d` 模式），确有高频需求再经 numba 扩展。
+**递推算子的暖机口径**（P1-17 第 2 批，`RECURSIVE_WARMUP_FACTOR` / `RECURSIVE_WARMUP_FLOOR`）：通用推断 `warmup = n + 1` 对滚动窗口够用，但对递归/无限记忆算子是**严重低估**——
+
+- `ts_ema` / `ts_sma` 是指数衰减，k 根 bar 后残差权重 `(1−α)^k`；取 **4n** 时残差已 < 4e-4（α=2/(n+1) → `(1−α)^(4n) ≈ e^−8`），再放大收益极小。
+- `ts_barslast` / `ts_barssince` 记忆**无上界**（"上次成立"可能在任意久之前），给 **250 根地板**，与最长既有因子（`position_240d` 的 241）同量级，避免窗口起点处取到"还没出现过"的错误结果。
+- 空值**不推进**递推（`ignore_nulls=True`）：与通达信"无效操作数不画线"一致。配套地，横向 `min`/`max` 走 null 传播版（`_horizontal_null_safe`）——Polars 的 `min_horizontal`/`max_horizontal` 忽略 null，会让 `max(close − ts_delay(close,1), 0)` 在首根（无前收）返回 0 而非 null，凭空造出的合法数值会被当初值喂进下游递推，残差要上百根才洗掉，而暖机远短于此。
+
+**v1 不提供的时序算子及原因**：`ts_argmax/ts_argmin`——Polars 无向量化实现（`rolling_map` 为逐窗 Python 回调，违反向量化约束，已验证 Expr 无 `rolling_arg_max`）；"距极值天数"类需求以具体因子的组合表达式实现（如 `distance_to_high_60d` 模式），确有高频需求再经 numba 扩展。注：`AVEDEV`（真·逐窗平均绝对偏差）与 `DMA`（α 是序列而非常量的指数加权）同属此类，在通达信兼容表里以 `perf` 归类拒绝，见 §3.6。
 
 **截面算子**（按日期分组，逐日横截面）：
 
@@ -210,9 +220,9 @@ factor_value_exprs(available_cols) -> dict[str, pl.Expr | None]
 ### 3.2 校验规则（编译期全部强制）【设计】
 
 1. 标识符必须在基准列/白名单/已注册因子内，否则报错（防注入，沿用 `custom_signals.py` 白名单哲学）。
-2. `ts_delay`/`ts_delta` 的 n ≥ 0；任何窗口 n ∈ [2, 512]；`power` 指数 |c| ≤ 4；AST 深度 ≤ 12；表达式 token 数 ≤ 200。
+2. `ts_delay`/`ts_delta` 的 n ≥ 0；任何窗口 n ∈ [2, 512]（**含递推算子** `ts_ema`/`ts_sma`）；`power` 指数 |c| ≤ 4；AST 深度 ≤ 12；表达式 token 数 ≤ 200。通达信档的退化窗口（`MA(X,1)`/`HHV(X,1)`/`LLV(X,1)`/`SUM(X,1)`/`EMA(X,1)`/`SMA(X,1,1)` 恒等于 X，`REF(X,0)` 恒等于 X）在**翻译期**归一为原表达式，因此合法公式不会被 E004 误拒，见 §3.6。
 3. 常量折叠后若产生 `x/0` 类静态除零 → 编译失败。
-4. 依赖列集合 = 递归展开；warmup_bars = max(各 ts 算子窗口)；超出即注册表标记，研究 UI 提示所需历史长度。
+4. 依赖列集合 = 递归展开；warmup_bars = max(各 ts 算子窗口)，滚动算子按 `n+1`、递推算子按 §3.1 的放大系数与地板值；超出即注册表标记，研究 UI 提示所需历史长度。
 5. 产出类型必须为数值或布尔（布尔经 `cast` 视为 0/1）。
 6. **禁止未来引用的总闸**：所有时序算子 shift 语义已内建，语法层不存在负 shift；code review checklist 补一条"新增算子必须只向后看"。
 
@@ -253,13 +263,29 @@ arglist     = expr { "," expr } ;
 | E009 | 产出类型非法 | 非数值/布尔 |
 | E010 | power 指数越界 | \|c\|>4 |
 | E011 | winsorize k 越界 | k∉[1,6] |
-| E012 | 循环引用 | 因子依赖成环（含自定义因子链） |
-| E013 | 依赖列不可用 | 面板缺列（运行时） |
+| E012 | 循环引用 | 因子依赖成环（含自定义因子链）**【设计保留：当前代码不产生此码，成环在注册表层即被挡住】** |
+| E013 | 依赖列不可用 | 面板缺列（运行时，`api/factors.py` 试算路径） |
 | E014 | 语法错误 | 解析失败（附位置） |
-| E015 | 预热不足 | warmup > 研究窗口（运行时） |
+| E015 | 预热不足 | warmup > 研究窗口（运行时）**【设计保留：当前代码不产生此码，数据不足表现为空值而非报错】** |
 | E016 | 常量表达式 | 无任何标识符，拒绝保存 |
 
 错误响应统一结构：`{"code": "E001", "message": "未知标识符: clos", "position": {"offset": 12, "line": 1}, "detail": {...}}`。
+
+**通达信翻译层错误码（E301–E310，P1-17 第 1–3 批）**：`lang="tdx"` 时公式先经 `app/factors/tdx/` 翻译成 DSL 文本，再交给同一套 `compile_formula`。翻译层自己出错用 E3xx，翻译成功后的一切校验仍复用 E0xx——**offset 一律映射回用户写的通达信原文**，不指向生成的中间文本，所以用户看到的是自己那行公式的第几个字符出了问题。
+
+| 码 | 含义 | 触发 |
+| --- | --- | --- |
+| E301 | 公式为空 | 空串或全空白 |
+| E302 | 规模超限 | 原文 > 4000 字符、token > 300，或中间变量内联展开后 > 600 节点 / 嵌套 > 12 层（反复引用同一中间变量会让公式按引用次数**相乘**膨胀） |
+| E303 | 语法错误 | 无法识别的字符、多余记号、缺右括号、关键字当操作数、未知节点类型 |
+| E304 | **未来函数（硬禁止）** | `ZIG`/`PEAK`/`TROUGH`/`BACKSET`/`FLATZIG`/`PEAKBARS`/`TROUGHBARS`——拐点会随新行情重绘，回测里等于用未来数据 |
+| E305 | 其余不支持的函数 | 绘图类（`DRAW*`/`STICKLINE`/`PARTLINE`/`POLYLINE`）、缺数据类（`FINANCE`/`CAPITAL`/`COST`/`WINNER`/`INDEX*`/`DYNAINFO`）、无法向量化类（`AVEDEV`/`DMA`） |
+| E307 | 不支持字符串常量 | 因子只能是数值序列；通达信的字符串仅用于绘图/名称类函数 |
+| E308 | 函数参数个数不符 | 报错用**通达信函数名**（`EMA` 而非 `ts_ema`），否则用户不知道 `ts_ma` 是什么。目前显式覆盖 `EMA(2)`/`SMA(3)`/`BARSLAST(1)`/`BARSSINCE(1)`，其余透传给 DSL 的 E003 兜底 |
+| E309 | 中间变量非法 | 三种：① 在定义之前被引用（公式按语句顺序求值）；② 用了保留名（列别名 `C/H/L/O/V` 等或函数名）；③ 在自己的定义里引用自己（`A:=A+1` 到底是"用上一句的 A"还是"递推"？单个表达式两者都表达不了，**与其猜不如明确拒**，绝不静默错译） |
+| E310 | 公式没有输出值 | 最后一条语句是 `:=` 中间变量赋值，不参与输出（通达信里这样的公式画不出线） |
+
+> E306 是第 1 批为"多语句还没实现"预留的码，第 3 批实现多语句后**已不再产生**，保留在词汇表里只为不重排既有编号。
 
 ### 3.5 用户因子生命周期与存储【设计】
 
@@ -271,6 +297,7 @@ arglist     = expr { "," expr } ;
   "version": 1,
   "label": "我的反转因子",
   "formula": "rank(-ts_sum(change_pct, 5))",
+  "lang": "dsl",                  // "dsl" | "tdx" | "python"，见 §3.6；缺省按 dsl 读
   "direction": "low",
   "description": "5 日累计涨幅的截面倒数",
   "created_at": "2026-09-04T00:00:00",
@@ -280,6 +307,39 @@ arglist     = expr { "," expr } ;
 
 - 生命周期：草稿（编辑器内试算，不落盘）→ 保存（编译通过 + 试算有非空输出才可保存，fail-closed）→ 引用（策略 scoring / 因子研究 / 复合因子）→ 版本化（公式变更 version+1，旧结果按 version 键隔离）→ 删除（有引用时列出引用方并二次确认，对齐策略删除的 fail-closed 要求）。
 - 加载失败的单个文件只禁用该因子并提示，不影响启动与其他因子（对齐 plugins 隔离要求，CONTRIBUTING 第 4 节）。
+
+### 3.6 多语言公式入口（dsl / tdx / python）【现状·已可用】
+
+同一个自定义因子可以用三种语言写，`FactorSpec.lang` 记录档位，**编译产物完全同形**（都是真正的 `CompiledFormula`），所以下游一切消费方——scoring 物化、`/validate`、`/trial`、`materialize_cache` 缓存键、因子检验——零改动即可用，无需区分语言。
+
+| 档位 | 入口 | 编译路径 | `formula_text` 存什么 |
+| --- | --- | --- | --- |
+| `dsl` | `app/factors/dsl.py::compile_formula` | tokenizer → Pratt → AST → 语义检查 → Polars Expr | DSL 原文 |
+| `tdx` | `app/factors/tdx/translate.py::compile_tdx_formula` | 通达信 parser → **翻译成 DSL 文本** → 复用 `compile_formula` | **用户的通达信原文** |
+| `python` | `app/factors/py_expr.py::compile_python_expression` | 受限 AST 白名单 → Polars 表达式（作用域只有 `ctx`/`pl`） | Python 原文 |
+
+**`tdx` 档的关键设计：不新造求值引擎。** 翻译成 DSL 文本后交给 `compile_formula`，于是窗口纪律、E005 负偏移（未来函数）门控、依赖提取、warmup 推断、截面算子嵌套校验、内容寻址缓存全部自动复用，语义与另两档完全一致。代价是多一次 parse，换来的是"三档语义不可能分叉"。
+
+翻译期吸收的通达信语法差异（`app/factors/tdx/parser.py`）：注释 `{...}` 与 `(*...*)`；标识符大小写不敏感且允许中文变量名；`=` 是相等比较（不是赋值）、`<>` 是不等；`:=` 中间变量赋值、`:` 输出赋值、`;` 结束语句；`AND`/`OR`/`NOT` 是关键字。
+
+**多语句与中间变量**（第 3 批）：按语句顺序**内联展开**，展开后的 AST 里已不含变量名，所以 `dsl.py` 无需任何改动（它的 E001 只认列名与已注册因子 id，变量名根本到不了那一层）。最后一条语句的值就是因子的值，与通达信"选股公式取最后一个输出"的口径一致；后定义覆盖先定义（后续语句看到新值）。
+
+**列别名**（`builtins.COLUMN_ALIASES`）：`C`/`CLOSE`→`close`、`O`/`OPEN`→`open`、`H`/`HIGH`→`high`、`L`/`LOW`→`low`、`V`/`VOL`/`VOLUME`→`volume`、`AMOUNT`→`amount`。**未映射的标识符原样透传给 DSL**，由 E001 兜底——所以通达信档里直接写 `ts_mean(C,5)`、`change_pct`、甚至引用已注册因子 id 都可用，这也是前端在通达信档保留 DSL 算子面板的原因。
+
+**函数映射**：53 条兼容表（`builtins.compatibility_table()`）= 直接支持 17（`MA`→`ts_mean`、`EMA`→`ts_ema`、`SMA`→`ts_sma`、`REF`→`ts_delay`、`HHV`→`ts_max`、`LLV`→`ts_min`、`STD`→`ts_std`、`SUM`→`ts_sum`、`IF`/`IFF`→`if_else`、`BARSLAST`→`ts_barslast`、`BARSSINCE`→`ts_barssince`、`ABS`/`LOG`/`MAX`/`MIN`/`SQRT`）+ 宏展开 5（`CROSS`/`LONGCROSS`/`COUNT`/`EVERY`/`EXIST`）+ 拒绝 31（未来函数 7 → E304；绘图 11、缺数据 11、无法向量化 2 → E305）。前端经 `GET /api/factors/tdx/meta` 直接消费这张表与 6 个内置模板，**不硬编码任何函数名**——后端加一条映射，界面自动多一行。
+
+两个刻意口径（已加测试锁死，防止后人"顺手修正"）：
+
+- `CROSS(A,B)` 判"前一根"用 `<=` 不是 `<`。均线金叉前一刻两条线常常正好相等，用 `<` 会系统性漏掉这一天。
+- 通达信 `SMA(X,N,M)` **不是**简单移动平均，是 α=M/N 的指数平滑；`EMA(X,N)` 等价于 `SMA(X,N+1,2)`。
+
+**布尔因子的三值语义与 `nan` 地雷**（第 2 批遗留，此处正式成文）：DSL 布尔层是**三值**的（`False AND unknown = False`、`True AND unknown = unknown`），数据不足时返回 null；`LONGCROSS` 在预热期用 Kleene 三值——"上穿没发生"直接判假，不必等前置条件算出来。布尔结果落到因子列统一是 **Float64**（`dsl.py` 的 `if is_bool: compiled.cast(pl.Float64)`），即 `1.0 / 0.0 / nan`，而 **numpy 的 `nan.astype(bool)` 是 `True`**。
+
+- 生产链路本身安全：`app/strategy/custom_signals.py`（求值后统一 `fill_null(False)` 再做边沿检测）与 `app/backtest/matrix.py::_scatter_bool_series` 都在 **polars 表达式层**显式 `fill_null(False)` 再 cast，null 走不到 numpy。
+- 但**直接读原始因子列的新代码/新测试会中招**：预热期的空洞会被读成一堆假信号。取布尔掩码必须走 `fill_null(False)`（polars 侧）或显式三值转换（numpy 侧，参考 `tests/test_factor_tdx.py::_bool_or_none`）。
+- 这与通达信"数据不够就不显示"一致，是保守正确的：null → `fill_null(False)` → "不出信号"，而不是"出个假信号"。
+
+面向用户的通俗版说明（三档语言怎么选、兼容表怎么查、翻译预览怎么读）见 [`factor-tdx-guide.md`](./factor-tdx-guide.md)。
 
 ---
 

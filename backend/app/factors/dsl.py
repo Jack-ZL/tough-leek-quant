@@ -835,6 +835,12 @@ def compile_formula(text: str) -> CompiledFormula:
     if needs_window:
         compiled = compiled.over("symbol")
     if is_bool:
+        # 布尔因子统一落成 Float64 (1.0/0.0/nan), 与其它因子列同型, 消费方不必分支。
+        # ⚠️ nan 转 bool 在 numpy 里是 **True** —— 预热期的空洞会被读成一堆假信号。
+        # 取布尔掩码必须在 polars 表达式层先 fill_null(False) 再 cast (生产链路
+        # custom_signals.py / matrix.py::_scatter_bool_series 都是这么做的), 或显式
+        # 三值转换 (参考 tests/test_factor_tdx.py::_bool_or_none)。
+        # 口径详见 docs/factor-system-design.md §3.6「布尔因子的三值语义与 nan 地雷」。
         compiled = compiled.cast(pl.Float64)
 
     # 运行期帧变换: 检查全部引用列 (基准依赖 + 引用因子) 存在, 否则 None (E013 fail-closed)
