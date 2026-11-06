@@ -898,7 +898,8 @@ export function Regime() {
 					</div>
 					{/* 重算 */}
 					<button type="button" onClick={handleRecompute} disabled={recomputing} className="regime-action">
-						{recomputing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+						{recomputing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+							<RefreshCw className="h-3.5 w-3.5" />}
 						{recomputing ? '重算中…' : '重算'}
 					</button>
 				</div>
@@ -967,11 +968,26 @@ export function Regime() {
 									color: '#ef4444',
 									field: 'max_consecutive' as const
 								},
-								{ label: '首板宽度', val: latest.first_board, unit: '家', color: '#f97316', field: 'first_board' as const },
-								{ label: '2板+宽度', val: latest.ge2_count, unit: '家', color: '#f59e0b', field: 'ge2_count' as const },
 								{
-									label: '晋级率', val: latest.promo_rate != null ? `${(latest.promo_rate * 100).toFixed(0)}%` : '—',
-									unit: '', color: '#3b82f6', field: 'promo_rate' as const,
+									label: '首板宽度',
+									val: latest.first_board,
+									unit: '家',
+									color: '#f97316',
+									field: 'first_board' as const
+								},
+								{
+									label: '2板+宽度',
+									val: latest.ge2_count,
+									unit: '家',
+									color: '#f59e0b',
+									field: 'ge2_count' as const
+								},
+								{
+									label: '晋级率',
+									val: latest.promo_rate != null ? `${(latest.promo_rate * 100).toFixed(0)}%` : '—',
+									unit: '',
+									color: '#3b82f6',
+									field: 'promo_rate' as const,
 									sub: latest.promo_pool != null ? `池 ${latest.promo_pool} 家` : undefined
 								},
 								{
@@ -1067,7 +1083,8 @@ export function Regime() {
 										<span className="regime-state-dot" style={{ backgroundColor: MARKET_PHASE_COLORS[selRow.phase as MarketPhase] }} />
 										{selRow.phase ? MARKET_PHASE_LABELS[selRow.phase] : '—'}
 									</span>
-									{selStreak != null && <span className="text-[12px] text-muted">第 {selStreak} 天</span>}
+									{selStreak != null &&
+										<span className="text-[12px] text-muted">第 {selStreak} 天</span>}
 								</span>
 								<span className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[12px] text-secondary">
 									<span>高度 <b className="text-foreground">{selRow.max_consecutive}板</b></span>
@@ -1239,7 +1256,8 @@ export function Regime() {
 														</button>
 													</span>
 												)
-													: <span className="text-muted">暂无主线数据 — 点击「重算」回填, 或检查过滤设置</span>}
+													:
+													<span className="text-muted">暂无主线数据 — 点击「重算」回填, 或检查过滤设置</span>}
 										</td></tr>
 									)}
 								</tbody>
@@ -1372,7 +1390,8 @@ export function Regime() {
 								return <div key={`${month.year}-${month.month}`} className="regime-calendar-month">
 									<div className="regime-calendar-month-title"><span>{month.label}</span><strong title="月均综合分">{average ?? '—'}</strong></div>
 									<div className="regime-calendar-grid regime-calendar-weekdays" aria-hidden="true">
-										{['一', '二', '三', '四', '五', '六', '日'].map(day => <span key={day}>{day}</span>)}
+										{['一', '二', '三', '四', '五', '六', '日'].map(day =>
+											<span key={day}>{day}</span>)}
 									</div>
 									<div className="regime-calendar-grid">
 										{month.weeks.flat().map((cell, index) => cell ?
