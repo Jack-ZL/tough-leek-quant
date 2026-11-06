@@ -816,6 +816,7 @@ class KlineRepository:
                         "close",
                         "volume",
                         "amount",
+                        "quote_ts",
                         "raw_close",
                         "raw_high",
                         "raw_low",
@@ -1380,6 +1381,7 @@ class KlineRepository:
                     "close",
                     "volume",
                     "amount",
+                    "quote_ts",
                     "raw_close",
                     "raw_high",
                     "raw_low",
@@ -1437,7 +1439,7 @@ class KlineRepository:
             start_full = latest - timedelta(days=300)
             read_cols = [
                 c
-                for c in ["symbol", "date", "open", "high", "low", "close", "volume", "amount"]
+                for c in ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "quote_ts"]
                 if c in df_latest.columns
             ]
             df_hist = guarded_collect(

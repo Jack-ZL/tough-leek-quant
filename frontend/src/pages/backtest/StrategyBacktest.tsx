@@ -3474,6 +3474,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 			)}
 
 			<TradeKlineModal
+				assetType={result?.config.asset_type === 'etf' ? 'etf' : result?.config.asset_type === 'stock' ? 'stock' : undefined}
 				trade={selectedTrade}
 				navItems={tradeNavItems}
 				currentKey={activeTradeKey}

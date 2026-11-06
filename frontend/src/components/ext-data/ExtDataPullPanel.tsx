@@ -19,7 +19,7 @@ import {
 import { api, type ExtDataBackfillResult, type ExtDataConfig, type ExtPullAuth } from '@/lib/api'
 import { toast } from '@/components/Toast'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
-import { QK } from '@/lib/queryKeys'
+import { invalidateExtDataQueries } from '@/lib/ext-data-cache'
 import { SectionHead, INPUT_CLS } from './dialogShared'
 
 const AUTH_TYPE_LABELS: Record<ExtPullAuth['type'], string> = {
@@ -59,6 +59,10 @@ export function ExtDataPullPanel({ config, onSaved }: {
   const [running, setRunning] = useState(false)
   const [runResult, setRunResult] = useState<{ rows: number; date: string } | null>(null)
   const [error, setError] = useState('')
+  const handleSaved = () => {
+    onSaved()
+    void invalidateExtDataQueries(queryClient)
+  }
 
 	const enabled = optimistic ?? (pull?.enabled ?? false)
 
@@ -124,7 +128,7 @@ export function ExtDataPullPanel({ config, onSaved }: {
 		setOptimistic(next)
 		api.extDataPullConfig(config.id, payload)
 			.then(() => {
-				onSaved()
+				handleSaved()
 				toast(next ? '定时拉取已启用 · 立即执行首次拉取' : '定时拉取已关闭', 'success')
 			})
 			.catch(e => setError(e.message || '切换失败'))
@@ -141,7 +145,7 @@ export function ExtDataPullPanel({ config, onSaved }: {
 		api.extDataPullRun(config.id, effTimeoutSec)
 			.then(r => {
 				setRunResult({ rows: r.rows, date: r.date })
-				onSaved()
+				handleSaved()
 				toast(`拉取成功 · ${r.rows} 行`, 'success')
 			})
 			.catch(e => setError(e.message || '执行失败'))
@@ -250,12 +254,7 @@ export function ExtDataPullPanel({ config, onSaved }: {
       {showConfig && (
         <ExtPullConfigDialog
           config={config}
-          onSaved={() => {
-            onSaved()
-            void queryClient.invalidateQueries({ queryKey: QK.extDataSchemaAll })
-            void queryClient.invalidateQueries({ queryKey: QK.extSchemaAll })
-            void queryClient.invalidateQueries({ queryKey: QK.extSeriesAll })
-          }}
+          onSaved={handleSaved}
           onClose={() => setShowConfig(false)}
         />
       )}

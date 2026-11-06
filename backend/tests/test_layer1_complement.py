@@ -344,6 +344,9 @@ def test_full_market_fetch_taken_over_by_complement(monkeypatch):
     service = qs.QuoteService()
     captured: list[list[dict]] = []
     monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
+    # 隔离机器上的真实 preferences.json: _fetch_full_market_quotes 会直接读 load()
+    # 恢复显式配置的自定义实时源, 否则本地配了 fuyao 时本用例的打桩会被绕过。
+    monkeypatch.setattr(preferences, "load", lambda: {})
     monkeypatch.setattr(custom_sources, "provider_has_dataset",
                         lambda name, ds: name == "tencent" and ds == "realtime")
     monkeypatch.setattr(custom_sources, "get_provider", lambda name: provider)
@@ -371,6 +374,8 @@ def test_full_market_fetch_prefers_paid_tickflow(monkeypatch):
 
     service = qs.QuoteService()
     monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
+    # 同上: 隔离真实 preferences.json, 避免本地自定义实时源改掉被测路由
+    monkeypatch.setattr(preferences, "load", lambda: {})
     # P1-12 layer2: 关掉热备, 让本测试只考察 layer1 语义 (互补源不抢付费 Key 的路由)
     monkeypatch.setattr(preferences, "get_realtime_backup_provider", lambda: "off")
     monkeypatch.setattr("app.tickflow.client.get_paid_realtime_client",
