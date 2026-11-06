@@ -10,6 +10,7 @@ import { AiAnalysisHost } from '@/components/financials/AiAnalysisHost'
 import { AiReportBubble } from '@/components/financials/AiReportBubble'
 import { DailyDataHealthNotice } from '@/components/data/DailyDataHealthNotice'
 import { StockAnalysisHost } from '@/components/stock-analysis/StockAnalysisHost'
+import { StockPreviewHost } from '@/components/StockPreviewHost'
 import { StockAnalysisBubble } from '@/components/stock-analysis/StockAnalysisBubble'
 import {
 	useCapabilityMatrix,
@@ -1274,39 +1275,40 @@ export function Layout() {
 				</div>
 			</aside>
 
-			<motion.main
-				initial={{ opacity: 0, y: 8 }}
-				animate={{ opacity: 1, y: 0 }}
-				transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-				className="h-full overflow-auto scrollbar-gutter-stable"
-			>
-				{streamStatus === 'reconnecting' && (
-					<div
-						role="status"
-						aria-live="polite"
-						className="fixed bottom-4 left-1/2 z-[9998] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning shadow-lg backdrop-blur-md"
-					>
-						<WifiOff className="h-3 w-3 shrink-0 animate-pulse" />
-						与服务连接已断开 · 正在重连
-					</div>
-				)}
-				<DailyDataHealthNotice />
-				<Suspense
-					fallback={
-						<div className="flex items-center justify-center py-24">
-							<Loader2 className="h-5 w-5 animate-spin text-muted" />
-						</div>
-					}
-				>
-					<Outlet />
-				</Suspense>
-			</motion.main>
-			<ToastContainer />
-			<AlertToastContainer />
-			<AiAnalysisHost />
-			<AiReportBubble />
-			<StockAnalysisHost />
-			<StockAnalysisBubble />
+      <motion.main
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="h-full overflow-auto scrollbar-gutter-stable"
+      >
+        {streamStatus === 'reconnecting' && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-4 left-1/2 z-[9998] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning shadow-lg backdrop-blur-md"
+          >
+            <WifiOff className="h-3 w-3 shrink-0 animate-pulse" />
+            与服务连接已断开 · 正在重连
+          </div>
+        )}
+        <DailyDataHealthNotice />
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-24">
+              <Loader2 className="h-5 w-5 animate-spin text-muted" />
+            </div>
+          }
+        >
+          <Outlet />
+        </Suspense>
+      </motion.main>
+      <ToastContainer />
+      <AlertToastContainer />
+      <AiAnalysisHost />
+      <AiReportBubble />
+      <StockAnalysisHost />
+      <StockAnalysisBubble />
+      <StockPreviewHost />
 
 			{/* 开启实时行情 + 排队中的挖掘任务 → 冲突确认 */}
 			{miningQueuedWarning != null && (

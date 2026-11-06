@@ -28,6 +28,12 @@ export class ApiError extends Error {
   }
 }
 
+export interface WatchlistPrepareResult {
+  symbol: string
+  status: 'ready' | 'no_data' | 'unsupported' | 'failed' | 'busy'
+  message: string
+}
+
 /**
  * 把浏览器 fetch 抛出的裸网络错误文案翻译成可操作的提示。
  * 各浏览器文案不同: Chrome "Failed to fetch" / Safari "network error" / "Load failed"。
@@ -470,38 +476,44 @@ export interface PriceLimitInfo {
 }
 
 export interface KlineRow {
-	symbol?: string
-	date: string
-	open: number
-	high: number
-	low: number
-	close: number
-	volume?: number
-	change_pct?: number
-	ma5?: number | null
-	ma20?: number | null
-	ma60?: number | null
-	macd_dif?: number | null
-	macd_dea?: number | null
-	macd_hist?: number | null
-	rsi_14?: number | null
-	vol_ratio_5d?: number | null
-
-	[key: string]: any
+  symbol?: string
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume?: number
+  /** 图表异动判定使用未复权价格与引擎的当日判定价，不与复权 OHLC 混用。 */
+  raw_low?: number | null
+  raw_close?: number | null
+  limit_down_price?: number | null
+  signal_limit_down_recovery?: boolean | null
+  change_pct?: number
+  ma5?: number | null
+  ma20?: number | null
+  ma60?: number | null
+  macd_dif?: number | null
+  macd_dea?: number | null
+  macd_hist?: number | null
+  rsi_14?: number | null
+  vol_ratio_5d?: number | null
+  [key: string]: any
 }
 
 export interface KlineDailyResponse {
-	symbol: string
-	name?: string
-	stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
-	rows: KlineRow[]
-	source?: string
+  symbol: string
+  asset_type?: 'stock' | 'etf' | 'index'
+  name?: string
+  stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
+  rows: KlineRow[]
+  source?: string
 }
 
 export interface KlineDailyLatestResponse {
-	symbol: string
-	row: KlineRow | null
-	source: 'live' | 'none'
+  symbol: string
+  asset_type?: 'stock' | 'etf' | 'index'
+  row: KlineRow | null
+  source: 'live' | 'none'
 }
 
 // ===== Watchlist =====
@@ -4180,117 +4192,122 @@ export const api = {
 			method: 'POST',
 		}),
 
-	watchlistList: () => request<{ symbols: WatchlistEntry[] }>('/api/watchlist'),
-	watchlistAdd: (symbol: string, note = '', groupId?: string | null) =>
-		request<{ symbols: WatchlistEntry[] }>('/api/watchlist', {
-			method: 'POST',
-			body: JSON.stringify({ symbol, note, group_id: groupId ?? null }),
-		}),
-	watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null, groupIds?: string[]) =>
-		request<{ symbols: WatchlistEntry[]; added: number }>('/api/watchlist/batch', {
-			method: 'POST',
-			body: JSON.stringify({
-				symbols,
-				note,
-				group_id: groupId ?? null,
-				group_ids: groupIds?.length ? groupIds : null,
-			}),
-		}),
-	watchlistGroups: () =>
-		request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups'),
-	watchlistGroupCreate: (name: string, color: WatchlistGroupColor) =>
-		request<{ groups: WatchlistGroup[]; group: WatchlistGroup }>('/api/watchlist/groups', {
-			method: 'POST',
-			body: JSON.stringify({ name, color }),
-		}),
-	watchlistGroupRename: (groupId: string, name: string, color: WatchlistGroupColor) =>
-		request<{ groups: WatchlistGroup[] }>(
-			`/api/watchlist/groups/${encodeURIComponent(groupId)}`,
-			{ method: 'PUT', body: JSON.stringify({ name, color }) },
-		),
-	watchlistGroupReorder: (orderedIds: string[]) =>
-		request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups/reorder', {
-			method: 'PUT',
-			body: JSON.stringify({ ordered_ids: orderedIds }),
-		}),
-	watchlistGroupDelete: (groupId: string) =>
-		request<{ groups: WatchlistGroup[]; symbols: WatchlistEntry[] }>(
-			`/api/watchlist/groups/${encodeURIComponent(groupId)}`,
-			{ method: 'DELETE' },
-		),
-	watchlistGroupClear: (groupId: string) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/groups/${encodeURIComponent(groupId)}/clear`,
-			{ method: 'POST' },
-		),
-	watchlistSetGroup: (symbol: string, groupId: string | null) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/${encodeURIComponent(symbol)}/group`,
-			{ method: 'PUT', body: JSON.stringify({ group_id: groupId }) },
-		),
-	watchlistGroupAddMember: (groupId: string, symbol: string) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
-			{ method: 'POST' },
-		),
-	watchlistGroupRemoveMember: (groupId: string, symbol: string) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
-			{ method: 'DELETE' },
-		),
-	watchlistOcrStatus: () =>
-		request<{ provider: string; available: boolean }>('/api/watchlist/ocr-status'),
-	watchlistImportImage: (file: File, signal?: AbortSignal, quiet = false) => {
-		const fd = new FormData()
-		fd.append('file', file)
-		return request<WatchlistImportResult>('/api/watchlist/import-image', {
-			method: 'POST',
-			body: fd,
-			signal,
-			quiet,
-		})
-	},
-	watchlistImportCsv: (file: File, signal?: AbortSignal, quiet = false) => {
-		const fd = new FormData()
-		fd.append('file', file)
-		return request<WatchlistImportResult>('/api/watchlist/import-csv', {
-			method: 'POST',
-			body: fd,
-			signal,
-			quiet,
-		})
-	},
-	watchlistImportCodes: (text: string, signal?: AbortSignal) =>
-		request<WatchlistImportResult>('/api/watchlist/import-codes', {
-			method: 'POST',
-			body: JSON.stringify({ text }),
-			signal,
-		}),
-	watchlistRemove: (symbol: string) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/${encodeURIComponent(symbol)}`,
-			{ method: 'DELETE' },
-		),
-	watchlistMoveToTop: (symbol: string) =>
-		request<{ symbols: WatchlistEntry[] }>(
-			`/api/watchlist/${encodeURIComponent(symbol)}/top`,
-			{ method: 'POST' },
-		),
-	watchlistClear: () =>
-		request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
-	watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
-	watchlistEnriched: (extColumns?: string) =>
-		request<{
-			rows: any[]
-			as_of: string | null
-			elapsed_ms: number
-			/** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
-			dates?: { stock: string | null; etf: string | null; index: string | null }
-		}>(
-			extColumns
-				? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
-				: '/api/watchlist/enriched',
-		),
+  watchlistList: () => request<{ symbols: WatchlistEntry[] }>('/api/watchlist'),
+  watchlistAdd: (symbol: string, note = '', groupId?: string | null) =>
+    request<{ symbols: WatchlistEntry[] }>('/api/watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, note, group_id: groupId ?? null }),
+    }),
+  watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null, groupIds?: string[]) =>
+    request<{ symbols: WatchlistEntry[]; added: number }>('/api/watchlist/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        symbols,
+        note,
+        group_id: groupId ?? null,
+        group_ids: groupIds?.length ? groupIds : null,
+      }),
+    }),
+  watchlistGroups: () =>
+    request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups'),
+  watchlistGroupCreate: (name: string, color: WatchlistGroupColor) =>
+    request<{ groups: WatchlistGroup[]; group: WatchlistGroup }>('/api/watchlist/groups', {
+      method: 'POST',
+      body: JSON.stringify({ name, color }),
+    }),
+  watchlistGroupRename: (groupId: string, name: string, color: WatchlistGroupColor) =>
+    request<{ groups: WatchlistGroup[] }>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+      { method: 'PUT', body: JSON.stringify({ name, color }) },
+    ),
+  watchlistGroupReorder: (orderedIds: string[]) =>
+    request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ ordered_ids: orderedIds }),
+    }),
+  watchlistGroupDelete: (groupId: string) =>
+    request<{ groups: WatchlistGroup[]; symbols: WatchlistEntry[] }>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+      { method: 'DELETE' },
+    ),
+  watchlistGroupClear: (groupId: string) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}/clear`,
+      { method: 'POST' },
+    ),
+  watchlistSetGroup: (symbol: string, groupId: string | null) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/${encodeURIComponent(symbol)}/group`,
+      { method: 'PUT', body: JSON.stringify({ group_id: groupId }) },
+    ),
+  watchlistGroupAddMember: (groupId: string, symbol: string) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
+      { method: 'POST' },
+    ),
+  watchlistGroupRemoveMember: (groupId: string, symbol: string) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
+      { method: 'DELETE' },
+    ),
+  watchlistOcrStatus: () =>
+    request<{ provider: string; available: boolean }>('/api/watchlist/ocr-status'),
+  watchlistImportImage: (file: File, signal?: AbortSignal, quiet = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<WatchlistImportResult>('/api/watchlist/import-image', {
+      method: 'POST',
+      body: fd,
+      signal,
+      quiet,
+    })
+  },
+  watchlistImportCsv: (file: File, signal?: AbortSignal, quiet = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<WatchlistImportResult>('/api/watchlist/import-csv', {
+      method: 'POST',
+      body: fd,
+      signal,
+      quiet,
+    })
+  },
+  watchlistImportCodes: (text: string, signal?: AbortSignal) =>
+    request<WatchlistImportResult>('/api/watchlist/import-codes', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+      signal,
+    }),
+  watchlistRemove: (symbol: string) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/${encodeURIComponent(symbol)}`,
+      { method: 'DELETE' },
+    ),
+  watchlistMoveToTop: (symbol: string) =>
+    request<{ symbols: WatchlistEntry[] }>(
+      `/api/watchlist/${encodeURIComponent(symbol)}/top`,
+      { method: 'POST' },
+    ),
+  watchlistClear: () =>
+    request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
+  watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
+  watchlistEnriched: (extColumns?: string) =>
+    request<{
+      rows: any[]
+      as_of: string | null
+      elapsed_ms: number
+      /** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
+      dates?: { stock: string | null; etf: string | null; index: string | null }
+    }>(
+      extColumns
+        ? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
+        : '/api/watchlist/enriched',
+    ),
+  watchlistPrepare: (symbols: string[]) => request<{ results: WatchlistPrepareResult[] }>(
+    '/api/watchlist/prepare',
+    { method: 'POST', body: JSON.stringify({ symbols }), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true },
+  ),
+  dataVersions: () => request<{ versions: Record<string, string> }>('/api/intraday/data-versions', { quiet: true }),
 
 	// timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
 	screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index', timeframe: '1d' | '1m' | 'all' = '1d') => {
@@ -5102,21 +5119,15 @@ export const api = {
 			}[]
 		}>('/api/ext-data/schema-all'),
 
-	/** 日内多盘序列 (列表迷你图列): 每标的一天的 [HH:MM:SS, value] 点列 */
-	extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number) =>
-		request<{
-			config_id: string;
-			field: string;
-			date: string | null;
-			granularity?: 'intraday' | 'daily';
-			days?: number;
-			items: Record<string, [string, number][]>
-		}>(
-			`/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
-			+ (date ? `&date=${date}` : '')
-			+ (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
-			+ (days ? `&days=${days}` : ''),
-		),
+  /** 列表扩展序列: 按日 / 按日内读取, 不指定显示周期时跟随数据表。 */
+  extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number, granularity?: 'daily' | 'intraday') =>
+    request<{ config_id: string; field: string; date: string | null; granularity?: 'intraday' | 'daily'; days?: number; items: Record<string, [string, number][]> }>(
+      `/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
+        + (date ? `&date=${date}` : '')
+        + (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
+        + (days ? `&days=${days}` : '')
+        + (granularity ? `&granularity=${granularity}` : ''),
+    ),
 
 	extDataPullConfig: (id: string, body: {
 		url: string; method?: string; headers?: Record<string, string>; body?: string;

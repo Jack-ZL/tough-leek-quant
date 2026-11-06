@@ -581,267 +581,296 @@ export function ListColumnCustomizerInner({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [query])
 
-	const renderExtConfig = (col: ColumnConfig) => (
-		<motion.div
-			initial={{ height: 0, opacity: 0 }}
-			animate={{ height: 'auto', opacity: 1 }}
-			exit={{ height: 0, opacity: 0 }}
-			transition={{ duration: 0.15 }}
-			className="overflow-hidden"
-		>
-			<div className="pl-10 pr-3 py-2 space-y-2 border-l-2 border-accent/20 ml-[18px]">
-				<label className="flex items-center gap-2 text-xs">
-					<span className="text-secondary w-16 shrink-0">显示模式</span>
-					<select
-						value={col.extDisplay?.displayMode ?? 'tag'}
-						onChange={e => updateExtDisplay(col.id, { displayMode: e.target.value as 'tag' | 'text' })}
-						className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
-					>
-						<option value="tag">标签</option>
-						<option value="text">纯文本</option>
-					</select>
-				</label>
-				{(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
-					<label className="flex items-center gap-2 text-xs">
-						<span className="text-secondary w-16 shrink-0">分隔符</span>
-						<input
-							type="text"
-							value={col.extDisplay?.separator ?? ''}
-							onChange={e => updateExtDisplay(col.id, { separator: e.target.value })}
-							placeholder="默认：、,，;；-"
-							className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
-						/>
-					</label>
-				)}
-				<label className="flex items-center gap-2 text-xs">
-					<span className="text-secondary w-16 shrink-0">最大列宽</span>
-					<input
-						type="text"
-						value={col.extDisplay?.maxWidth ?? ''}
-						onChange={e => updateExtDisplay(col.id, { maxWidth: e.target.value })}
-						placeholder="如 200px"
-						className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
-					/>
-				</label>
-				{(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
-					<label className="flex items-center gap-2 text-xs">
-						<span className="text-secondary w-16 shrink-0">显示前N个</span>
-						<input
-							type="number" min={0}
-							value={col.extDisplay?.maxTags ?? ''}
-							onChange={e => {
-								const v = e.target.value ? Number(e.target.value) : undefined
-								updateExtDisplay(col.id, { maxTags: v, ...(v ? {} : { hiddenIndices: undefined }) })
-							}}
-							placeholder="0=全部"
-							className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
-						/>
-					</label>
-				)}
-				{(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (col.extDisplay?.maxTags ?? 0) > 0 && (
-					<div className="flex items-center gap-2 text-xs">
-						<span className="text-secondary w-16 shrink-0">显示位置</span>
-						<div className="flex flex-wrap gap-1">
-							{Array.from({ length: col.extDisplay!.maxTags! }, (_, i) => {
-								const hidden = col.extDisplay?.hiddenIndices?.includes(i)
-								return (
-									<button
-										key={i}
-										onClick={() => {
-											const cur = col.extDisplay?.hiddenIndices ?? []
-											const next = hidden ? cur.filter(x => x !== i) : [...cur, i]
-											updateExtDisplay(col.id, { hiddenIndices: next.length ? next : undefined })
-										}}
-										className={`w-6 h-6 rounded text-[10px] font-medium transition-colors ${hidden ? 'bg-elevated text-muted line-through' : 'bg-accent/15 text-accent'
-											}`}
-									>
-										{i + 1}
-									</button>
-								)
-							})}
-						</div>
-					</div>
-				)}
-				{(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
-					<label className="flex items-center gap-2 text-xs">
-						<span className="text-secondary w-16 shrink-0">排列方向</span>
-						<div className="flex rounded overflow-hidden border border-border">
-							<button
-								onClick={() => updateExtDisplay(col.id, { tagLayout: 'horizontal' })}
-								className={`px-3 py-1 text-xs transition-colors ${(col.extDisplay?.tagLayout ?? 'horizontal') === 'horizontal'
-									? 'bg-accent/15 text-accent' : 'bg-elevated text-secondary hover:text-foreground'
-									}`}
-							>横向</button>
-							<button
-								onClick={() => updateExtDisplay(col.id, { tagLayout: 'vertical' })}
-								className={`px-3 py-1 text-xs transition-colors border-l border-border ${col.extDisplay?.tagLayout === 'vertical'
-									? 'bg-accent/15 text-accent' : 'bg-elevated text-secondary hover:text-foreground'
-									}`}
-							>竖向</button>
-						</div>
-					</label>
-				)}
-				{/* 时序表的序列形态: 日内多盘 (集合竞价等) / 日级别 (近N日) 按生效粒度分流 */}
-				{col.source.type === 'ext' && extGranularityOf(extTables, (col.source as {
-					configId: string
-				}).configId) === 'intraday' && (
-						<>
-							<div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">日内多盘</div>
-							<label className="flex items-center gap-2 text-xs">
-								<span className="text-secondary w-16 shrink-0">展示形态</span>
-								<select
-									value={col.extDisplay?.snapshotRender ?? 'text'}
-									onChange={e => updateExtDisplay(col.id, { snapshotRender: e.target.value as 'text' | 'bar' | 'line' })}
-									className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
-								>
-									<option value="line">折线图 (分时式)</option>
-									<option value="bar">柱状图 (逐盘幅度)</option>
-									<option value="text">文字 (选定时刻值)</option>
-								</select>
-							</label>
-							{(col.extDisplay?.snapshotRender ?? 'text') === 'text' ? (
-								<label className="flex items-center gap-2 text-xs">
-									<span className="text-secondary w-16 shrink-0">取盘时刻</span>
-									<input
-										type="time"
-										value={(col.extDisplay?.snapshotAt ?? '').slice(0, 5)}
-										onChange={e => updateExtDisplay(col.id, { snapshotAt: e.target.value ? `${e.target.value}:00` : undefined })}
-										title="取该时刻或之前最近一盘的值; 留空=末盘定型值"
-										className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
-									/>
-									<span className="text-[10px] text-muted shrink-0">留空=末盘</span>
-								</label>
-							) : (
-								<div className="flex items-center gap-2 text-xs">
-									<label className="flex items-center gap-1">
-										<span className="text-secondary shrink-0">宽</span>
-										<RangeNumberInput
-											value={col.extDisplay?.chartWidth ?? 150}
-											min={60} max={300} step={10}
-											onCommit={v => updateExtDisplay(col.id, { chartWidth: v })}
-											className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-										/>
-									</label>
-									<label className="flex items-center gap-1">
-										<span className="text-secondary shrink-0">高</span>
-										<RangeNumberInput
-											value={col.extDisplay?.chartHeight ?? 80}
-											min={24} max={160} step={4}
-											onCommit={v => updateExtDisplay(col.id, { chartHeight: v })}
-											className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-										/>
-									</label>
-									<span className="text-[10px] text-muted">px · 当天全序列</span>
-								</div>
-							)}
-						</>
-					)}
-				{col.source.type === 'ext' && extGranularityOf(extTables, (col.source as {
-					configId: string
-				}).configId) === 'daily' && (
-						<>
-							<div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">日级序列</div>
-							<label className="flex items-center gap-2 text-xs">
-								<span className="text-secondary w-16 shrink-0">展示形态</span>
-								<select
-									value={col.extDisplay?.snapshotRender ?? 'text'}
-									onChange={e => updateExtDisplay(col.id, { snapshotRender: e.target.value as 'text' | 'bar' | 'line' })}
-									className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
-								>
-									<option value="bar">柱状图 (近N日每日值)</option>
-									<option value="line">折线图 (近N日)</option>
-									<option value="text">文字 (最新值)</option>
-								</select>
-							</label>
-							{(col.extDisplay?.snapshotRender ?? 'text') !== 'text' && (
-								<div className="flex items-center gap-2 text-xs">
-									<label className="flex items-center gap-1">
-										<span className="text-secondary shrink-0">天数</span>
-										<RangeNumberInput
-											value={col.extDisplay?.chartDays ?? 10}
-											min={3} max={60} step={1}
-											onCommit={v => updateExtDisplay(col.id, { chartDays: v })}
-											className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-										/>
-									</label>
-									<label className="flex items-center gap-1">
-										<span className="text-secondary shrink-0">宽</span>
-										<RangeNumberInput
-											value={col.extDisplay?.chartWidth ?? 150}
-											min={60} max={300} step={10}
-											onCommit={v => updateExtDisplay(col.id, { chartWidth: v })}
-											className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-										/>
-									</label>
-									<label className="flex items-center gap-1">
-										<span className="text-secondary shrink-0">高</span>
-										<RangeNumberInput
-											value={col.extDisplay?.chartHeight ?? 80}
-											min={24} max={160} step={4}
-											onCommit={v => updateExtDisplay(col.id, { chartHeight: v })}
-											className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-										/>
-									</label>
-									<span className="text-[10px] text-muted">px · 近N日全序列</span>
-								</div>
-							)}
-						</>
-					)}
-				{/* 数字格式化配置: 千分位 + 单位换算 + 小数位(仅 number 类型字段) */}
-				{col.source.type === 'ext' && isNumericFieldType(col.source.fieldType) && (
-					<>
-						<div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">数字格式</div>
-						<label className="flex items-center gap-2 text-xs">
-							<span className="text-secondary w-16 shrink-0">千分位</span>
-							<button
-								type="button"
-								onClick={() => updateExtDisplay(col.id, { thousandSeparator: !col.extDisplay?.thousandSeparator })}
-								className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 cursor-pointer ${col.extDisplay?.thousandSeparator ? 'bg-accent' : 'bg-elevated'
-									}`}
-								aria-pressed={!!col.extDisplay?.thousandSeparator}
-							>
-								<span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${col.extDisplay?.thousandSeparator ? 'translate-x-[14px]' : 'translate-x-0.5'
-									}`} />
-							</button>
-							<span className="text-[10px] text-muted">如 1,234,567</span>
-						</label>
-						<label className="flex items-center gap-2 text-xs">
-							<span className="text-secondary w-16 shrink-0">单位换算</span>
-							<select
-								value={col.extDisplay?.unitConvert ?? 'none'}
-								onChange={e => updateExtDisplay(col.id, { unitConvert: e.target.value as 'none' | 'wan' | 'yi' | 'auto' })}
-								className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
-							>
-								<option value="none">不换算</option>
-								<option value="wan">万 (÷1万)</option>
-								<option value="yi">亿 (÷1亿)</option>
-								<option value="auto">自动 (≥亿用亿, ≥万用万)</option>
-							</select>
-						</label>
-						{(col.extDisplay?.unitConvert ?? 'none') !== 'none' && (
-							<label className="flex items-center gap-2 text-xs">
-								<span className="text-secondary w-16 shrink-0">小数位</span>
-								<input
-									type="number" min={0} max={6} step={1}
-									value={col.extDisplay?.unitDecimals ?? 2}
-									onChange={e => updateExtDisplay(col.id, { unitDecimals: Math.max(0, Math.min(6, Number(e.target.value) || 0)) })}
-									className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
-								/>
-								<span className="text-[10px] text-muted">换算后保留几位</span>
-							</label>
-						)}
-					</>
-				)}
-				{col.extDisplay && (
-					<div className="flex justify-end pt-1">
-						<button onClick={() => resetExtDisplay(col.id)} className="text-[10px] text-muted hover:text-foreground transition-colors">
-							恢复默认
-						</button>
-					</div>
-				)}
-			</div>
-		</motion.div>
-	)
+  const renderExtConfig = (col: ColumnConfig) => {
+    const source = col.source
+    const table = source.type === 'ext' ? extTablesRef.current.find(t => t.id === source.configId) : undefined
+    const defaultGranularity = source.type === 'ext' ? extGranularityOf(extTables, source.configId) : null
+    const displayGranularity = defaultGranularity ? col.extDisplay?.seriesGranularity ?? defaultGranularity : null
+    return (
+    <motion.div
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="overflow-hidden"
+    >
+      <div className="pl-10 pr-3 py-2 space-y-2 border-l-2 border-accent/20 ml-[18px]">
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-secondary w-16 shrink-0">显示模式</span>
+          <select
+            value={col.extDisplay?.displayMode ?? 'tag'}
+            onChange={e => updateExtDisplay(col.id, { displayMode: e.target.value as 'tag' | 'text' })}
+            className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+          >
+            <option value="tag">标签</option>
+            <option value="text">纯文本</option>
+          </select>
+        </label>
+        {(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-secondary w-16 shrink-0">分隔符</span>
+            <input
+              type="text"
+              value={col.extDisplay?.separator ?? ''}
+              onChange={e => updateExtDisplay(col.id, { separator: e.target.value })}
+              placeholder="默认：、,，;；-"
+              className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
+            />
+          </label>
+        )}
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-secondary w-16 shrink-0">最大列宽</span>
+          <input
+            type="text"
+            value={col.extDisplay?.maxWidth ?? ''}
+            onChange={e => updateExtDisplay(col.id, { maxWidth: e.target.value })}
+            placeholder="如 200px"
+            className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
+          />
+        </label>
+        {(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-secondary w-16 shrink-0">显示前N个</span>
+            <input
+              type="number" min={0}
+              value={col.extDisplay?.maxTags ?? ''}
+              onChange={e => {
+                const v = e.target.value ? Number(e.target.value) : undefined
+                updateExtDisplay(col.id, { maxTags: v, ...(v ? {} : { hiddenIndices: undefined }) })
+              }}
+              placeholder="0=全部"
+              className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 placeholder:text-muted focus:outline-none focus:border-accent/50"
+            />
+          </label>
+        )}
+        {(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (col.extDisplay?.maxTags ?? 0) > 0 && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-secondary w-16 shrink-0">显示位置</span>
+            <div className="flex flex-wrap gap-1">
+              {Array.from({ length: col.extDisplay!.maxTags! }, (_, i) => {
+                const hidden = col.extDisplay?.hiddenIndices?.includes(i)
+                return (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      const cur = col.extDisplay?.hiddenIndices ?? []
+                      const next = hidden ? cur.filter(x => x !== i) : [...cur, i]
+                      updateExtDisplay(col.id, { hiddenIndices: next.length ? next : undefined })
+                    }}
+                    className={`w-6 h-6 rounded text-[10px] font-medium transition-colors ${
+                      hidden ? 'bg-elevated text-muted line-through' : 'bg-accent/15 text-accent'
+                    }`}
+                  >
+                    {i + 1}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        {(col.extDisplay?.displayMode ?? 'tag') === 'tag' && (
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-secondary w-16 shrink-0">排列方向</span>
+            <div className="flex rounded overflow-hidden border border-border">
+              <button
+                onClick={() => updateExtDisplay(col.id, { tagLayout: 'horizontal' })}
+                className={`px-3 py-1 text-xs transition-colors ${
+                  (col.extDisplay?.tagLayout ?? 'horizontal') === 'horizontal'
+                    ? 'bg-accent/15 text-accent' : 'bg-elevated text-secondary hover:text-foreground'
+                }`}
+              >横向</button>
+              <button
+                onClick={() => updateExtDisplay(col.id, { tagLayout: 'vertical' })}
+                className={`px-3 py-1 text-xs transition-colors border-l border-border ${
+                  col.extDisplay?.tagLayout === 'vertical'
+                    ? 'bg-accent/15 text-accent' : 'bg-elevated text-secondary hover:text-foreground'
+                }`}
+              >竖向</button>
+            </div>
+          </label>
+        )}
+        {defaultGranularity && (
+          <div className="border-t border-border/40 pt-2 mt-1 space-y-1.5">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-secondary w-16 shrink-0">显示周期</span>
+              <select
+                aria-label="显示周期"
+                value={col.extDisplay?.seriesGranularity ?? 'auto'}
+                onChange={e => updateExtDisplay(col.id, {
+                  seriesGranularity: e.target.value === 'auto' ? undefined : e.target.value as 'daily' | 'intraday',
+                })}
+                className="flex-1 min-w-0 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+              >
+                <option value="auto">跟随数据表（当前按{defaultGranularity === 'daily' ? '日' : '日内'}）</option>
+                <option value="daily">按日（近 N 日，每天一值）</option>
+                <option value="intraday" disabled={!table?.time_field}>按日内（当天全部盘次）</option>
+              </select>
+            </label>
+            <p className="text-[10px] text-muted leading-relaxed">
+              仅影响本列展示，原始多盘记录保留。{!table?.time_field && '按日内展示需先在扩展数据拉取设置中配置时间字段。'}
+            </p>
+          </div>
+        )}
+        {/* 同一份多盘记录可按日或按日内读取, 不修改整表配置。 */}
+        {displayGranularity === 'intraday' && (
+          <>
+            <div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">日内多盘</div>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-secondary w-16 shrink-0">展示形态</span>
+              <select
+                value={col.extDisplay?.snapshotRender ?? 'text'}
+                onChange={e => updateExtDisplay(col.id, { snapshotRender: e.target.value as 'text' | 'bar' | 'line' })}
+                className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+              >
+                <option value="line">折线图 (分时式)</option>
+                <option value="bar">柱状图 (逐盘幅度)</option>
+                <option value="text">文字 (选定时刻值)</option>
+              </select>
+            </label>
+            {(col.extDisplay?.snapshotRender ?? 'text') === 'text' ? (
+              <label className="flex items-center gap-2 text-xs">
+                <span className="text-secondary w-16 shrink-0">取盘时刻</span>
+                <input
+                  type="time"
+                  value={(col.extDisplay?.snapshotAt ?? '').slice(0, 5)}
+                  onChange={e => updateExtDisplay(col.id, { snapshotAt: e.target.value ? `${e.target.value}:00` : undefined })}
+                  title="取该时刻或之前最近一盘的值; 留空=末盘定型值"
+                  className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+                />
+                <span className="text-[10px] text-muted shrink-0">留空=末盘</span>
+              </label>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1">
+                  <span className="text-secondary shrink-0">宽</span>
+                  <RangeNumberInput
+                    value={col.extDisplay?.chartWidth ?? 150}
+                    min={60} max={300} step={10}
+                    onCommit={v => updateExtDisplay(col.id, { chartWidth: v })}
+                    className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-secondary shrink-0">高</span>
+                  <RangeNumberInput
+                    value={col.extDisplay?.chartHeight ?? 80}
+                    min={24} max={160} step={4}
+                    onCommit={v => updateExtDisplay(col.id, { chartHeight: v })}
+                    className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                  />
+                </label>
+                <span className="text-[10px] text-muted">px · 当天全序列</span>
+              </div>
+            )}
+          </>
+        )}
+        {displayGranularity === 'daily' && (
+          <>
+            <div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">日级序列</div>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-secondary w-16 shrink-0">展示形态</span>
+              <select
+                value={col.extDisplay?.snapshotRender ?? 'text'}
+                onChange={e => updateExtDisplay(col.id, { snapshotRender: e.target.value as 'text' | 'bar' | 'line' })}
+                className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+              >
+                <option value="bar">柱状图 (近N日每日值)</option>
+                <option value="line">折线图 (近N日)</option>
+                <option value="text">文字 (最新值)</option>
+              </select>
+            </label>
+            {(col.extDisplay?.snapshotRender ?? 'text') !== 'text' && (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1">
+                  <span className="text-secondary shrink-0">天数</span>
+                  <RangeNumberInput
+                    value={col.extDisplay?.chartDays ?? 10}
+                    min={3} max={60} step={1}
+                    onCommit={v => updateExtDisplay(col.id, { chartDays: v })}
+                    className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-secondary shrink-0">宽</span>
+                  <RangeNumberInput
+                    value={col.extDisplay?.chartWidth ?? 150}
+                    min={60} max={300} step={10}
+                    onCommit={v => updateExtDisplay(col.id, { chartWidth: v })}
+                    className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <span className="text-secondary shrink-0">高</span>
+                  <RangeNumberInput
+                    value={col.extDisplay?.chartHeight ?? 80}
+                    min={24} max={160} step={4}
+                    onCommit={v => updateExtDisplay(col.id, { chartHeight: v })}
+                    className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                  />
+                </label>
+                <span className="text-[10px] text-muted">px · 近N日全序列</span>
+              </div>
+            )}
+          </>
+        )}
+        {/* 数字格式化配置: 千分位 + 单位换算 + 小数位(仅 number 类型字段) */}
+        {col.source.type === 'ext' && isNumericFieldType(col.source.fieldType) && (
+          <>
+            <div className="border-t border-border/40 pt-2 mt-1 text-[10px] text-muted">数字格式</div>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-secondary w-16 shrink-0">千分位</span>
+              <button
+                type="button"
+                onClick={() => updateExtDisplay(col.id, { thousandSeparator: !col.extDisplay?.thousandSeparator })}
+                className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 cursor-pointer ${
+                  col.extDisplay?.thousandSeparator ? 'bg-accent' : 'bg-elevated'
+                }`}
+                aria-pressed={!!col.extDisplay?.thousandSeparator}
+              >
+                <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                  col.extDisplay?.thousandSeparator ? 'translate-x-[14px]' : 'translate-x-0.5'
+                }`} />
+              </button>
+              <span className="text-[10px] text-muted">如 1,234,567</span>
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-secondary w-16 shrink-0">单位换算</span>
+              <select
+                value={col.extDisplay?.unitConvert ?? 'none'}
+                onChange={e => updateExtDisplay(col.id, { unitConvert: e.target.value as 'none' | 'wan' | 'yi' | 'auto' })}
+                className="flex-1 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 focus:outline-none focus:border-accent/50"
+              >
+                <option value="none">不换算</option>
+                <option value="wan">万 (÷1万)</option>
+                <option value="yi">亿 (÷1亿)</option>
+                <option value="auto">自动 (≥亿用亿, ≥万用万)</option>
+              </select>
+            </label>
+            {(col.extDisplay?.unitConvert ?? 'none') !== 'none' && (
+              <label className="flex items-center gap-2 text-xs">
+                <span className="text-secondary w-16 shrink-0">小数位</span>
+                <input
+                  type="number" min={0} max={6} step={1}
+                  value={col.extDisplay?.unitDecimals ?? 2}
+                  onChange={e => updateExtDisplay(col.id, { unitDecimals: Math.max(0, Math.min(6, Number(e.target.value) || 0)) })}
+                  className="w-16 h-7 rounded bg-elevated border border-border text-foreground text-xs px-2 text-center focus:outline-none focus:border-accent/50"
+                />
+                <span className="text-[10px] text-muted">换算后保留几位</span>
+              </label>
+            )}
+          </>
+        )}
+        {col.extDisplay && (
+          <div className="flex justify-end pt-1">
+            <button onClick={() => resetExtDisplay(col.id)} className="text-[10px] text-muted hover:text-foreground transition-colors">
+              恢复默认
+            </button>
+          </div>
+        )}
+      </div>
+    </motion.div>
+    )
+  }
 
 	// 策略列配置（精简版：仅显示数量/位置/排列方向，复用 extDisplay 存储）
 	const renderStrategiesConfig = (col: ColumnConfig) => (
@@ -1403,68 +1432,65 @@ export function ListColumnCustomizerInner({
 		)
 	}
 
-	return (
-		<AnimatePresence>
-			{open && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-					<motion.div
-						initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-						transition={{ duration: 0.15 }}
-						className={`absolute inset-0 bg-black/50 ${disableBackdropBlur ? '' : 'backdrop-blur-sm'}`}
-						{...backdrop}
-					/>
-					<motion.div
-						initial={{ scale: 0.97, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{
-							scale: 0.97,
-							opacity: 0
-						}}
-						transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-						className="relative w-[900px] max-w-[94vw] max-h-[min(720px,82vh)] bg-base border border-border rounded-card shadow-2xl flex flex-col overflow-hidden"
-					>
-						{/* 头部: 标题 + 全局搜索 + 已选计数 + 关闭 */}
-						<div className="flex items-center gap-3 px-4 py-2.5 border-b border-border shrink-0">
-							<h3 className="text-sm font-medium text-foreground shrink-0">{title}</h3>
-							<div className="relative flex-1 max-w-[300px]">
-								<Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
-								<input
-									type="text"
-									value={searchQuery}
-									onChange={e => setSearchQuery(e.target.value)}
-									placeholder="搜索列名 / 扩展字段…"
-									className="w-full h-8 pl-8 pr-3 rounded-lg bg-elevated border border-border text-xs text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 transition-colors"
-								/>
-							</div>
-							<span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">已选 {activeCols.length} 列</span>
-							{baselineStore && (
-								<button
-									onClick={saveAsBaseline}
-									className="shrink-0 h-7 px-2.5 rounded-btn bg-elevated border border-border text-[11px] text-secondary hover:text-foreground hover:border-accent/50 transition-colors"
-									title="把当前列配置存为默认方案；之后「恢复默认」回到这份设置"
-								>
-									{baselineSavedAt && Date.now() - baselineSavedAt < 2000 ? '✓ 已保存' : '保存为默认方案'}
-								</button>
-							)}
-							<button onClick={onClose} className="p-1 rounded hover:bg-elevated text-muted hover:text-foreground transition-colors shrink-0">
-								<X className="h-4 w-4" />
-							</button>
-						</div>
+  return (
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className={`absolute inset-0 bg-black/50 ${disableBackdropBlur ? '' : 'backdrop-blur-sm'}`}
+            {...backdrop}
+          />
+          <motion.div
+            initial={{ scale: 0.97, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.97, opacity: 0 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="relative w-[900px] max-w-[94vw] max-h-[min(720px,82vh)] bg-base border border-border rounded-card shadow-2xl flex flex-col overflow-hidden"
+          >
+            {/* 头部: 标题 + 全局搜索 + 已选计数 + 关闭 */}
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 px-4 py-2.5 border-b border-border shrink-0">
+              <h3 className="text-sm font-medium text-foreground shrink-0">{title}</h3>
+              <div className="relative order-last sm:order-none basis-full sm:basis-auto flex-1 min-w-0 sm:max-w-[300px]">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="搜索列名 / 扩展字段…"
+                  className="w-full h-8 pl-8 pr-3 rounded-lg bg-elevated border border-border text-xs text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 transition-colors"
+                />
+              </div>
+              <span className="hidden sm:inline ml-auto text-[10px] text-muted tabular-nums shrink-0">已选 {activeCols.length} 列</span>
+              {baselineStore && (
+                <button
+                  onClick={saveAsBaseline}
+                  className="ml-auto sm:ml-0 shrink-0 h-7 px-2.5 rounded-btn bg-elevated border border-border text-[11px] text-secondary hover:text-foreground hover:border-accent/50 transition-colors"
+                  title="把当前列配置存为默认方案；之后「恢复默认」回到这份设置"
+                >
+                  {baselineSavedAt && Date.now() - baselineSavedAt < 2000 ? '✓ 已保存' : '保存为默认方案'}
+                </button>
+              )}
+              <button onClick={onClose} aria-label="关闭列设置" className="p-1 rounded hover:bg-elevated text-muted hover:text-foreground transition-colors shrink-0">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
 
-						{/* 两栏: 左=所有可选列, 右=已选择 (配置在已选行下方就地展开)。
-						 弹窗高度自适应内容: min-h 下限防列少时过扁, 超过 max-h 时本行
-						 收缩、两栏列表各自滚动。 */}
-						<div className="flex-1 flex min-h-[260px]">
-							{/* ── 左栏: 所有列 ── */}
-							<div className="w-[340px] shrink-0 border-r border-border flex flex-col min-h-0 bg-surface/20">
-								<div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 shrink-0">
-									<span className="text-[10px] font-semibold text-muted uppercase tracking-wider">{builtinSectionLabel}</span>
-									<span className="text-[10px] text-muted">勾选即加入</span>
-								</div>
-								<div className="flex-1 overflow-y-auto px-2 py-1.5 space-y-1">
-									<div>
-										<div className="flex items-center gap-1.5 px-1 py-1.5">
-											<Plus className="h-3 w-3 text-muted" />
-											<span className="text-[10px] font-semibold text-muted uppercase tracking-wider">{builtinSectionLabel}</span>
-										</div>
+            {/* 两栏: 左=所有可选列, 右=已选择 (配置在已选行下方就地展开)。
+                弹窗高度自适应内容: min-h 下限防列少时过扁, 超过 max-h 时本行
+                收缩、两栏列表各自滚动。 */}
+            <div className="flex-1 flex flex-col sm:flex-row min-h-[260px]">
+              {/* ── 左栏: 所有列 ── */}
+              <div className="w-full sm:w-[340px] max-h-40 sm:max-h-none shrink-0 border-b sm:border-b-0 sm:border-r border-border flex flex-col min-h-0 bg-surface/20">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 shrink-0">
+                  <span className="text-[10px] font-semibold text-muted uppercase tracking-wider">{builtinSectionLabel}</span>
+                  <span className="text-[10px] text-muted">勾选即加入</span>
+                </div>
+                <div className="flex-1 overflow-y-auto px-2 py-1.5 space-y-1">
+              <div>
+                <div className="flex items-center gap-1.5 px-1 py-1.5">
+                  <Plus className="h-3 w-3 text-muted" />
+                  <span className="text-[10px] font-semibold text-muted uppercase tracking-wider">{builtinSectionLabel}</span>
+                </div>
 
 										{filteredGroups.map(group => {
 											const isExpanded = expandedGroups.has(group.id)

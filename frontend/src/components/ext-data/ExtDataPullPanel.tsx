@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
+import { useQueryClient } from '@tanstack/react-query'
 import {
 	Loader2,
 	Search,
@@ -18,6 +19,7 @@ import {
 import { api, type ExtDataBackfillResult, type ExtDataConfig, type ExtPullAuth } from '@/lib/api'
 import { toast } from '@/components/Toast'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { QK } from '@/lib/queryKeys'
 import { SectionHead, INPUT_CLS } from './dialogShared'
 
 const AUTH_TYPE_LABELS: Record<ExtPullAuth['type'], string> = {
@@ -49,13 +51,14 @@ export function ExtDataPullPanel({ config, onSaved }: {
 	config: ExtDataConfig
 	onSaved: () => void
 }) {
-	const pull = config.pull
-	const [showConfig, setShowConfig] = useState(false)
-	const [toggling, setToggling] = useState(false)
-	const [optimistic, setOptimistic] = useState<boolean | null>(null)
-	const [running, setRunning] = useState(false)
-	const [runResult, setRunResult] = useState<{ rows: number; date: string } | null>(null)
-	const [error, setError] = useState('')
+  const queryClient = useQueryClient()
+  const pull = config.pull
+  const [showConfig, setShowConfig] = useState(false)
+  const [toggling, setToggling] = useState(false)
+  const [optimistic, setOptimistic] = useState<boolean | null>(null)
+  const [running, setRunning] = useState(false)
+  const [runResult, setRunResult] = useState<{ rows: number; date: string } | null>(null)
+  const [error, setError] = useState('')
 
 	const enabled = optimistic ?? (pull?.enabled ?? false)
 
@@ -244,15 +247,20 @@ export function ExtDataPullPanel({ config, onSaved }: {
 				</div>
 			)}
 
-			{showConfig && (
-				<ExtPullConfigDialog
-					config={config}
-					onSaved={onSaved}
-					onClose={() => setShowConfig(false)}
-				/>
-			)}
-		</div>
-	)
+      {showConfig && (
+        <ExtPullConfigDialog
+          config={config}
+          onSaved={() => {
+            onSaved()
+            void queryClient.invalidateQueries({ queryKey: QK.extDataSchemaAll })
+            void queryClient.invalidateQueries({ queryKey: QK.extSchemaAll })
+            void queryClient.invalidateQueries({ queryKey: QK.extSeriesAll })
+          }}
+          onClose={() => setShowConfig(false)}
+        />
+      )}
+    </div>
+  )
 }
 
 /** 完整拉取设置弹窗: 请求 / 调度 / 鉴权 / 数据解析 / 历史回补, 底部固定操作栏 */
@@ -830,149 +838,150 @@ function ExtPullConfigDialog({ config, onSaved, onClose }: {
 						)}
 					</section>
 
-					{/* 04 数据解析 */}
-					<section>
-						<SectionHead num="04" title="数据解析">
-							<span className="text-[10px] text-muted/70">从响应 JSON 到表行的映射</span>
-						</SectionHead>
-						<div className="space-y-3">
-							<div className="grid grid-cols-2 gap-3">
-								<div>
-									<div className="text-[11px] font-medium text-secondary mb-1.5">响应数据路径</div>
-									<input
-										value={responsePath} onChange={e => setResponsePath(e.target.value)}
-										placeholder="data.list"
-										className={`${INPUT_CLS} font-mono`}
-									/>
-								</div>
-								<div>
-									<div className="text-[11px] font-medium text-secondary mb-1.5">
-										时间字段
-										<span className="ml-1.5 text-[10px] font-normal text-muted">日内多行数据填，如 ts；无时间列填 __pull_ts__</span>
-									</div>
-									<input
-										value={timeField} onChange={e => setTimeField(e.target.value)}
-										placeholder="ts / __pull_ts__ · 留空=每日快照表"
-										title="配置后同一代码允许一天多行, 按代码+时间列去重; 填 __pull_ts__ 时自动注入每次拉取的时刻, 盘中多次拉取各存一盘"
-										className={`${INPUT_CLS} font-mono`}
-									/>
-								</div>
-							</div>
-							<div>
-								<div className="text-[11px] font-medium text-secondary mb-1.5">
-									序列粒度
-									<span className="ml-1.5 text-[10px] font-normal text-muted">决定列表迷你图口径: 当日逐盘 / 近N日每日一值</span>
-								</div>
-								<select
-									aria-label="序列粒度"
-									value={granularity} onChange={e => setGranularity(e.target.value as 'auto' | 'intraday' | 'daily')}
-									title="列表迷你图列与序列接口按此口径取数; 自动判断依据时间列数据形态"
-									className="h-9 w-full rounded-lg border border-border bg-base px-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50"
-								>
-									<option value="auto">
-										{`自动判断${config.granularity_effective
-											? `（当前: ${config.granularity_effective === 'intraday' ? '日内多盘' : '日级别'}${config.granularity_effective === 'intraday' && config.plate ? ` · ${config.plate.plates} 盘` : ''}）`
-											: '（暂无数据）'}`}
-									</option>
-									<option value="intraday">日内多盘（当日逐盘序列）</option>
-									<option value="daily">日级别（近 N 日每日一值）</option>
-								</select>
-								{granularity === 'auto' && (
-									<div className="mt-1 text-[10px] text-muted/70">
-										按时间列数据形态判断: 存在非零时刻 → 日内多盘; 日期形态 / 00:00:00 / 未配时间字段 → 日级别
-									</div>
-								)}
-							</div>
-							<div>
-								<div className="text-[11px] font-medium text-secondary mb-1.5">
-									字段映射（外部名 → 内部名，JSON，可选）
-								</div>
-								<textarea
-									value={fieldMapStr} onChange={e => setFieldMapStr(e.target.value)}
-									placeholder='{"code": "symbol", "val": "score"}'
-									rows={2}
-									className="w-full rounded-lg border border-border bg-base px-2.5 py-1.5 text-[10px] font-mono text-foreground placeholder:text-muted/40 resize-none focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-								/>
-							</div>
-							<div>
-								<div className="text-[11px] font-medium text-secondary mb-1.5">
-									日期参数名
-									<span className="ml-1.5 text-[10px] font-normal text-muted">接口支持按日查询时填，如 date · 配合历史回补</span>
-								</div>
-								<div className="flex gap-2">
-									<input
-										value={dateParam} onChange={e => setDateParam(e.target.value)}
-										placeholder="date · 留空=接口只有当日快照"
-										className="h-9 flex-1 min-w-0 rounded-lg border border-border bg-base px-3 text-xs font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-									/>
-									<select
-										aria-label="日期参数值格式"
-										value={dateFormat} onChange={e => setDateFormat(e.target.value)}
-										disabled={!dateParam.trim()}
-										title="日期参数值的序列化格式; 时间戳 = 该交易日北京时间 00:00:00"
-										className="h-9 shrink-0 rounded-lg border border-border bg-base px-2 text-[11px] text-secondary focus:outline-none focus:ring-1 focus:ring-accent/25 disabled:opacity-40"
-									>
-										<option value="iso">YYYY-MM-DD</option>
-										<option value="compact">YYYYMMDD</option>
-										<option value="ts_s">秒时间戳</option>
-										<option value="ts_ms">毫秒时间戳</option>
-									</select>
-								</div>
-							</div>
-							<div>
-								<div className="text-[11px] font-medium text-secondary mb-1.5">
-									增量参数名
-									<span className="ml-1.5 text-[10px] font-normal text-muted">盘中多盘表填，如 since · 免每次全量重拉</span>
-								</div>
-								<input
-									value={sinceParam} onChange={e => setSinceParam(e.target.value)}
-									placeholder="since · 留空=每次全量"
-									disabled={!timeField.trim()}
-									title="每次拉取自动带上本地已有最大时间值 (?参数=值), 源只返回其后数据; 缺多少补多少, 本地无数据时自动整日全量。需先配置时间字段; 两级拉取不适用"
-									className="h-9 w-full rounded-lg border border-border bg-base px-3 text-xs font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow disabled:opacity-40"
-								/>
-								{!timeField.trim() && (
-									<div className="mt-1 text-[10px] text-muted/70">需先填「时间字段」才能增量续传</div>
-								)}
-							</div>
-							<div>
-								<div className="text-[11px] font-medium text-secondary mb-1.5">
-									分页（仅 GET）
-									<span className="ml-1.5 text-[10px] font-normal text-muted">留空页码参数=单次请求</span>
-								</div>
-								<div className="grid grid-cols-2 gap-1.5">
-									<input
-										value={pageParam} onChange={e => setPageParam(e.target.value)}
-										placeholder="页码参数 · page"
-										title="配置后按页循环拉取, 直到空页/最后一页/达上限"
-										className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-									/>
-									<input
-										value={pageSizeParam} onChange={e => setPageSizeParam(e.target.value)}
-										placeholder="条数参数 · pageSize"
-										title="配合每页条数一起发送; 也用于短页判停"
-										className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-									/>
-									<input
-										type="number" min={1}
-										value={pageSize}
-										onChange={e => setPageSize(Number(e.target.value))}
-										placeholder="每页条数"
-										title="每页条数值 (>0 且已填参数名才发送)"
-										className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-									/>
-									<input
-										type="number" min={1} max={200}
-										value={maxPages}
-										onChange={e => setMaxPages(Number(e.target.value))}
-										placeholder="最多页 · 20"
-										title="安全上限, 防止接口永远返回数据拖死拉取循环"
-										className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
-									/>
-								</div>
-							</div>
-						</div>
-					</section>
+          {/* 04 数据解析 */}
+          <section>
+            <SectionHead num="04" title="数据解析">
+              <span className="text-[10px] text-muted/70">从响应 JSON 到表行的映射</span>
+            </SectionHead>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[11px] font-medium text-secondary mb-1.5">响应数据路径</div>
+                  <input
+                    value={responsePath} onChange={e => setResponsePath(e.target.value)}
+                    placeholder="data.list"
+                    className={`${INPUT_CLS} font-mono`}
+                  />
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium text-secondary mb-1.5">
+                    时间字段
+                    <span className="ml-1.5 text-[10px] font-normal text-muted">日内多行数据填，如 ts；无时间列填 __pull_ts__</span>
+                  </div>
+                  <input
+                    value={timeField} onChange={e => setTimeField(e.target.value)}
+                    placeholder="ts / __pull_ts__ · 留空=每日快照表"
+                    title="配置后同一代码允许一天多行, 按代码+时间列去重; 填 __pull_ts__ 时自动注入每次拉取的时刻, 盘中多次拉取各存一盘"
+                    className={`${INPUT_CLS} font-mono`}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-secondary mb-1.5">
+                  默认显示周期
+                  <span className="ml-1.5 text-[10px] font-normal text-muted">列表中每一列还可单独选择</span>
+                </div>
+                <select
+                  aria-label="默认显示周期"
+                  value={granularity} onChange={e => setGranularity(e.target.value as 'auto' | 'intraday' | 'daily')}
+                  title="列表迷你图列与序列接口按此口径取数; 自动判断依据时间列数据形态"
+                  className="h-9 w-full rounded-lg border border-border bg-base px-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50"
+                >
+                  <option value="auto">
+                    {`自动判断${config.granularity_effective
+                      ? `（当前: ${config.granularity_effective === 'intraday' ? '日内多盘' : '日级别'}${config.granularity_effective === 'intraday' && config.plate ? ` · ${config.plate.plates} 盘` : ''}）`
+                      : '（暂无数据）'}`}
+                  </option>
+                  <option value="intraday" disabled={!timeField.trim()}>按日内（当天全部盘次）</option>
+                  <option value="daily">按日（近 N 日，每天一值）</option>
+                </select>
+                <p className="mt-1 text-[10px] text-muted/70">显示周期不改变原始记录；按日展示时，同一天取最后一个有效值。</p>
+                {granularity === 'auto' && (
+                  <div className="mt-1 text-[10px] text-muted/70">
+                    按时间列数据形态判断: 存在非零时刻 → 日内多盘; 日期形态 / 00:00:00 / 未配时间字段 → 日级别
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-secondary mb-1.5">
+                  字段映射（外部名 → 内部名，JSON，可选）
+                </div>
+                <textarea
+                  value={fieldMapStr} onChange={e => setFieldMapStr(e.target.value)}
+                  placeholder='{"code": "symbol", "val": "score"}'
+                  rows={2}
+                  className="w-full rounded-lg border border-border bg-base px-2.5 py-1.5 text-[10px] font-mono text-foreground placeholder:text-muted/40 resize-none focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                />
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-secondary mb-1.5">
+                  日期参数名
+                  <span className="ml-1.5 text-[10px] font-normal text-muted">接口支持按日查询时填，如 date · 配合历史回补</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    value={dateParam} onChange={e => setDateParam(e.target.value)}
+                    placeholder="date · 留空=接口只有当日快照"
+                    className="h-9 flex-1 min-w-0 rounded-lg border border-border bg-base px-3 text-xs font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                  />
+                  <select
+                    aria-label="日期参数值格式"
+                    value={dateFormat} onChange={e => setDateFormat(e.target.value)}
+                    disabled={!dateParam.trim()}
+                    title="日期参数值的序列化格式; 时间戳 = 该交易日北京时间 00:00:00"
+                    className="h-9 shrink-0 rounded-lg border border-border bg-base px-2 text-[11px] text-secondary focus:outline-none focus:ring-1 focus:ring-accent/25 disabled:opacity-40"
+                  >
+                    <option value="iso">YYYY-MM-DD</option>
+                    <option value="compact">YYYYMMDD</option>
+                    <option value="ts_s">秒时间戳</option>
+                    <option value="ts_ms">毫秒时间戳</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-secondary mb-1.5">
+                  增量参数名
+                  <span className="ml-1.5 text-[10px] font-normal text-muted">盘中多盘表填，如 since · 免每次全量重拉</span>
+                </div>
+                <input
+                  value={sinceParam} onChange={e => setSinceParam(e.target.value)}
+                  placeholder="since · 留空=每次全量"
+                  disabled={!timeField.trim()}
+                  title="每次拉取自动带上本地已有最大时间值 (?参数=值), 源只返回其后数据; 缺多少补多少, 本地无数据时自动整日全量。需先配置时间字段; 两级拉取不适用"
+                  className="h-9 w-full rounded-lg border border-border bg-base px-3 text-xs font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow disabled:opacity-40"
+                />
+                {!timeField.trim() && (
+                  <div className="mt-1 text-[10px] text-muted/70">需先填「时间字段」才能增量续传</div>
+                )}
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-secondary mb-1.5">
+                  分页（仅 GET）
+                    <span className="ml-1.5 text-[10px] font-normal text-muted">留空页码参数=单次请求</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <input
+                      value={pageParam} onChange={e => setPageParam(e.target.value)}
+                      placeholder="页码参数 · page"
+                      title="配置后按页循环拉取, 直到空页/最后一页/达上限"
+                      className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                    />
+                    <input
+                      value={pageSizeParam} onChange={e => setPageSizeParam(e.target.value)}
+                      placeholder="条数参数 · pageSize"
+                      title="配合每页条数一起发送; 也用于短页判停"
+                      className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                    />
+                    <input
+                      type="number" min={1}
+                      value={pageSize}
+                      onChange={e => setPageSize(Number(e.target.value))}
+                      placeholder="每页条数"
+                      title="每页条数值 (>0 且已填参数名才发送)"
+                      className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                    />
+                    <input
+                      type="number" min={1} max={200}
+                      value={maxPages}
+                      onChange={e => setMaxPages(Number(e.target.value))}
+                      placeholder="最多页 · 20"
+                      title="安全上限, 防止接口永远返回数据拖死拉取循环"
+                      className="h-8 rounded-lg border border-border bg-base px-2 text-[10px] font-mono text-foreground placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-accent/25 focus:border-accent/50 transition-shadow"
+                    />
+                  </div>
+              </div>
+            </div>
+          </section>
 
 					{/* 05 历史回补 (仅 timeseries + 接口支持按日查询) */}
 					{config.mode === 'timeseries' && (
