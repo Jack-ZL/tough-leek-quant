@@ -10,34 +10,34 @@ import type { ECharts, EChartsOption } from 'echarts'
  * 用于在 setOption 前读取图表状态 (例如保留 dataZoom 缩放窗口)。
  */
 export function useECharts(
-  option: EChartsOption | null,
-  deps: any[] = [],
-  containerRef?: React.RefObject<HTMLDivElement>,
+	option: EChartsOption | null,
+	deps: any[] = [],
+	containerRef?: React.RefObject<HTMLDivElement>,
 ) {
-  const ownRef = useRef<HTMLDivElement>(null)
-  const chartRef = containerRef ?? ownRef
-  const instanceRef = useRef<ECharts | null>(null)
+	const ownRef = useRef<HTMLDivElement>(null)
+	const chartRef = containerRef ?? ownRef
+	const instanceRef = useRef<ECharts | null>(null)
 
-  // 初始化 / 销毁
-  useEffect(() => {
-    if (!chartRef.current) return
-    const container = chartRef.current
-    instanceRef.current = echarts.init(container, undefined, { renderer: 'canvas' })
-    const resizeObserver = new ResizeObserver(() => instanceRef.current?.resize())
-    resizeObserver.observe(container)
+	// 初始化 / 销毁
+	useEffect(() => {
+		if (!chartRef.current) return
+		const container = chartRef.current
+		instanceRef.current = echarts.init(container, undefined, { renderer: 'canvas' })
+		const resizeObserver = new ResizeObserver(() => instanceRef.current?.resize())
+		resizeObserver.observe(container)
 
-    return () => {
-      resizeObserver.disconnect()
-      instanceRef.current?.dispose()
-      instanceRef.current = null
-    }
-  }, [])
+		return () => {
+			resizeObserver.disconnect()
+			instanceRef.current?.dispose()
+			instanceRef.current = null
+		}
+	}, [])
 
-  // 更新 option
-  useEffect(() => {
-    if (!instanceRef.current || !option) return
-    instanceRef.current.setOption(option, { notMerge: true })
-  }, [option, ...deps])
+	// 更新 option
+	useEffect(() => {
+		if (!instanceRef.current || !option) return
+		instanceRef.current.setOption(option, { notMerge: true })
+	}, [option, ...deps])
 
-  return chartRef
+	return chartRef
 }
