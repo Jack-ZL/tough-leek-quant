@@ -1,7 +1,22 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X, SlidersHorizontal } from 'lucide-react'
+import {
+	ScanSearch,
+	Clock,
+	TrendingUp,
+	Star,
+	Filter,
+	Layers,
+	Network,
+	Sparkles,
+	RefreshCw,
+	Settings2,
+	Store,
+	RotateCcw,
+	X,
+	SlidersHorizontal
+} from 'lucide-react'
 import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
 import { useMinuteBatchQuery } from '@/lib/useMinuteBatchQuery'
 import { fetchDailyBatchChunked } from '@/lib/klineBatchChunked'
@@ -22,7 +37,14 @@ import { useStrategyPool } from '@/lib/useStrategyPool'
 import { StrategyCard, CardSize, loadCardSize, cardWrapCls } from '@/components/screener/StrategyCard'
 import { ScreenerTable } from '@/components/screener/ScreenerTable'
 import type { MiniIntradayYMode } from '@/components/stock-table/MiniIntraday'
-import { ScreenerFilter as ScreenerFilterType, defaultFilter, filterActive, countActiveFilters, applyFilter, FilterPanel } from '@/components/screener/ScreenerFilter'
+import {
+	ScreenerFilter as ScreenerFilterType,
+	defaultFilter,
+	filterActive,
+	countActiveFilters,
+	applyFilter,
+	FilterPanel
+} from '@/components/screener/ScreenerFilter'
 import { StrategySettingsDialog } from '@/components/screener/StrategySettingsDialog'
 import { DefaultStrategyParamsDialog } from '@/components/screener/DefaultStrategyParamsDialog'
 import { ResourceTransferButton } from '@/components/ResourceTransferDialog'
@@ -150,7 +172,7 @@ export function Screener() {
 		setColumns(prev => refreshExtColumns(prev, extSchema.data?.items))
 	}, [extSchema.data])
 
-  const extColumnsParam = useMemo(() => buildExtColumnsParam(columns, extSchema.data?.items), [columns, extSchema.data])
+	const extColumnsParam = useMemo(() => buildExtColumnsParam(columns, extSchema.data?.items), [columns, extSchema.data])
 
 	// 各策略命中数 (进入页面自动跑)
 	const [hitCounts, setHitCounts] = useState<Record<string, number>>({})
@@ -317,7 +339,8 @@ export function Screener() {
 		try {
 			if (localStorage.getItem(key) === fingerprint) return
 			localStorage.setItem(key, fingerprint)
-		} catch { /* 隐私模式等存储不可用: 退化为每次提示 */ }
+		} catch { /* 隐私模式等存储不可用: 退化为每次提示 */
+		}
 		const parts: string[] = []
 		if (legacyMigration.seeded_strategies) {
 			parts.push(`已补回 ${legacyMigration.seeded_strategies} 个原内置策略为自定义策略(可在策略页编辑或删除)`)
@@ -353,7 +376,11 @@ export function Screener() {
 	// 进入页面自动跑策略池中的策略，获取命中数 (日线走盘后缓存/渐进式 runAll;
 	// 分钟策略结果不落缓存, 由 runAllMinute 异步批量计算后合入 hitCounts)
 	const runAll = useMutation({
-		mutationFn: ({ date, strategyIds, ensure = false }: { date?: string; strategyIds?: string[]; ensure?: boolean } = {}) =>
+		mutationFn: ({ date, strategyIds, ensure = false }: {
+			date?: string;
+			strategyIds?: string[];
+			ensure?: boolean
+		} = {}) =>
 			api.screenerRunAll(
 				date,
 				strategyIds ?? dailyPoolIds,
@@ -663,42 +690,42 @@ export function Screener() {
 	})
 	const minuteData = intradayVisible ? (minuteBatch.data?.data ?? {}) : {}
 
-  // 扩展列迷你图按本列显示周期读取, 未指定时跟随数据表默认。
-  const extChartColumns = useMemo(
-    () => columns.filter(c =>
-      c.visible && c.source.type === 'ext'
-      && (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
-    [columns],
-  )
-  const extChartColsKey = extChartColumns
-    .map(c => {
-      const src = c.source as { configId: string; fieldName: string }
-      const granularity = c.extDisplay?.seriesGranularity
-        ?? extSchema.data?.items.find(t => t.id === src.configId)?.granularity ?? 'auto'
-      return `${src.configId}.${src.fieldName}:${c.extDisplay?.chartDays ?? 10}:${granularity}`
-    })
-    .join(',')
-  const extChartSymbolsKey = useMemo(
-    () => [...new Set(displayRows.map((r: any) => r.symbol as string))].sort().join(','),
-    [displayRows],
-  )
-  const extSeriesQuery = useQuery({
-    queryKey: QK.extSeries(extChartColsKey, asOf, extChartSymbolsKey),
-    queryFn: async () => {
-      const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
-      const entries = await Promise.all(extChartColumns.map(async c => {
-        const src = c.source as { type: 'ext'; configId: string; fieldName: string }
-        const r = await api.extDataSeries(src.configId, src.fieldName, asOf || undefined, symbols, c.extDisplay?.chartDays || 10, c.extDisplay?.seriesGranularity)
-        return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
-      }))
-      return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
-    },
-    enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
-    staleTime: 5 * 60_000,
-    placeholderData: (prev, previousQuery) => previousQuery?.queryKey[1] === extChartColsKey
-      && previousQuery.queryKey[2] === (asOf ?? '') ? prev : undefined,
-  })
-  const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
+	// 扩展列迷你图按本列显示周期读取, 未指定时跟随数据表默认。
+	const extChartColumns = useMemo(
+		() => columns.filter(c =>
+			c.visible && c.source.type === 'ext'
+			&& (c.extDisplay?.snapshotRender === 'bar' || c.extDisplay?.snapshotRender === 'line')),
+		[columns],
+	)
+	const extChartColsKey = extChartColumns
+		.map(c => {
+			const src = c.source as { configId: string; fieldName: string }
+			const granularity = c.extDisplay?.seriesGranularity
+				?? extSchema.data?.items.find(t => t.id === src.configId)?.granularity ?? 'auto'
+			return `${src.configId}.${src.fieldName}:${c.extDisplay?.chartDays ?? 10}:${granularity}`
+		})
+		.join(',')
+	const extChartSymbolsKey = useMemo(
+		() => [...new Set(displayRows.map((r: any) => r.symbol as string))].sort().join(','),
+		[displayRows],
+	)
+	const extSeriesQuery = useQuery({
+		queryKey: QK.extSeries(extChartColsKey, asOf, extChartSymbolsKey),
+		queryFn: async () => {
+			const symbols = extChartSymbolsKey ? extChartSymbolsKey.split(',') : []
+			const entries = await Promise.all(extChartColumns.map(async c => {
+				const src = c.source as { type: 'ext'; configId: string; fieldName: string }
+				const r = await api.extDataSeries(src.configId, src.fieldName, asOf || undefined, symbols, c.extDisplay?.chartDays || 10, c.extDisplay?.seriesGranularity)
+				return [`${src.configId}.${src.fieldName}`, r.items ?? {}] as const
+			}))
+			return Object.fromEntries(entries) as Record<string, Record<string, [string, number][]>>
+		},
+		enabled: extChartColumns.length > 0 && extChartSymbolsKey.length > 0,
+		staleTime: 5 * 60_000,
+		placeholderData: (prev, previousQuery) => previousQuery?.queryKey[1] === extChartColsKey
+			&& previousQuery.queryKey[2] === (asOf ?? '') ? prev : undefined,
+	})
+	const extSeriesData = extChartColumns.length ? (extSeriesQuery.data ?? {}) : {}
 
 	// 分时列集合竞价叠加: 左侧窄栏价格/匹配量/未匹配量 (按 asOf 取同日分区)
 	const auctionCfg = useAuctionConfig(columns)
@@ -745,7 +772,12 @@ export function Screener() {
 
 	// 执行周期由策略自身声明决定: 日线走盘后缓存/单跑, 分钟走本地分钟K分区实时跑
 	const run = useMutation({
-		mutationFn: ({ id, date, timeframe: tf, ensure = false }: { id: string; date: string; timeframe: '1d' | '1m'; ensure?: boolean }) =>
+		mutationFn: ({ id, date, timeframe: tf, ensure = false }: {
+			id: string;
+			date: string;
+			timeframe: '1d' | '1m';
+			ensure?: boolean
+		}) =>
 			api.screenerRunPreset(id, undefined, date || undefined, extColumnsParam || undefined, assetType, tf, ensure),
 		onSuccess: (data, vars) => {
 			setResult(data)
@@ -807,8 +839,8 @@ export function Screener() {
 			action: 'add' | 'remove'
 			groupId?: string | null
 		}) => action === 'remove'
-			? api.watchlistRemove(symbol)
-			: api.watchlistAdd(symbol, '', groupId),
+				? api.watchlistRemove(symbol)
+				: api.watchlistAdd(symbol, '', groupId),
 		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: QK.watchlist })
 			qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
@@ -892,18 +924,23 @@ export function Screener() {
 				subtitle="基于本地 enriched 表 · 毫秒级 SQL"
 				right={
 					/* 工具栏 10 组控件总宽会超过标题栏 (窄屏实测溢出 148px)。
-						 不能靠 overflow-x-auto + 隐藏滚动条 —— 那样右侧按钮被静默裁掉,
-						 用户既看不到也滚不到 (「创建策略 · AI」曾整块消失)。
-						 改用 flex-wrap: 空间不足时折到第二行, 全部控件始终可达。
-						 间距取 1.5 (6px): 1440px 宽下总占位 939+54=993px, 刚好单行放下;
-						 8px 间距则是 1011px, 会在 1440 只剩一个按钮孤零零折行。 */
+					 不能靠 overflow-x-auto + 隐藏滚动条 —— 那样右侧按钮被静默裁掉,
+					 用户既看不到也滚不到 (「创建策略 · AI」曾整块消失)。
+					 改用 flex-wrap: 空间不足时折到第二行, 全部控件始终可达。
+					 间距取 1.5 (6px): 1440px 宽下总占位 939+54=993px, 刚好单行放下;
+					 8px 间距则是 1011px, 会在 1440 只剩一个按钮孤零零折行。 */
 					<div className="flex flex-wrap items-center justify-end gap-1.5">
 						{/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
 						<div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
 							{(['stock', 'etf'] as const).map(t => (
 								<button
 									key={t}
-									onClick={() => { setAssetType(t); setActiveStrategy(null); setResult(null); setShowAll(false) }}
+									onClick={() => {
+										setAssetType(t);
+										setActiveStrategy(null);
+										setResult(null);
+										setShowAll(false)
+									}}
 									className={`h-full px-2.5 text-xs font-medium transition-colors
 										cursor-pointer ${assetType === t
 											? 'bg-accent/10 text-accent'
@@ -922,7 +959,9 @@ export function Screener() {
 									onClick={() => {
 										if (tfFilter === tf) return
 										setTfFilter(tf)
-										setActiveStrategy(null); setResult(null); setShowAll(false)
+										setActiveStrategy(null);
+										setResult(null);
+										setShowAll(false)
 									}}
 									className={`h-full px-2.5 text-xs font-medium transition-colors cursor-pointer
 										${tfFilter === tf
@@ -957,7 +996,10 @@ export function Screener() {
 						)}
 						{/* 全部切换 */}
 						<button
-							onClick={() => setShowAll(v => { if (!v) setActiveStrategy(null); return !v })}
+							onClick={() => setShowAll(v => {
+								if (!v) setActiveStrategy(null);
+								return !v
+							})}
 							title="显示全部策略个股"
 							className={`inline-flex items-center justify-center h-7 w-7 rounded-btn border transition-colors cursor-pointer
 								${showAll
@@ -972,7 +1014,10 @@ export function Screener() {
 							{(['hidden', 'mini', 'normal', 'large'] as const).map(sz => (
 								<button
 									key={sz}
-									onClick={() => { setCardSize(sz); storage.screenerCardSize.set(sz) }}
+									onClick={() => {
+										setCardSize(sz);
+										storage.screenerCardSize.set(sz)
+									}}
 									className={`h-full px-2 text-[10px] font-medium transition-colors cursor-pointer
 										${cardSize === sz
 											? 'bg-accent/10 text-accent'
@@ -1008,7 +1053,10 @@ export function Screener() {
 						</button>
 						{/* 创建策略 */}
 						<button
-							onClick={() => { setBuilderMode('create'); setShowBuilder(true) }}
+							onClick={() => {
+								setBuilderMode('create');
+								setShowBuilder(true)
+							}}
 							className="inline-flex items-center gap-1.5 h-7 px-3 rounded-btn
 								text-xs font-medium text-amber-400 border border-amber-400/20 bg-amber-400/5
 								hover:bg-amber-400/15 transition-colors cursor-pointer"
@@ -1048,75 +1096,75 @@ export function Screener() {
 			<div className="px-8 py-4 space-y-3">
 				{/* 策略卡片 */}
 				{cardSize !== 'hidden' && (
-				<section>
-					{strategies.isLoading && <div className="text-sm text-muted">加载中…</div>}
-					{!strategies.isLoading && strategies.isError && (
-						<div className="flex flex-col items-center gap-2 py-4 text-center border border-dashed border-danger/40 rounded-btn">
-							<span className="text-sm text-secondary">策略列表加载失败，请重试；策略池配置本身不受影响。</span>
-							<button
-								type="button"
-								onClick={() => strategies.refetch()}
-								disabled={strategies.isFetching}
-								className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-accent transition-colors hover:bg-elevated disabled:opacity-50"
-							>
-								重试
-							</button>
-						</div>
-					)}
-					{!strategies.isLoading && !strategies.isError && displayPool.length === 0 && (
-						<div className="py-4 text-center border border-dashed border-border rounded-btn">
-							<div className="text-sm text-muted">
-								{pool.length === 0
-									? '策略池为空，点击右上角「策略池」按钮添加策略'
-									: '当前周期筛选下无策略，切换周期筛选或编辑策略池'}
+					<section>
+						{strategies.isLoading && <div className="text-sm text-muted">加载中…</div>}
+						{!strategies.isLoading && strategies.isError && (
+							<div className="flex flex-col items-center gap-2 py-4 text-center border border-dashed border-danger/40 rounded-btn">
+								<span className="text-sm text-secondary">策略列表加载失败，请重试；策略池配置本身不受影响。</span>
+								<button
+									type="button"
+									onClick={() => strategies.refetch()}
+									disabled={strategies.isFetching}
+									className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-accent transition-colors hover:bg-elevated disabled:opacity-50"
+								>
+									重试
+								</button>
 							</div>
-							{/* 池空时补文档入口: 用户此刻最需要的是「怎么造一个策略」, 而文档路径
-									在界面上不可发现 —— 补上下文提到的三份指南, 与其它页引用 docs 同款
-									(等宽文本而非链接: 这些是仓库内文件, 浏览器里点不开)。 */}
-							{pool.length === 0 && (
-								<div className="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed text-muted/80">
-									<span>自己写策略看</span>
-									<code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy.md</code>
-									<span>（三种扩展方式：自定义信号 / AI 生成 / 手写代码）</span>
-									<span className="text-border" aria-hidden="true">·</span>
-									<span>用 AI 迭代已有策略看</span>
-									<code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy-iteration.md</code>
+						)}
+						{!strategies.isLoading && !strategies.isError && displayPool.length === 0 && (
+							<div className="py-4 text-center border border-dashed border-border rounded-btn">
+								<div className="text-sm text-muted">
+									{pool.length === 0
+										? '策略池为空，点击右上角「策略池」按钮添加策略'
+										: '当前周期筛选下无策略，切换周期筛选或编辑策略池'}
 								</div>
-							)}
+								{/* 池空时补文档入口: 用户此刻最需要的是「怎么造一个策略」, 而文档路径
+								 在界面上不可发现 —— 补上下文提到的三份指南, 与其它页引用 docs 同款
+								 (等宽文本而非链接: 这些是仓库内文件, 浏览器里点不开)。 */}
+								{pool.length === 0 && (
+									<div className="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed text-muted/80">
+										<span>自己写策略看</span>
+										<code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy.md</code>
+										<span>（三种扩展方式：自定义信号 / AI 生成 / 手写代码）</span>
+										<span className="text-border" aria-hidden="true">·</span>
+										<span>用 AI 迭代已有策略看</span>
+										<code className="rounded bg-elevated/70 px-1 py-px font-mono text-[10px] text-secondary">docs/strategy-iteration.md</code>
+									</div>
+								)}
+							</div>
+						)}
+						<div className={cardWrapCls(cardSize)}>
+							{displayPool.map(id => {
+								const s = strategyMap.get(id)
+								if (!s) return null
+								const isMinute = s.timeframes?.includes('1m') ?? false
+								const selfRunning = run.isPending && activeStrategy === s.id
+								// 分钟批量计算中: 卡片脉冲占位, 算完数字自动点亮
+								const minuteRunning = isMinute && runAllMinute.isPending
+								return (
+									<StrategyCard
+										key={s.id}
+										name={s.name}
+										description={s.description}
+										source={s.source}
+										active={activeStrategy === s.id}
+										count={hitCounts[id]}
+										expiredCount={expiredCounts[id]}
+										loading={runAll.isPending}
+										computing={pendingRunIds.has(id) || selfRunning || minuteRunning}
+										awaitRun={hitCounts[id] == null && isMinute && !selfRunning && !minuteRunning}
+										cardSize={cardSize}
+										onRun={() => handleRun(s)}
+										disabled={run.isPending && activeStrategy === s.id}
+										onSettings={() => setSettingsStrategyId(s.id)}
+										monitored={strategyMonitorMap.has(`${assetType}:${s.id}`)}
+										onToggleMonitor={() => toggleStrategyMonitor(s.id, s.name)}
+										timeframeBadge={isMinute ? '分钟' : undefined}
+									/>
+								)
+							})}
 						</div>
-					)}
-					<div className={cardWrapCls(cardSize)}>
-						{displayPool.map(id => {
-							const s = strategyMap.get(id)
-							if (!s) return null
-							const isMinute = s.timeframes?.includes('1m') ?? false
-							const selfRunning = run.isPending && activeStrategy === s.id
-							// 分钟批量计算中: 卡片脉冲占位, 算完数字自动点亮
-							const minuteRunning = isMinute && runAllMinute.isPending
-							return (
-								<StrategyCard
-									key={s.id}
-									name={s.name}
-									description={s.description}
-									source={s.source}
-									active={activeStrategy === s.id}
-									count={hitCounts[id]}
-									expiredCount={expiredCounts[id]}
-									loading={runAll.isPending}
-									computing={pendingRunIds.has(id) || selfRunning || minuteRunning}
-									awaitRun={hitCounts[id] == null && isMinute && !selfRunning && !minuteRunning}
-									cardSize={cardSize}
-									onRun={() => handleRun(s)}
-									disabled={run.isPending && activeStrategy === s.id}
-									onSettings={() => setSettingsStrategyId(s.id)}
-									monitored={strategyMonitorMap.has(`${assetType}:${s.id}`)}
-									onToggleMonitor={() => toggleStrategyMonitor(s.id, s.name)}
-									timeframeBadge={isMinute ? '分钟' : undefined}
-								/>
-							)
-						})}
-					</div>
-				</section>
+					</section>
 				)}
 
 				{/* 结果 */}
@@ -1277,9 +1325,20 @@ export function Screener() {
 										activeStrategy={activeStrategy}
 										activeSymbol={previewSymbol}
 										watchlistSet={watchlistSet}
-										onPreview={(symbol, name, navList) => { setPreviewSymbol(symbol); setPreviewName(name ?? ''); setPreviewNavList(navList ?? []) }}
-										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({ symbol, action: 'add', groupId })}
-										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({ symbol, action: 'remove' })}
+										onPreview={(symbol, name, navList) => {
+											setPreviewSymbol(symbol);
+											setPreviewName(name ?? '');
+											setPreviewNavList(navList ?? [])
+										}}
+										onAddToWatchlist={(symbol, groupId) => toggleWatchlist.mutate({
+											symbol,
+											action: 'add',
+											groupId
+										})}
+										onRemoveFromWatchlist={symbol => toggleWatchlist.mutate({
+											symbol,
+											action: 'remove'
+										})}
 										watchlistPending={toggleWatchlist.isPending}
 										klineData={klineData}
 										dailyKChartVisible={dailyKChartVisible}
@@ -1349,7 +1408,10 @@ export function Screener() {
 				name={previewName}
 				onClose={closePreview}
 				navList={previewNavList}
-				onNavigate={(sym, n) => { setPreviewSymbol(sym); setPreviewName(n ?? '') }}
+				onNavigate={(sym, n) => {
+					setPreviewSymbol(sym);
+					setPreviewName(n ?? '')
+				}}
 			/>
 
 			<DefaultStrategyParamsDialog
@@ -1385,14 +1447,20 @@ export function Screener() {
 						setSettingsStrategyId(null)
 						setBuilderMode('modify')
 						setShowBuilder(true)
-					} catch {}
+					} catch {
+					}
 				}}
 				onDeleted={() => {
 					if (settingsStrategyId) {
 						removeFromPool(settingsStrategyId)
 						const rules = storage.strategyRules.get({})
-						delete rules[settingsStrategyId]; storage.strategyRules.set(rules)
-						setStrategyLimits(prev => { const next = {...prev}; delete next[settingsStrategyId]; return next })
+						delete rules[settingsStrategyId];
+						storage.strategyRules.set(rules)
+						setStrategyLimits(prev => {
+							const next = { ...prev };
+							delete next[settingsStrategyId];
+							return next
+						})
 						qc.invalidateQueries({ queryKey: ['screener-strategies'] })
 					}
 				}}
@@ -1408,7 +1476,11 @@ export function Screener() {
 							const addedDaily = newPool.filter(
 								id => !prev.has(id) && !(strategyMap.get(id)?.timeframes?.includes('1m') ?? false),
 							)
-							if (addedDaily.length > 0) requestRunAll({ date: asOf || undefined, strategyIds: addedDaily, ensure: true })
+							if (addedDaily.length > 0) requestRunAll({
+								date: asOf || undefined,
+								strategyIds: addedDaily,
+								ensure: true
+							})
 						}
 						reorderPool(newPool)
 					}}
@@ -1426,7 +1498,11 @@ export function Screener() {
 						toast('AI 策略已保存为草稿，请在策略池「AI」标签发布后使用', 'success')
 						return
 					}
-					const data = await qc.fetchQuery({ queryKey: QK.screenerStrategies('all'), queryFn: () => api.screenerStrategies(), staleTime: 0 })
+					const data = await qc.fetchQuery({
+						queryKey: QK.screenerStrategies('all'),
+						queryFn: () => api.screenerStrategies(),
+						staleTime: 0
+					})
 					if (!data.presets.some(s => s.id === id)) {
 						throw new Error(`策略 ${id} 已保存但未加载，请检查策略代码`)
 					}
@@ -1443,7 +1519,11 @@ export function Screener() {
 				open={showComposite}
 				onClose={() => setShowComposite(false)}
 				onSavedId={async id => {
-					const data = await qc.fetchQuery({ queryKey: QK.screenerStrategies('all'), queryFn: () => api.screenerStrategies(), staleTime: 0 })
+					const data = await qc.fetchQuery({
+						queryKey: QK.screenerStrategies('all'),
+						queryFn: () => api.screenerStrategies(),
+						staleTime: 0
+					})
 					addToPool(id)
 					// 新建叠加策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
 					const preset = data.presets.find(s => s.id === id)
