@@ -1702,6 +1702,8 @@ export interface FactorColumn {
 // ===== Factor Library (注册表, P1) =====
 export type FactorKind = 'base' | 'virtual' | 'composite' | 'custom'
 export type FactorStability = 'stable' | 'experimental' | 'deprecated'
+/** 公式语言档位 (P1-17): 同一段文本在不同档位下语义不同, 必须随因子一起存取 */
+export type FactorLang = 'dsl' | 'python' | 'tdx'
 
 export interface FactorLibraryItem {
 	id: string
@@ -1720,6 +1722,8 @@ export interface FactorLibraryItem {
 	status: 'draft' | 'active' | 'watch' | 'retired' | null
 	scale_free: boolean
 	dependencies: string[]
+	/** 公式语言; 编辑器据此恢复档位, 缺失会把通达信因子静默当 DSL 校验 */
+	lang: FactorLang
 }
 
 export interface FactorDslError {
@@ -1736,6 +1740,38 @@ export interface FactorValidateResponse {
 	referenced_factors: string[]
 	warmup_bars: number
 	cross_sectional: boolean
+	/** 通达信档的翻译预览 (等价 DSL 文本); 其余档位恒为空串 */
+	dsl_text: string
+}
+
+/** 通达信函数兼容表一行 — 与后端 builtins.compatibility_table() 同源。
+ *  两种形状: 支持/宏展开档带 maps_to, 被拒档带 category+reason (后端不下发另一组键)。 */
+export interface TdxCompatibilityRow {
+	tdx: string
+	/** operator=直接映射算子 · macro=用已有算子组合展开 · rejected=明确不支持 */
+	kind: 'operator' | 'macro' | 'rejected'
+	status: 'supported' | 'rejected'
+	/** 支持档: 映射到的 DSL 算子名; 宏展开档: 展开式 */
+	maps_to?: string
+	/** 被拒档: 拒绝归类 future(未来函数)/perf(无法向量化)/data(缺数据)/drawing(画线) */
+	category?: string
+	/** 被拒档: 为什么不支持 */
+	reason?: string
+}
+
+/** 通达信公式模板 — kind 区分连续值(可打分)与布尔信号(可当选股条件) */
+export interface TdxTemplate {
+	id: string
+	name: string
+	category: string
+	kind: 'value' | 'signal'
+	formula: string
+	description: string
+}
+
+export interface FactorTdxMeta {
+	compatibility: TdxCompatibilityRow[]
+	templates: TdxTemplate[]
 }
 
 export interface FactorTrialResponse {
@@ -4513,17 +4549,21 @@ export const api = {
 			`/api/factors${assetType ? `?asset_type=${assetType}` : ''}`,
 		),
 
-	factorValidate: (formula: string) =>
+	/** P1-17: lang 决定后端用哪套编译器 (dsl/python/tdx); 缺省 dsl 保持老调用方行为 */
+	factorValidate: (formula: string, lang: FactorLang = 'dsl') =>
 		request<FactorValidateResponse>('/api/factors/validate', {
 			method: 'POST',
-			body: JSON.stringify({ formula }),
+			body: JSON.stringify({ formula, lang }),
 		}),
 
-	factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf'; days?: number }) =>
+	factorTrial: (payload: { formula: string; asset_type?: 'stock' | 'etf'; days?: number; lang?: FactorLang }) =>
 		request<FactorTrialResponse>('/api/factors/trial', {
 			method: 'POST',
 			body: JSON.stringify(payload),
 		}),
+
+	/** 通达信兼容表 + 公式模板 (P1-17 第 4 批); 纯静态元数据, 与行情无关 */
+	factorTdxMeta: () => request<FactorTdxMeta>('/api/factors/tdx/meta'),
 
 	factorCustomCreate: (payload: {
 		id?: string
@@ -4532,6 +4572,8 @@ export const api = {
 		formula: string
 		description?: string
 		direction?: 'high' | 'low' | 'none'
+		/** 公式语言; 不传后端按 dsl (P1-17) */
+		lang?: FactorLang
 	}) =>
 		request<{ ok: boolean; id: string; version: number }>('/api/factors/custom', {
 			method: 'POST',
@@ -4544,6 +4586,8 @@ export const api = {
 		formula: string
 		description?: string
 		direction?: 'high' | 'low' | 'none'
+		/** 改档位会连公式一起重验; 不传则保持已存档位 (P1-17) */
+		lang?: FactorLang
 	}) =>
 		request<{ ok: boolean; id: string; version: number; status: string }>(
 			`/api/factors/custom/${encodeURIComponent(factorId)}/update`,

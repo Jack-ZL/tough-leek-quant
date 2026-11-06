@@ -1757,3 +1757,72 @@ def test_batch3_self_reference_message_is_specific() -> None:
     assert not compiled.ok
     assert compiled.errors[0].code == "E309"
     assert "自己" in compiled.errors[0].message, compiled.errors[0].message
+
+
+# ── P1-17 第 4 批: 前端要的两处契约 (翻译预览 + 列表带 lang) ──────────────────
+def test_batch4_validate_returns_tdx_translation_preview() -> None:
+    """lang=tdx 的校验响应必须附带翻译后的 DSL 文本, 且与翻译层同源。"""
+    from app.factors.tdx.translate import translate_tdx
+
+    source = "DIF:=EMA(C,12)-EMA(C,26); DEA:=EMA(DIF,9); MACD柱:(DIF-DEA)*2;"
+    response = _client(None).post(
+        "/api/factors/validate", json={"formula": source, "lang": "tdx"}
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    # 断言同源而不是抄一份期望字符串: 翻译层改了口径, 这里自动跟着变
+    assert payload["dsl_text"] == translate_tdx(source).dsl_text
+    assert "ts_ema(close, 12)" in payload["dsl_text"]
+
+
+def test_batch4_validate_preview_survives_compile_failure() -> None:
+    """翻译成功但 DSL 编译失败时仍要给预览 —— 那正是排错最需要的东西。
+
+    `MA(C,0)` 译成 `ts_mean(close, 0)`, 窗口下限 2 被 E004 拒; 只报错误码的话
+    用户看不出「0」是被翻译层原样带过去的, 会怀疑翻译器改了自己的参数。
+    """
+    response = _client(None).post(
+        "/api/factors/validate", json={"formula": "MA(C,0)", "lang": "tdx"}
+    )
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "E004"
+    assert payload["dsl_text"] == "ts_mean(close, 0)"
+
+
+def test_batch4_validate_preview_empty_for_dsl_and_untranslatable() -> None:
+    """非 tdx 档恒为空串; tdx 档翻译本身就失败时也是空串 (不半截糊弄)。"""
+    dsl = _client(None).post(
+        "/api/factors/validate", json={"formula": "rank(close)", "lang": "dsl"}
+    ).json()
+    assert dsl["ok"] is True and dsl["dsl_text"] == ""
+
+    # ZIG 是未来函数, 翻译层直接拒 → 没有 DSL 可预览
+    rejected = _client(None).post(
+        "/api/factors/validate", json={"formula": "MA(C,5)+ZIG(C,3)", "lang": "tdx"}
+    ).json()
+    assert rejected["ok"] is False and rejected["dsl_text"] == ""
+
+
+def test_batch4_list_exposes_lang(tmp_path, cleanup_registry) -> None:
+    """因子列表必须带 lang: 编辑器靠它恢复语言档位。
+
+    少了这个字段, 重新打开一个通达信因子会被当成 DSL 校验 —— 同一段文本在两种
+    语言下语义不同, 那是静默错译, 比报错危险。
+    """
+    client = _client(tmp_path)
+    created = client.post("/api/factors/custom", json={
+        "id": "uf_tdx_lang_list", "label": "通达信动量", "formula": "MA(C,5)", "lang": "tdx",
+    })
+    assert created.status_code == 200, created.text
+    cleanup_registry.add(created.json()["id"])
+
+    listing = client.get("/api/factors")
+    assert listing.status_code == 200, listing.text
+    by_id = {item["id"]: item for item in listing.json()["factors"]}
+    assert by_id["uf_tdx_lang_list"]["lang"] == "tdx"
+    # 原文照存 (不是生成的 DSL), 否则切回 tdx 档编辑会看到被翻译过的文本
+    assert by_id["uf_tdx_lang_list"]["formula"] == "MA(C,5)"
+    # 内置因子全是 dsl — 顺带锁住"字段对所有因子都存在", 前端不必判空
+    assert all(item["lang"] == "dsl" for item in by_id.values() if item["kind"] != "custom")
