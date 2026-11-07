@@ -4,9 +4,9 @@
  * 实时数据走 SSE invalidation，无需前端轮询。
  * 只有管线进度等非 SSE 数据才用 refetchInterval。
  */
-import { useQuery } from '@tanstack/react-query'
-import { api } from './api'
-import { QK } from './queryKeys'
+import {useQuery} from '@tanstack/react-query'
+import {api} from './api'
+import {QK} from './queryKeys'
 
 // ===== 全局共享 =====
 
@@ -100,11 +100,11 @@ export function useDataStatus(opts?: {
 	staleTime?: number
 	refetchInterval?: number | false | ((query: any) => number | false | undefined)
 }) {
-  return useQuery({
-    queryKey: QK.dataStatus,
-    queryFn: api.dataStatus,
-    staleTime: opts?.staleTime,
-    // 首次统计和失效刷新由后台完成, 取到快照后自动停止兜底轮询。
-    refetchInterval: opts?.refetchInterval ?? ((query) => query.state.data?.stats_pending ? 2_000 : false),
-  })
+	return useQuery({
+		queryKey: QK.dataStatus,
+		queryFn: api.dataStatus,
+		staleTime: opts?.staleTime,
+		// 首次统计和失效刷新由后台完成, 取到快照后自动停止兜底轮询。
+		refetchInterval: opts?.refetchInterval ?? ((query) => query.state.data?.stats_pending ? 2_000 : false),
+	})
 }

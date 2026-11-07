@@ -10,25 +10,25 @@
 
 /** 两个 bar 对象是否全字段相等 (own key 集合一致且每个值 ===)。 */
 export function sameBar(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  if (a === b) return true
-  const ka = Object.keys(a)
-  const kb = Object.keys(b)
-  if (ka.length !== kb.length) return false
-  for (const k of ka) if (a[k] !== b[k]) return false
-  return true
+	if (a === b) return true
+	const ka = Object.keys(a)
+	const kb = Object.keys(b)
+	if (ka.length !== kb.length) return false
+	for (const k of ka) if (a[k] !== b[k]) return false
+	return true
 }
 
 /** 两条 bar 序列是否逐根全等 (长度一致 + 每根全字段相等)。 */
 export function sameSeries(
-  a: readonly unknown[] | undefined,
-  b: readonly unknown[] | undefined,
+	a: readonly unknown[] | undefined,
+	b: readonly unknown[] | undefined,
 ): boolean {
-  if (a === b) return true
-  if (!a || !b || a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) {
-    if (!sameBar(a[i] as Record<string, unknown>, b[i] as Record<string, unknown>)) return false
-  }
-  return true
+	if (a === b) return true
+	if (!a || !b || a.length !== b.length) return false
+	for (let i = 0; i < a.length; i++) {
+		if (!sameBar(a[i] as Record<string, unknown>, b[i] as Record<string, unknown>)) return false
+	}
+	return true
 }
 
 /** 共享空序列: 代替 `xx ?? []`, 避免每次渲染新建数组击穿下游 memo。 */
@@ -38,12 +38,12 @@ export const EMPTY_ROWS: never[] = []
  * next, 不动 prev)。返回值即 next。next 必须是调用方自建对象 — 会返回 base
  * 原对象的外来引用 (如 react-query 缓存数据) 不得传入, 否则缓存被原地改写。 */
 export function reuseUnchangedSeries<T>(
-  prev: Record<string, T[]>,
-  next: Record<string, T[]>,
+	prev: Record<string, T[]>,
+	next: Record<string, T[]>,
 ): Record<string, T[]> {
-  for (const sym of Object.keys(next)) {
-    const p = prev[sym]
-    if (p && p !== next[sym] && sameSeries(p, next[sym])) next[sym] = p
-  }
-  return next
+	for (const sym of Object.keys(next)) {
+		const p = prev[sym]
+		if (p && p !== next[sym] && sameSeries(p, next[sym])) next[sym] = p
+	}
+	return next
 }

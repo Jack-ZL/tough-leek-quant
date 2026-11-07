@@ -11,13 +11,13 @@
  * - 正在播报时直接丢弃新批次 (快行情下宁可漏念, 不叠成噪音)
  */
 
-import type { AlertEvent } from './api'
-import { strategyEventMeta, strategyName } from './strategyMonitorEvents'
+import type {AlertEvent} from './api'
+import {strategyEventMeta, strategyName} from './strategyMonitorEvents'
 
 const LS = {
-  enabled: 'voice_broadcast_enabled',     // '1'/'0', 默认关
-  voice: 'voice_broadcast_voice',         // 语音包 voiceURI (空=系统默认)
-  rate: 'voice_broadcast_rate',            // 语速 0.5-2, 默认 1
+	enabled: 'voice_broadcast_enabled',     // '1'/'0', 默认关
+	voice: 'voice_broadcast_voice',         // 语音包 voiceURI (空=系统默认)
+	rate: 'voice_broadcast_rate',            // 语速 0.5-2, 默认 1
 } as const
 
 // ===== 激活态: 浏览器自动播放策略要求用户先交互一次 =====
@@ -28,20 +28,21 @@ let _activated = false
  * 由设置页开关/试听按钮点击时调用一次, 之后 SSE 推来的告警才能自动念。
  */
 export function activateVoice() {
-  try {
-    if (!_activated && 'speechSynthesis' in window) {
-      _activated = true
-      // 空语句触发激活, 不实际发声
-      const u = new SpeechSynthesisUtterance('')
-      u.volume = 0
-      window.speechSynthesis.speak(u)
-    }
-  } catch { /* ignore */ }
+	try {
+		if (!_activated && 'speechSynthesis' in window) {
+			_activated = true
+			// 空语句触发激活, 不实际发声
+			const u = new SpeechSynthesisUtterance('')
+			u.volume = 0
+			window.speechSynthesis.speak(u)
+		}
+	} catch { /* ignore */
+	}
 }
 
 /** 是否支持语音播报 */
 export function isVoiceSupported(): boolean {
-  return typeof window !== 'undefined' && 'speechSynthesis' in window
+	return typeof window !== 'undefined' && 'speechSynthesis' in window
 }
 
 // ===== 中文语音包检测 (供设置页下拉) =====
@@ -51,9 +52,11 @@ export function isVoiceSupported(): boolean {
  * 注意: getVoices() 首次调用可能返回空, 需监听 voiceschanged 事件。
  */
 export function listZhVoices(): SpeechSynthesisVoice[] {
-  try {
-    return window.speechSynthesis.getVoices().filter(v => v.lang.startsWith('zh'))
-  } catch { return [] }
+	try {
+		return window.speechSynthesis.getVoices().filter(v => v.lang.startsWith('zh'))
+	} catch {
+		return []
+	}
 }
 
 // ===== 语音包解析: 用户手选 > 默认偏好(Google 中国大陆) > 兜底 =====
@@ -67,29 +70,31 @@ export function listZhVoices(): SpeechSynthesisVoice[] {
  *   4. 都没有: undefined (交浏览器系统默认, 可能不标准但不崩)
  */
 function resolveVoice(): SpeechSynthesisVoice | undefined {
-  try {
-    const voices = window.speechSynthesis.getVoices()
-    if (voices.length === 0) return undefined
+	try {
+		const voices = window.speechSynthesis.getVoices()
+		if (voices.length === 0) return undefined
 
-    // 1. 用户手选
-    const configured = localStorage.getItem(LS.voice)
-    if (configured) {
-      const m = voices.find(v => v.voiceURI === configured)
-      if (m) return m
-    }
+		// 1. 用户手选
+		const configured = localStorage.getItem(LS.voice)
+		if (configured) {
+			const m = voices.find(v => v.voiceURI === configured)
+			if (m) return m
+		}
 
-    // 2. 默认偏好: Google 中国大陆
-    const googleCN = voices.find(v => /Google/i.test(v.name) && v.lang === 'zh-CN')
-    if (googleCN) return googleCN
+		// 2. 默认偏好: Google 中国大陆
+		const googleCN = voices.find(v => /Google/i.test(v.name) && v.lang === 'zh-CN')
+		if (googleCN) return googleCN
 
-    // 3. 兜底: 任意 zh-CN
-    return voices.find(v => v.lang === 'zh-CN')
-  } catch { return undefined }
+		// 3. 兜底: 任意 zh-CN
+		return voices.find(v => v.lang === 'zh-CN')
+	} catch {
+		return undefined
+	}
 }
 
 /** 当前实际使用的语音 voiceURI (供设置页下拉回显) */
 export function getCurrentVoiceURI(): string {
-  return resolveVoice()?.voiceURI ?? ''
+	return resolveVoice()?.voiceURI ?? ''
 }
 
 // ===== 文案拼接: 按 source 分类, 只念名称不念代码 =====
@@ -99,9 +104,9 @@ const MAX_SPEAK = 3  // 单批最多逐条念 3 只, 超出汇总成数量
 /** 涨跌幅用中文习惯念: 0.052 → 涨5.2%, -0.031 → 跌3.1%。
  *  入参是小数制 (后端 change_pct, 0.0366 = 3.66%), 需 ×100 再念, 与 format.ts 的 fmtPct 一致。 */
 function fmtPctText(pct: number): string {
-  const p = pct * 100
-  if (p >= 0) return `涨${p.toFixed(1)}%`
-  return `跌${Math.abs(p).toFixed(1)}%`
+	const p = pct * 100
+	if (p >= 0) return `涨${p.toFixed(1)}%`
+	return `跌${Math.abs(p).toFixed(1)}%`
 }
 
 /**
@@ -113,58 +118,58 @@ function fmtPctText(pct: number): string {
  *   price/market/其他: "[名称] [message条件摘要] [涨跌幅]"
  */
 function buildSingleText(a: AlertEvent): string {
-  const name = a.name || '标的'
-  const pctText = a.change_pct != null ? fmtPctText(a.change_pct) : ''
+	const name = a.name || '标的'
+	const pctText = a.change_pct != null ? fmtPctText(a.change_pct) : ''
 
-  // 板块消息已包含名称、触发条件和当前涨跌幅，避免重复播报。
-  if (a.source === 'sector') {
-    return a.message || name
-  }
+	// 板块消息已包含名称、触发条件和当前涨跌幅，避免重复播报。
+	if (a.source === 'sector') {
+		return a.message || name
+	}
 
-  // 策略类: message 存的是策略名(单条) 或完整批量描述(>5只)
-  if (a.source === 'strategy') {
-    // 批量事件 (symbol 为空/为 _batch): message 已含 "策略「X」进入 N 只：…" 直接念
-    if (!a.symbol || a.symbol === '_batch') {
-      return a.message || name
-    }
-    const sname = strategyName(a.message ?? '')
-    const parts = [name, strategyEventMeta(a.type).action]
-    const strategyText = sname ? `策略「${sname}」` : (a.message || a.rule_name || '')
-    if (strategyText) parts.push(strategyText)
-    if (pctText) parts.push(pctText)
-    return parts.join(' ')
-  }
+	// 策略类: message 存的是策略名(单条) 或完整批量描述(>5只)
+	if (a.source === 'strategy') {
+		// 批量事件 (symbol 为空/为 _batch): message 已含 "策略「X」进入 N 只：…" 直接念
+		if (!a.symbol || a.symbol === '_batch') {
+			return a.message || name
+		}
+		const sname = strategyName(a.message ?? '')
+		const parts = [name, strategyEventMeta(a.type).action]
+		const strategyText = sname ? `策略「${sname}」` : (a.message || a.rule_name || '')
+		if (strategyText) parts.push(strategyText)
+		if (pctText) parts.push(pctText)
+		return parts.join(' ')
+	}
 
-  // 信号类: message 形如 "入场信号触发"/"出场信号触发"
-  if (a.source === 'signal') {
-    const parts = [name]
-    if (a.message) parts.push(a.message)
-    if (pctText) parts.push(pctText)
-    return parts.join(' ')
-  }
+	// 信号类: message 形如 "入场信号触发"/"出场信号触发"
+	if (a.source === 'signal') {
+		const parts = [name]
+		if (a.message) parts.push(a.message)
+		if (pctText) parts.push(pctText)
+		return parts.join(' ')
+	}
 
-  // 模拟盘成交: message 已是中文可读文案 ("模拟盘买入成交 1000股 @ 10.01"), 补名称即可
-  if (a.source === 'paper') {
-    const parts = [name]
-    if (a.message) parts.push(a.message)
-    return parts.join(' ')
-  }
+	// 模拟盘成交: message 已是中文可读文案 ("模拟盘买入成交 1000股 @ 10.01"), 补名称即可
+	if (a.source === 'paper') {
+		const parts = [name]
+		if (a.message) parts.push(a.message)
+		return parts.join(' ')
+	}
 
-  // 价格/异动/其他: message 是条件摘要 (如 "现价 ≥ 100 · 涨幅 5%")
-  const parts = [name]
-  if (a.message) parts.push(a.message)
-  if (pctText) parts.push(pctText)
-  return parts.join(' ')
+	// 价格/异动/其他: message 是条件摘要 (如 "现价 ≥ 100 · 涨幅 5%")
+	const parts = [name]
+	if (a.message) parts.push(a.message)
+	if (pctText) parts.push(pctText)
+	return parts.join(' ')
 }
 
 function buildText(alerts: AlertEvent[]): string {
-  const head = alerts.slice(0, MAX_SPEAK)
-  const parts = head.map(buildSingleText)
-  let text = parts.join('；')
-  if (alerts.length > MAX_SPEAK) {
-    text += `；还有${alerts.length - MAX_SPEAK}只`
-  }
-  return text
+	const head = alerts.slice(0, MAX_SPEAK)
+	const parts = head.map(buildSingleText)
+	let text = parts.join('；')
+	if (alerts.length > MAX_SPEAK) {
+		text += `；还有${alerts.length - MAX_SPEAK}只`
+	}
+	return text
 }
 
 // ===== 节流: 正在念时丢弃新批次, 避免快行情叠加噪音 =====
@@ -175,50 +180,56 @@ let _speaking = false
  * 整批合并成一句话; 正在播报时丢弃新批次 (与"整批一声"理念一致)。
  */
 export function speakAlerts(alerts: AlertEvent[]) {
-  try {
-    if (alerts.length === 0) return
-    if (localStorage.getItem(LS.enabled) !== '1') return   // 开关关: 不播报
-    if (!isVoiceSupported()) return                          // 不支持: 静默
-    if (_speaking) return                                    // 正在念: 丢弃新批次
+	try {
+		if (alerts.length === 0) return
+		if (localStorage.getItem(LS.enabled) !== '1') return   // 开关关: 不播报
+		if (!isVoiceSupported()) return                          // 不支持: 静默
+		if (_speaking) return                                    // 正在念: 丢弃新批次
 
-    const text = buildText(alerts)
-    const u = new SpeechSynthesisUtterance(text)
-    u.lang = 'zh-CN'
-    u.rate = parseFloat(localStorage.getItem(LS.rate) || '1')
+		const text = buildText(alerts)
+		const u = new SpeechSynthesisUtterance(text)
+		u.lang = 'zh-CN'
+		u.rate = parseFloat(localStorage.getItem(LS.rate) || '1')
 
-    const v = resolveVoice()
-    if (v) u.voice = v
+		const v = resolveVoice()
+		if (v) u.voice = v
 
-    _speaking = true
-    u.onend = () => { _speaking = false }
-    u.onerror = () => { _speaking = false }
-    window.speechSynthesis.speak(u)
-  } catch {
-    // 语音不可用时静默
-  }
+		_speaking = true
+		u.onend = () => {
+			_speaking = false
+		}
+		u.onerror = () => {
+			_speaking = false
+		}
+		window.speechSynthesis.speak(u)
+	} catch {
+		// 语音不可用时静默
+	}
 }
 
 /** 停止当前播报 (关闭开关/试听前调用) */
 export function stopVoice() {
-  try {
-    if (isVoiceSupported()) {
-      window.speechSynthesis.cancel()
-      _speaking = false
-    }
-  } catch { /* ignore */ }
+	try {
+		if (isVoiceSupported()) {
+			window.speechSynthesis.cancel()
+			_speaking = false
+		}
+	} catch { /* ignore */
+	}
 }
 
 /** 试听 (设置页点"试听"用) */
 export function previewVoice(text = '语音播报已开启, 这是试听效果') {
-  try {
-    if (!isVoiceSupported()) return
-    activateVoice()
-    const u = new SpeechSynthesisUtterance(text)
-    u.lang = 'zh-CN'
-    u.rate = parseFloat(localStorage.getItem(LS.rate) || '1')
-    const v = resolveVoice()
-    if (v) u.voice = v
-    window.speechSynthesis.cancel()   // 试听前停掉正在念的
-    window.speechSynthesis.speak(u)
-  } catch { /* ignore */ }
+	try {
+		if (!isVoiceSupported()) return
+		activateVoice()
+		const u = new SpeechSynthesisUtterance(text)
+		u.lang = 'zh-CN'
+		u.rate = parseFloat(localStorage.getItem(LS.rate) || '1')
+		const v = resolveVoice()
+		if (v) u.voice = v
+		window.speechSynthesis.cancel()   // 试听前停掉正在念的
+		window.speechSynthesis.speak(u)
+	} catch { /* ignore */
+	}
 }

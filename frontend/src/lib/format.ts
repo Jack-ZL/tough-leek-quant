@@ -1,62 +1,62 @@
 // 数字 / 价格 / 涨跌幅 格式化(§6.0.2 等宽数字)
 
 export function fmtPrice(v: number | null | undefined, digits = 2): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  return v.toFixed(digits)
+	if (v == null || Number.isNaN(v)) return '—'
+	return v.toFixed(digits)
 }
 
 /** 使用接口给出的资产类型, 不根据证券代码或价格大小猜测报价精度。 */
 export function pricePrecision(assetType?: string | null): 2 | 3 {
-  return assetType === 'etf' ? 3 : 2
+	return assetType === 'etf' ? 3 : 2
 }
 
 export function roundPriceToTick(value: number, assetType?: string | null): number {
-  const scale = 10 ** pricePrecision(assetType)
-  const scaled = value * scale
-  // 消除运算产生的二进制尾差, 让半个报价单位按四舍五入处理。
-  const rounded = Math.round(scaled + Number.EPSILON * Math.max(1, Math.abs(scaled)) * 4) / scale
-  return rounded === 0 ? 0 : rounded
+	const scale = 10 ** pricePrecision(assetType)
+	const scaled = value * scale
+	// 消除运算产生的二进制尾差, 让半个报价单位按四舍五入处理。
+	const rounded = Math.round(scaled + Number.EPSILON * Math.max(1, Math.abs(scaled)) * 4) / scale
+	return rounded === 0 ? 0 : rounded
 }
 
 export function fmtAssetPrice(value: number | null | undefined, assetType?: string | null): string {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return roundPriceToTick(value, assetType).toFixed(pricePrecision(assetType))
+	if (value == null || !Number.isFinite(value)) return '—'
+	return roundPriceToTick(value, assetType).toFixed(pricePrecision(assetType))
 }
 
 export function fmtPct(v: number | null | undefined, digits = 2): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  const sign = v > 0 ? '+' : ''
-  return `${sign}${(v * 100).toFixed(digits)}%`
+	if (v == null || Number.isNaN(v)) return '—'
+	const sign = v > 0 ? '+' : ''
+	return `${sign}${(v * 100).toFixed(digits)}%`
 }
 
 export function fmtVolume(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  const sign = v < 0 ? '-' : ''
-  const a = Math.abs(v)
-  if (a >= 1e8) return `${sign}${(a / 1e8).toFixed(2)}亿`
-  if (a >= 1e4) return `${sign}${(a / 1e4).toFixed(2)}万`
-  return v.toFixed(0)
+	if (v == null || Number.isNaN(v)) return '—'
+	const sign = v < 0 ? '-' : ''
+	const a = Math.abs(v)
+	if (a >= 1e8) return `${sign}${(a / 1e8).toFixed(2)}亿`
+	if (a >= 1e4) return `${sign}${(a / 1e4).toFixed(2)}万`
+	return v.toFixed(0)
 }
 
 // A 股语义色:红涨绿跌 → 仅用于价格相关元素
 export function priceColorClass(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v) || v === 0) return 'text-muted'
-  return v > 0 ? 'text-bull' : 'text-bear'
+	if (v == null || Number.isNaN(v) || v === 0) return 'text-muted'
+	return v > 0 ? 'text-bull' : 'text-bear'
 }
 
 export function fmtBigNum(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(v)) return '—'
-  if (v >= 1_000_000_000_000) return `${(v / 1_000_000_000_000).toFixed(2)}万亿`
-  if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(2)}亿`
-  if (v >= 10_000) return `${(v / 10_000).toFixed(0)}万`
-  return v.toFixed(0)
+	if (v == null || Number.isNaN(v)) return '—'
+	if (v >= 1_000_000_000_000) return `${(v / 1_000_000_000_000).toFixed(2)}万亿`
+	if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(2)}亿`
+	if (v >= 10_000) return `${(v / 10_000).toFixed(0)}万`
+	return v.toFixed(0)
 }
 
 export function fmtDate(s: string | Date | null | undefined): string {
-  if (s == null) return '—'
-  const d = typeof s === 'string' ? new Date(s) : s
-  if (isNaN(d.getTime())) return String(s)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+	if (s == null) return '—'
+	const d = typeof s === 'string' ? new Date(s) : s
+	if (isNaN(d.getTime())) return String(s)
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 /**
@@ -71,78 +71,78 @@ export function fmtDate(s: string | Date | null | undefined): string {
 // options 固定, 提到模块级复用: 构造 Intl.DateTimeFormat 约 47µs, 而本函数会在排序
 // 比较里被调用 O(n·log n) 次。
 const CN_DATE_TIME = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Shanghai',
-  year: 'numeric', month: '2-digit', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', second: '2-digit',
-  hourCycle: 'h23',
+	timeZone: 'Asia/Shanghai',
+	year: 'numeric', month: '2-digit', day: '2-digit',
+	hour: '2-digit', minute: '2-digit', second: '2-digit',
+	hourCycle: 'h23',
 })
 const CN_DATE = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Shanghai',
-  year: 'numeric', month: '2-digit', day: '2-digit',
+	timeZone: 'Asia/Shanghai',
+	year: 'numeric', month: '2-digit', day: '2-digit',
 })
 
 /** naive UTC 串 → Date; 空/非法返回 null。naive 串按 UTC 解析, 已带偏移的保持原样。 */
 function parseUtcNaive(utcIso: string | null | undefined): Date | null {
-  const raw = String(utcIso ?? '').trim()
-  if (!raw) return null
-  const d = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`)
-  return isNaN(d.getTime()) ? null : d
+	const raw = String(utcIso ?? '').trim()
+	if (!raw) return null
+	const d = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`)
+	return isNaN(d.getTime()) ? null : d
 }
 
 /** naive UTC ISO 串 → 北京日期 'YYYY-MM-DD'; 空/非法返回 ''。 */
 export function cnDateFromUtc(utcIso: string | null | undefined): string {
-  const d = parseUtcNaive(utcIso)
-  return d ? CN_DATE.format(d) : ''
+	const d = parseUtcNaive(utcIso)
+	return d ? CN_DATE.format(d) : ''
 }
 
 /** naive UTC ISO 串 → 北京日期时间 'YYYY-MM-DD HH:mm:ss'; 空/非法返回 ''。 */
 export function cnDateTimeFromUtc(utcIso: string | null | undefined): string {
-  const d = parseUtcNaive(utcIso)
-  if (!d) return ''
-  const parts = CN_DATE_TIME.formatToParts(d)
-  const pick = (type: string) => parts.find(p => p.type === type)?.value ?? ''
-  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`
+	const d = parseUtcNaive(utcIso)
+	if (!d) return ''
+	const parts = CN_DATE_TIME.formatToParts(d)
+	const pick = (type: string) => parts.find(p => p.type === type)?.value ?? ''
+	return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`
 }
 
 // ===== Data 页面工具函数 =====
 
 export function formatNumber(n: number): string {
-  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}亿`
-  if (n >= 10_000) return `${(n / 10_000).toFixed(1)}万`
-  return n.toLocaleString()
+	if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}亿`
+	if (n >= 10_000) return `${(n / 10_000).toFixed(1)}万`
+	return n.toLocaleString()
 }
 
 export function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`
-  const h = Math.floor(m / 60)
-  const rm = m % 60
-  return rm > 0 ? `${h}h ${rm}m` : `${h}h`
+	if (seconds < 60) return `${seconds}s`
+	const m = Math.floor(seconds / 60)
+	const s = seconds % 60
+	if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`
+	const h = Math.floor(m / 60)
+	const rm = m % 60
+	return rm > 0 ? `${h}h ${rm}m` : `${h}h`
 }
 
 export function formatScheduleDatePart(iso: string): string {
-  const d = new Date(iso)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+	const d = new Date(iso)
+	return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 export function formatScheduleTimePart(iso: string): string {
-  const d = new Date(iso)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+	const d = new Date(iso)
+	return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 export function isToday(iso: string): boolean {
-  const d = new Date(iso)
-  const now = new Date()
-  return d.getFullYear() === now.getFullYear()
-    && d.getMonth() === now.getMonth()
-    && d.getDate() === now.getDate()
+	const d = new Date(iso)
+	const now = new Date()
+	return d.getFullYear() === now.getFullYear()
+		&& d.getMonth() === now.getMonth()
+		&& d.getDate() === now.getDate()
 }
 
 export function formatLogTime(iso: string): string {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+	const d = new Date(iso)
+	return d.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false})
 }
 
 /**
@@ -155,45 +155,51 @@ export function formatLogTime(iso: string): string {
  *   - unitDecimals: 换算后保留小数位(默认 2); unitConvert=none 时此值仅控制原值小数位
  */
 export function formatExtNumber(
-  val: number,
-  opts: { thousandSeparator?: boolean; unitConvert?: 'none' | 'wan' | 'yi' | 'auto'; unitDecimals?: number } = {},
+	val: number,
+	opts: { thousandSeparator?: boolean; unitConvert?: 'none' | 'wan' | 'yi' | 'auto'; unitDecimals?: number } = {},
 ): string {
-  const { thousandSeparator, unitConvert = 'none', unitDecimals } = opts
-  if (!Number.isFinite(val)) return '—'
+	const {thousandSeparator, unitConvert = 'none', unitDecimals} = opts
+	if (!Number.isFinite(val)) return '—'
 
-  let n = val
-  let suffix = ''
-  let decimals = unitDecimals ?? 2
+	let n = val
+	let suffix = ''
+	let decimals = unitDecimals ?? 2
 
-  if (unitConvert === 'wan') {
-    n = val / 1e4
-    suffix = '万'
-  } else if (unitConvert === 'yi') {
-    n = val / 1e8
-    suffix = '亿'
-  } else if (unitConvert === 'auto') {
-    const abs = Math.abs(val)
-    if (abs >= 1e8) { n = val / 1e8; suffix = '亿' }
-    else if (abs >= 1e4) { n = val / 1e4; suffix = '万' }
-    else { decimals = unitDecimals ?? 0 }
-  } else {
-    // none: 整数不带小数, 小数保留原精度(最多 4 位去尾零)
-    decimals = unitDecimals ?? (Number.isInteger(val) ? 0 : 4)
-  }
+	if (unitConvert === 'wan') {
+		n = val / 1e4
+		suffix = '万'
+	} else if (unitConvert === 'yi') {
+		n = val / 1e8
+		suffix = '亿'
+	} else if (unitConvert === 'auto') {
+		const abs = Math.abs(val)
+		if (abs >= 1e8) {
+			n = val / 1e8;
+			suffix = '亿'
+		} else if (abs >= 1e4) {
+			n = val / 1e4;
+			suffix = '万'
+		} else {
+			decimals = unitDecimals ?? 0
+		}
+	} else {
+		// none: 整数不带小数, 小数保留原精度(最多 4 位去尾零)
+		decimals = unitDecimals ?? (Number.isInteger(val) ? 0 : 4)
+	}
 
-  // toFixed 后去尾零(none 模式下小数原精度场景)
-  let str = n.toFixed(decimals)
-  if (unitConvert === 'none' && !unitDecimals && !Number.isInteger(val)) {
-    // 去掉 toFixed(4) 产生的尾零, 如 1.2300 → 1.23
-    str = String(Number(str))
-  }
+	// toFixed 后去尾零(none 模式下小数原精度场景)
+	let str = n.toFixed(decimals)
+	if (unitConvert === 'none' && !unitDecimals && !Number.isInteger(val)) {
+		// 去掉 toFixed(4) 产生的尾零, 如 1.2300 → 1.23
+		str = String(Number(str))
+	}
 
-  // 千分位逗号(仅整数部分)
-  if (thousandSeparator) {
-    const [intPart, fracPart] = str.split('.')
-    const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-    str = fracPart != null ? `${grouped}.${fracPart}` : grouped
-  }
+	// 千分位逗号(仅整数部分)
+	if (thousandSeparator) {
+		const [intPart, fracPart] = str.split('.')
+		const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+		str = fracPart != null ? `${grouped}.${fracPart}` : grouped
+	}
 
-  return str + suffix
+	return str + suffix
 }

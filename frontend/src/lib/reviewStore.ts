@@ -10,33 +10,33 @@
  *  - AbortController 存模块级 ref,组件卸载不中断流
  *  - 订阅者列表(notify 机制),Review mount 时订阅、unmount 时退订
  */
-import { api, friendlyStreamError } from '@/lib/api'
+import {api, friendlyStreamError} from '@/lib/api'
 
 export type ReviewPhase = 'idle' | 'loading' | 'streaming' | 'done' | 'error'
 
 export interface ReviewMeta {
-  as_of?: string
-  emotion_score?: number
-  emotion_label?: string
-  summary?: string
-  /** P1-15 模型归属: meta 事件下发, 归档复盘时原样带回落盘 */
-  model?: string
-  provider?: string
-  profile_id?: string
+	as_of?: string
+	emotion_score?: number
+	emotion_label?: string
+	summary?: string
+	/** P1-15 模型归属: meta 事件下发, 归档复盘时原样带回落盘 */
+	model?: string
+	provider?: string
+	profile_id?: string
 }
 
 export interface ReviewState {
-  phase: ReviewPhase
-  content: string
-  error: string
-  meta: ReviewMeta | null
-  focus: string
+	phase: ReviewPhase
+	content: string
+	error: string
+	meta: ReviewMeta | null
+	focus: string
 }
 
-const INITIAL: ReviewState = { phase: 'idle', content: '', error: '', meta: null, focus: '' }
+const INITIAL: ReviewState = {phase: 'idle', content: '', error: '', meta: null, focus: ''}
 
 // ===== 模块级单例状态(组件卸载不销毁)=====
-let state: ReviewState = { ...INITIAL }
+let state: ReviewState = {...INITIAL}
 let abortCtrl: AbortController | null = null
 
 // 当前生成来源: 'manual'(手动点生成) | 'sse'(定时任务 SSE 推送) | null(空闲)
@@ -48,26 +48,28 @@ type Listener = () => void
 const listeners = new Set<Listener>()
 
 function notify() {
-  for (const l of listeners) l()
+	for (const l of listeners) l()
 }
 
 export function getReviewState(): ReviewState {
-  return state
+	return state
 }
 
 export function subscribeReview(listener: Listener): () => void {
-  listeners.add(listener)
-  return () => { listeners.delete(listener) }
+	listeners.add(listener)
+	return () => {
+		listeners.delete(listener)
+	}
 }
 
 // 暴露给组件直接读取最新 meta(用于自动归档,避免闭包取旧值)
 export function getReviewMeta(): ReviewMeta | null {
-  return state.meta
+	return state.meta
 }
 
 /** 是否正在生成(loading 或 streaming) */
 export function isReviewGenerating(): boolean {
-  return state.phase === 'loading' || state.phase === 'streaming'
+	return state.phase === 'loading' || state.phase === 'streaming'
 }
 
 /**
@@ -77,109 +79,109 @@ export function isReviewGenerating(): boolean {
  * @param onDone 完成回调(供调用方做自动归档)
  */
 export async function startReviewGeneration(
-  asOf: string | undefined,
-  focus: string,
-  onDone?: (fullContent: string, meta: ReviewMeta | null) => void,
+	asOf: string | undefined,
+	focus: string,
+	onDone?: (fullContent: string, meta: ReviewMeta | null) => void,
 ): Promise<void> {
-  // 已在生成中,不重复启动
-  if (isReviewGenerating()) return
+	// 已在生成中,不重复启动
+	if (isReviewGenerating()) return
 
-  generatingSource = 'manual'
-  state = { phase: 'loading', content: '', error: '', meta: null, focus }
-  notify()
+	generatingSource = 'manual'
+	state = {phase: 'loading', content: '', error: '', meta: null, focus}
+	notify()
 
-  abortCtrl = new AbortController()
-  // 捕获 signal 局部引用: 外部中止 (查看历史/取消) 会把 abortCtrl 置空,
-  // 循环与 catch 若仍解引用模块变量会空指针
-  const signal = abortCtrl.signal
-  let buf = ''
-  let failed = false
-  let doneMeta: ReviewMeta | null = null
+	abortCtrl = new AbortController()
+	// 捕获 signal 局部引用: 外部中止 (查看历史/取消) 会把 abortCtrl 置空,
+	// 循环与 catch 若仍解引用模块变量会空指针
+	const signal = abortCtrl.signal
+	let buf = ''
+	let failed = false
+	let doneMeta: ReviewMeta | null = null
 
-  try {
-    for await (const evt of api.reviewStream(asOf, focus)) {
-      if (signal.aborted) break
-      if (evt.type === 'meta') {
-        doneMeta = evt
-        state = { ...state, meta: evt }
-        notify()
-      } else if (evt.type === 'delta' && evt.content) {
-        buf += evt.content
-        state = { ...state, content: buf, phase: 'streaming' }
-        notify()
-      } else if (evt.type === 'error') {
-        failed = true
-        state = { ...state, error: evt.message ?? '复盘失败', phase: 'error' }
-        notify()
-        return
-      } else if (evt.type === 'done') {
-        state = { ...state, phase: 'done' }
-        notify()
-      }
-    }
-    // 流正常结束但无 done 事件,按 done 处理; 被中止的流半途内容不归档,
-    // 状态由中止发起方 (查看历史/取消按钮) 自行设定, 这里不动
-    if (buf && !failed && !signal.aborted) {
-      state = { ...state, phase: 'done' }
-      notify()
-      // 自动归档(仅手动流: 定时流由后端归档, SSE done 不走这里)
-      if (buf && !failed) {
-        onDone?.(buf, doneMeta)
-      }
-    }
-  } catch (e: any) {
-    if (!signal.aborted) {
-      state = { ...state, error: friendlyStreamError(e?.message) || '复盘失败', phase: 'error' }
-      notify()
-    }
-  } finally {
-    abortCtrl = null
-    generatingSource = null
-  }
+	try {
+		for await (const evt of api.reviewStream(asOf, focus)) {
+			if (signal.aborted) break
+			if (evt.type === 'meta') {
+				doneMeta = evt
+				state = {...state, meta: evt}
+				notify()
+			} else if (evt.type === 'delta' && evt.content) {
+				buf += evt.content
+				state = {...state, content: buf, phase: 'streaming'}
+				notify()
+			} else if (evt.type === 'error') {
+				failed = true
+				state = {...state, error: evt.message ?? '复盘失败', phase: 'error'}
+				notify()
+				return
+			} else if (evt.type === 'done') {
+				state = {...state, phase: 'done'}
+				notify()
+			}
+		}
+		// 流正常结束但无 done 事件,按 done 处理; 被中止的流半途内容不归档,
+		// 状态由中止发起方 (查看历史/取消按钮) 自行设定, 这里不动
+		if (buf && !failed && !signal.aborted) {
+			state = {...state, phase: 'done'}
+			notify()
+			// 自动归档(仅手动流: 定时流由后端归档, SSE done 不走这里)
+			if (buf && !failed) {
+				onDone?.(buf, doneMeta)
+			}
+		}
+	} catch (e: any) {
+		if (!signal.aborted) {
+			state = {...state, error: friendlyStreamError(e?.message) || '复盘失败', phase: 'error'}
+			notify()
+		}
+	} finally {
+		abortCtrl = null
+		generatingSource = null
+	}
 }
 
 /** 中断当前生成(供"查看历史"等场景主动中断流)。 */
 export function abortReviewGeneration(): void {
-  abortCtrl?.abort()
+	abortCtrl?.abort()
 }
 
 /** 取消当前生成并回到 idle (取消按钮): 中止流 + 清空面板, 半途内容不归档。 */
 export function cancelReviewGeneration(): void {
-  abortCtrl?.abort()
-  abortCtrl = null
-  state = { ...INITIAL }
-  notify()
+	abortCtrl?.abort()
+	abortCtrl = null
+	state = {...INITIAL}
+	notify()
 }
 
 /** 设置当前查看的历史报告(把 store 状态切到 done + 该报告内容)。 */
 export function setViewingReport(report: {
-  content: string
-  as_of?: string
-  emotion_score?: number | null
-  emotion_label?: string
-  summary?: string
+	content: string
+	as_of?: string
+	emotion_score?: number | null
+	emotion_label?: string
+	summary?: string
 }): void {
-  abortCtrl?.abort()
-  abortCtrl = null
-  state = {
-    phase: 'done',
-    content: report.content,
-    error: '',
-    meta: {
-      as_of: report.as_of,
-      emotion_score: report.emotion_score ?? undefined,
-      emotion_label: report.emotion_label,
-      summary: report.summary,
-    },
-    focus: state.focus,
-  }
-  notify()
+	abortCtrl?.abort()
+	abortCtrl = null
+	state = {
+		phase: 'done',
+		content: report.content,
+		error: '',
+		meta: {
+			as_of: report.as_of,
+			emotion_score: report.emotion_score ?? undefined,
+			emotion_label: report.emotion_label,
+			summary: report.summary,
+		},
+		focus: state.focus,
+	}
+	notify()
 }
 
 /** 重置到 idle(清空当前显示)。 */
 export function resetReview(): void {
-  state = { ...INITIAL }
-  notify()
+	state = {...INITIAL}
+	notify()
 }
 
 /**
@@ -198,38 +200,38 @@ export function resetReview(): void {
  *  - retry: 后端 LLM 断流重试, 清空已累积内容重新开始。
  */
 export function feedReviewEvent(evt: any): void {
-  if (!evt || typeof evt !== 'object') return
-  const t = evt.type
+	if (!evt || typeof evt !== 'object') return
+	const t = evt.type
 
-  // 并发控制: 手动流进行中时, SSE 事件一律忽略(手动流优先, 避免两条流抢同一个 store)
-  // 但若当前是 SSE 流自己在跑(generatingSource==='sse'), 则正常处理后续事件
-  if (generatingSource === 'manual') return
+	// 并发控制: 手动流进行中时, SSE 事件一律忽略(手动流优先, 避免两条流抢同一个 store)
+	// 但若当前是 SSE 流自己在跑(generatingSource==='sse'), 则正常处理后续事件
+	if (generatingSource === 'manual') return
 
-  if (t === 'meta') {
-    // 定时流的第一个事件: 标记来源为 sse, 进入 streaming 态, 重置 content
-    generatingSource = 'sse'
-    state = { phase: 'streaming', content: '', error: '', meta: evt, focus: '' }
-    notify()
-  } else if (t === 'delta' && evt.content) {
-    // 只有 sse 流进行中时才累积(防止 meta 丢失时的孤立 delta)
-    if (generatingSource !== 'sse') return
-    state = { ...state, content: state.content + evt.content, phase: 'streaming' }
-    notify()
-  } else if (t === 'retry') {
-    if (generatingSource !== 'sse') return
-    // 后端重试: 清空已累积内容, 等待新一轮 meta/delta
-    state = { ...state, content: '', phase: 'streaming' }
-    notify()
-  } else if (t === 'error') {
-    if (generatingSource !== 'sse') return
-    state = { ...state, error: evt.message ?? '复盘生成失败', phase: 'error' }
-    notify()
-    generatingSource = null
-  } else if (t === 'done') {
-    if (generatingSource !== 'sse') return
-    // 定时场景 done 带 archived=true: 后端已归档, 前端只切 done 态, 不调归档接口。
-    state = { ...state, phase: 'done' }
-    notify()
-    generatingSource = null
-  }
+	if (t === 'meta') {
+		// 定时流的第一个事件: 标记来源为 sse, 进入 streaming 态, 重置 content
+		generatingSource = 'sse'
+		state = {phase: 'streaming', content: '', error: '', meta: evt, focus: ''}
+		notify()
+	} else if (t === 'delta' && evt.content) {
+		// 只有 sse 流进行中时才累积(防止 meta 丢失时的孤立 delta)
+		if (generatingSource !== 'sse') return
+		state = {...state, content: state.content + evt.content, phase: 'streaming'}
+		notify()
+	} else if (t === 'retry') {
+		if (generatingSource !== 'sse') return
+		// 后端重试: 清空已累积内容, 等待新一轮 meta/delta
+		state = {...state, content: '', phase: 'streaming'}
+		notify()
+	} else if (t === 'error') {
+		if (generatingSource !== 'sse') return
+		state = {...state, error: evt.message ?? '复盘生成失败', phase: 'error'}
+		notify()
+		generatingSource = null
+	} else if (t === 'done') {
+		if (generatingSource !== 'sse') return
+		// 定时场景 done 带 archived=true: 后端已归档, 前端只切 done 态, 不调归档接口。
+		state = {...state, phase: 'done'}
+		notify()
+		generatingSource = null
+	}
 }

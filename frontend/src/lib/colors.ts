@@ -9,23 +9,23 @@
  */
 
 export const color = {
-  /** 选中/激活态 — sky 色系 */
-  select: {
-    bg: 'bg-sky-500',
-    text: 'text-sky-400',
-    border: 'border-sky-400/40',
-    bgLight: 'bg-sky-400/10',
-    borderHover: 'hover:border-sky-400/30',
-  },
-  /** 策略条件区 section 标题色 */
-  filterSection: 'text-sky-400',
+	/** 选中/激活态 — sky 色系 */
+	select: {
+		bg: 'bg-sky-500',
+		text: 'text-sky-400',
+		border: 'border-sky-400/40',
+		bgLight: 'bg-sky-400/10',
+		borderHover: 'hover:border-sky-400/30',
+	},
+	/** 策略条件区 section 标题色 */
+	filterSection: 'text-sky-400',
 
-  /** 策略权重正常指示 — emerald 色系 */
-  ok: 'text-emerald-400',
+	/** 策略权重正常指示 — emerald 色系 */
+	ok: 'text-emerald-400',
 
-  /** 策略权重异常警告 — amber 色系 */
-  scoreWarn: 'text-amber-400',
+	/** 策略权重异常警告 — amber 色系 */
+	scoreWarn: 'text-amber-400',
 
-  /** 交易参数区 section 标题色 */
-  tradeSection: 'text-emerald-400',
+	/** 交易参数区 section 标题色 */
+	tradeSection: 'text-emerald-400',
 } as const

@@ -18,38 +18,38 @@ export const MINUTE_BATCH_SYMBOLS_MIN = 50
 export const MINUTE_BATCH_SYMBOLS_MAX = 2000
 
 /** 后端默认值 (preferences.get_*_batch_symbols 的 fallback) */
-const DEFAULTS = { daily: 400, minute: 400 }
+const DEFAULTS = {daily: 400, minute: 400}
 
 let dailyLimit = DEFAULTS.daily
 let minuteLimit = DEFAULTS.minute
 
 function clamp(v: number, lo: number, hi: number): number {
-  if (!Number.isFinite(v)) return lo
-  return Math.max(lo, Math.min(hi, Math.trunc(v)))
+	if (!Number.isFinite(v)) return lo
+	return Math.max(lo, Math.min(hi, Math.trunc(v)))
 }
 
 /** 同步用户偏好; 缺省字段保持当前值 (偏好查询尚未返回时不覆盖)。 */
 export function setKlineBatchLimits(next: { daily?: number; minute?: number }): void {
-  if (typeof next.daily === 'number') {
-    dailyLimit = clamp(next.daily, DAILY_BATCH_SYMBOLS_MIN, DAILY_BATCH_SYMBOLS_MAX)
-  }
-  if (typeof next.minute === 'number') {
-    minuteLimit = clamp(next.minute, MINUTE_BATCH_SYMBOLS_MIN, MINUTE_BATCH_SYMBOLS_MAX)
-  }
+	if (typeof next.daily === 'number') {
+		dailyLimit = clamp(next.daily, DAILY_BATCH_SYMBOLS_MIN, DAILY_BATCH_SYMBOLS_MAX)
+	}
+	if (typeof next.minute === 'number') {
+		minuteLimit = clamp(next.minute, MINUTE_BATCH_SYMBOLS_MIN, MINUTE_BATCH_SYMBOLS_MAX)
+	}
 }
 
 /** daily-batch 单请求标的数 (= 分块大小)。 */
 export function getDailyBatchChunkSize(): number {
-  return dailyLimit
+	return dailyLimit
 }
 
 /** minute-batch 单请求标的数 (= 分块大小)。 */
 export function getMinuteBatchChunkSize(): number {
-  return minuteLimit
+	return minuteLimit
 }
 
 /** 测试用: 恢复默认值, 避免用例间相互污染。 */
 export function resetKlineBatchLimits(): void {
-  dailyLimit = DEFAULTS.daily
-  minuteLimit = DEFAULTS.minute
+	dailyLimit = DEFAULTS.daily
+	minuteLimit = DEFAULTS.minute
 }

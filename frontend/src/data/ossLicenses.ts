@@ -55,7 +55,7 @@ export const FRONTEND_DEPENDENCIES: OssLicenseEntry[] = [
 	{ name: '@dnd-kit/utilities', version: '3.2.2', license: 'MIT' },
 	{ name: '@fontsource/inter', version: '5.3.0', license: 'OFL-1.1' },
 	{ name: '@fontsource/jetbrains-mono', version: '5.3.0', license: 'OFL-1.1' },
-	{ name: '@tanstack/query-sync-storage-persister', version: '5.104.1', license: 'MIT' },
+	{ name: '@tanstack/query-async-storage-persister', version: '5.107.1', license: 'MIT' },
 	{ name: '@tanstack/react-query', version: '5.104.1', license: 'MIT' },
 	{ name: '@tanstack/react-query-persist-client', version: '5.104.1', license: 'MIT' },
 	{ name: '@tanstack/react-virtual', version: '3.14.6', license: 'MIT' },
