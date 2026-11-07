@@ -114,7 +114,8 @@ export function StockAnalysis() {
 								disabled={checking}
 								className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-sky-500/25 to-blue-500/15 border border-sky-400/30 text-sky-300 text-xs font-medium hover:from-sky-500/35 hover:to-blue-500/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
 							>
-								{checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+								{checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+									<Sparkles className="h-3.5 w-3.5" />}
 								AI 个股分析
 							</button>
 							<button
@@ -260,6 +261,7 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
 					series={levelsQ.data?.series}
 					seriesDates={levelsQ.data?.dates}
 					defaultLevelTypes={['sr', 'pivot', 'keltner_s']}
+					scopeKey={symbol}
 					height={480}
 				/>
 			</div>
@@ -309,7 +311,8 @@ function HistorySidebar() {
 										</div>
 										<div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted">
 											<span>{fmtRelative(r.created_at)}</span>
-											{r.close != null && <span className="font-mono">价 {r.close.toFixed(2)}</span>}
+											{r.close != null &&
+												<span className="font-mono">价 {r.close.toFixed(2)}</span>}
 											{/* 研判卡方向标签 (红多绿空); ok=false 不显示, 详情在报告里看 */}
 											{r.verdict?.ok && (
 												<span className={
@@ -318,7 +321,8 @@ function HistorySidebar() {
 															: 'shrink-0'
 												}>🧭 {r.verdict.direction}</span>
 											)}
-											{r.focus && <span className="text-sky-300/70 truncate">关注: {r.focus}</span>}
+											{r.focus &&
+												<span className="text-sky-300/70 truncate">关注: {r.focus}</span>}
 											{/* P1-15 模型归属: 历史列表标出生成时用的模型 (老报告无此字段不显示) */}
 											{r.model && (
 												<span className="shrink-0 truncate text-muted"
