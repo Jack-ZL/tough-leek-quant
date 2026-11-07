@@ -63,7 +63,7 @@ export function SettingsAboutPanel() {
         {/* 版权署名 — 界面常驻, 避免仅存在于 LICENSE 文件时被整包删除 */}
         <div className="flex items-center justify-between gap-4 py-2">
           <div className="min-w-0">
-            <div className="text-sm text-foreground">© 2026 tick-stock-panel contributors</div>
+            <div className="text-sm text-foreground">© 2026 tough-leek-quant contributors</div>
             <div className="text-[11px] text-muted truncate">基于 MIT 协议开源 · 遵照协议分发时须保留版权与许可声明</div>
           </div>
           <a
@@ -71,7 +71,7 @@ export function SettingsAboutPanel() {
             target="_blank"
             rel="noreferrer"
             className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                       bg-elevated text-secondary hover:text-foreground transition-colors"
+                      bg-elevated text-secondary hover:text-foreground transition-colors"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             仓库
@@ -208,7 +208,7 @@ export function SettingsAboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="text-sm text-foreground">支持这个项目</div>
             <div className="mt-0.5 text-[11px] leading-relaxed text-muted">
-              如果 TSP 对你的交易与研究有帮助, 欢迎请作者喝杯咖啡,
+              如果 TLQ 对你的交易与研究有帮助, 欢迎请作者喝杯咖啡,
               扫描右侧微信赞赏码即可支持项目持续维护。
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">

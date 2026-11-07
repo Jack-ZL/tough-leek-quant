@@ -13,7 +13,7 @@ export function StrategyExportButton({ strategyId, disabled = false, disabledHin
 		if (busy || disabled) return
 		setBusy(true)
 		try {
-			await downloadResourceBundle([{ kind: 'strategy', id: strategyId }], `tsp-strategy-${strategyId}.zip`)
+			await downloadResourceBundle([{ kind: 'strategy', id: strategyId }], `tlq-strategy-${strategyId}.zip`)
 		} catch (error) {
 			toast(error instanceof Error ? error.message : '策略包导出失败，请重试', 'error')
 		} finally {

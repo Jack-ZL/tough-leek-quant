@@ -1,4 +1,4 @@
-# Tick Stock Panel — Contributing, AI Development & Review Guide
+# Tough Leek Quant — Contributing, AI Development & Review Guide
 
 This document applies to the entire repository and is shared by contributors, AI coding agents, and PR reviewers. Its purpose is to put changes in the right module, keep data semantics, pluginization, and compatibility consistent, and reduce rework through reproducible verification.
 
@@ -434,7 +434,7 @@ The measure of following this guide is not how much documentation is written, bu
 
 # 中文版（原文）
 
-# Tick Stock Panel 贡献、AI 开发与复审指南
+# Tough Leek Quant 贡献、AI 开发与复审指南
 
 本文档适用于整个仓库，供贡献者、AI 编码代理和 PR 审查者共同使用。目标是让改动落在正确的模块，保持数据口径、插件化和兼容性一致，并通过可复现的验证减少返工。
 

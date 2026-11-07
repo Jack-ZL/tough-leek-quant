@@ -26,7 +26,7 @@ export function Logo({ className, size = 32, style }: LogoProps) {
 			className={className}
 			style={style}
 			role="img"
-			aria-label="Tick Stock Panel"
+			aria-label="Tough Leek Quant"
 		>
 			{/* 左方括号 */}
 			<path

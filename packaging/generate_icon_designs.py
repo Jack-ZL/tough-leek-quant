@@ -3,8 +3,8 @@
 每个方案以 1024x1024 超清绘制 (4x 超采样抗锯齿), 输出 PNG 预览。
 选定后, 用 generate_icon.py 产出最终多尺寸 .ico。
 
-品牌色系 (从 favicon #5B21B6 延伸):
-  深紫 #2E1065  主紫 #5B21B6  亮紫 #7C3AED  浅紫 #A78BFA
+品牌色系 (从品牌红 #F04438 延伸):
+  深红 #450A0A  主红 #8E130B  亮红 #D51D10  浅红 #F47971
   强调金 #FBBF24 (金融上涨感)
 """
 from __future__ import annotations
@@ -18,10 +18,10 @@ OUT = Path(__file__).parent / "designs"
 OUT.mkdir(exist_ok=True)
 
 # 品牌色
-DEEP = (46, 16, 101)        # #2E1065
-MAIN = (91, 33, 182)        # #5B21B6
-BRIGHT = (124, 58, 237)     # #7C3AED
-LIGHT = (167, 139, 250)     # #A78BFA
+DEEP = (69, 10, 10)         # #450A0A
+MAIN = (142, 19, 11)        # #8E130B
+BRIGHT = (213, 29, 16)      # #D51D10
+LIGHT = (244, 121, 113)     # #F47971
 GOLD = (251, 191, 36)       # #FBBF24
 WHITE = (255, 255, 255)
 

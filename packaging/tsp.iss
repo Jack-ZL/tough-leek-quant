@@ -1,13 +1,13 @@
 ; ===========================================================================
-; Tick Stock Panel — Inno Setup 安装包脚本
+; Tough Leek Quant — Inno Setup 安装包脚本
 ; ===========================================================================
-; 用途: 把 PyInstaller 产出的 dist/TSP/ 文件夹封装成
+; 用途: 把 PyInstaller 产出的 dist/TLQ/ 文件夹封装成
 ;       单个 Setup.exe 安装程序 (双击→安装向导→快捷方式→可卸载)。
 ;
 ; 构建 (本地):
 ;   1. 先跑 PyInstaller: cd backend && uv run pyinstaller ../packaging/tsp.spec
 ;   2. 再跑 Inno Setup:   ISCC.exe packaging\tsp.iss
-;   3. 产物: packaging\Output\TSP-Setup-x.x.x.exe
+;   3. 产物: packaging\Output\TLQ-Setup-x.x.x.exe
 ;
 ; 设计决策:
 ;   - 装到用户目录 {localappdata}\Programs\ (不弹 UAC, 不需管理员)
@@ -18,10 +18,10 @@
 ;   - 卸载入口 (控制面板可见)
 ; ===========================================================================
 
-#define MyAppName          "TSP"
-#define MyAppNameEN       "Tick Stock Panel"
-#define MyAppExeName      "TSP.exe"
-#define MyAppPublisher    "TSP"
+#define MyAppName          "TLQ"
+#define MyAppNameEN       "Tough Leek Quant"
+#define MyAppExeName      "TLQ.exe"
+#define MyAppPublisher    "tough-leek-quant"
 
 ; 版本号: 从 frontend/package.json 读取, 与 Release tag 保持一致
 ; 手动指定更可靠 (CI 传入 /DMyAppVersion)
@@ -45,7 +45,7 @@ UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=TSP-Setup-{#MyAppVersion}
+OutputBaseFilename=TLQ-Setup-{#MyAppVersion}
 
 ; 关键: 不需要管理员权限, 永不弹 UAC
 ; 装到 D 盘普通目录 (非 Program Files) 不需要管理员权限
@@ -84,9 +84,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; 把 PyInstaller 产出的整个文件夹搬进安装目录
 ; Source 路径相对于 .iss 文件所在目录
 ; 打包目录即使生成过运行时 data，也不得把它装进用户已有数据目录。
-Source: "..\backend\dist\TSP\*"; DestDir: "{app}"; Excludes: "\data,\data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\backend\dist\TLQ\*"; DestDir: "{app}"; Excludes: "\data,\data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; .NET 按 EXE 文件名读取同目录配置，不能放进 PyInstaller 的 _internal。
-Source: "TSP.exe.config"; DestDir: "{app}"; Flags: ignoreversion
+Source: "TLQ.exe.config"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; 开始菜单
@@ -153,7 +153,7 @@ begin
 end;
 
 // ── 安装完成后: 通知外壳刷新图标缓存 ─────────────────────────────
-// 覆盖安装时 exe 路径不变 (如 D:\TSP\TSP.exe), 资源管理器会一直显示缓存的旧图标
+// 覆盖安装时 exe 路径不变 (如 D:\TSP\TLQ.exe), 资源管理器会一直显示缓存的旧图标
 // (首个版本为透明底)。用 SHCNE_ASSOCCHANGED 强制外壳重建图标缓存, 装完快捷方式
 // 立即显示当前 exe 内嵌图标, 无需用户重启资源管理器。
 // 此前用 ie4uinit -show 实现同一目的, 但 ie4uinit.exe 是 IE 组件, 在移除 IE 的

@@ -257,7 +257,7 @@ def test_main_reports_early_startup_errors(data_dir, monkeypatch, stage):
         patch.setattr(desktop, target, fail)
         assert desktop.main() == 1
     assert len(errors) == 1
-    assert "TSP 启动失败" in errors[0][0]
+    assert "TLQ 启动失败" in errors[0][0]
     assert f"startup failed at {stage}" in errors[0][1]
     assert desktop._acquire_single_instance() is True
 

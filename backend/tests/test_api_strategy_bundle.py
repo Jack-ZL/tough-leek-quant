@@ -72,7 +72,7 @@ def test_export_bundle(client: TestClient) -> None:
     r = client.get("/api/strategies/custom_standalone/bundle")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
-    assert "tsp-strategy-custom_standalone.zip" in r.headers["content-disposition"]
+    assert "tlq-strategy-custom_standalone.zip" in r.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
         names = set(zf.namelist())
     assert "strategies/custom/custom_standalone.py" in names
@@ -96,7 +96,7 @@ def test_inspect_and_apply_roundtrip(
 
     r = client.post(
         "/api/strategies/bundle/inspect",
-        files={"file": ("tsp-strategy-custom_standalone.zip", blob, "application/zip")},
+        files={"file": ("tlq-strategy-custom_standalone.zip", blob, "application/zip")},
     )
     assert r.status_code == 200
     body = r.json()
@@ -106,7 +106,7 @@ def test_inspect_and_apply_roundtrip(
 
     r = client.post(
         "/api/strategies/bundle/apply",
-        files={"file": ("tsp-strategy-custom_standalone.zip", blob, "application/zip")},
+        files={"file": ("tlq-strategy-custom_standalone.zip", blob, "application/zip")},
         data={"allow_overwrite": "false"},
     )
     assert r.status_code == 200

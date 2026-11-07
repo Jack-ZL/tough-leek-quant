@@ -41,7 +41,7 @@ it('downloads a strategy dependency bundle as ZIP and prevents duplicate request
   expect(mocks.export).toHaveBeenCalledWith([{ kind: 'strategy', id: 'custom_demo' }], undefined)
   await act(async () => resolve(zip))
   expect(mocks.objectURL).toHaveBeenCalledWith(zip)
-  expect(mocks.anchor).toHaveBeenCalledWith('tsp-strategy-custom_demo.zip', 'blob:strategy-zip')
+  expect(mocks.anchor).toHaveBeenCalledWith('tlq-strategy-custom_demo.zip', 'blob:strategy-zip')
   expect(button().disabled).toBe(false)
   vi.runOnlyPendingTimers()
   expect(mocks.revoke).toHaveBeenCalledWith('blob:strategy-zip')

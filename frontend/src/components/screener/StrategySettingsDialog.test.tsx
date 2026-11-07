@@ -95,7 +95,7 @@ const findButton = (text: string) =>
 it('exports the saved strategy as a dependency ZIP while keeping settings open', async () => {
   await render()
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="导出策略包"]')!.click())
-  expect(mocks.download).toHaveBeenCalledWith([{ kind: 'strategy', id: 'test_strategy' }], 'tsp-strategy-test_strategy.zip')
+  expect(mocks.download).toHaveBeenCalledWith([{ kind: 'strategy', id: 'test_strategy' }], 'tlq-strategy-test_strategy.zip')
   expect(container.querySelector('[role="dialog"]')).toBeTruthy()
 })
 

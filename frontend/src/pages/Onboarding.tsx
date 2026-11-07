@@ -107,7 +107,7 @@ export function Onboarding() {
 						className="shrink-0"
 						style={{ color: BRAND }}
 					/>
-					<span className="text-sm font-semibold tracking-tight">Tick Stock Panel</span>
+					<span className="text-sm font-semibold tracking-tight">Tough Leek Quant</span>
 				</div>
 				<ol aria-label="初始设置进度" className="order-last flex w-full items-center gap-2 md:order-none md:w-auto md:gap-3">
 					{STEPS.map((label, i) => (
@@ -160,7 +160,7 @@ function DisclaimerStep({ onNext }: { onNext: () => void }) {
 			<div className="grid gap-6 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:gap-12 lg:gap-16">
 				<section aria-labelledby="onboarding-intro-title" className="flex flex-col items-start">
 					<h1 id="onboarding-intro-title" className="text-3xl font-semibold leading-snug tracking-tight text-foreground sm:text-4xl sm:leading-snug">
-						TSP · 智能量化<br /><span className="text-violet-700 dark:text-violet-300">工作台引擎</span>
+						TLQ · 智能量化<br /><span className="text-violet-700 dark:text-violet-300">工作台引擎</span>
 					</h1>
 					<p className="mt-5 max-w-md text-sm leading-7 text-secondary">
 						接入行情与扩展数据，用开源引擎回测自己的策略，盘后复核结果。
@@ -280,7 +280,7 @@ function WelcomeStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => voi
 			</motion.div>
 
 			<h1 className="mt-6 text-3xl font-bold text-foreground tracking-tight">
-				欢迎使用 TSP
+				欢迎使用 TLQ
 			</h1>
 			<p className="mt-3 text-sm text-secondary leading-relaxed max-w-md mx-auto">
 				一个本地化的 A 股量化分析面板 —— 行情、策略、回测、监控、财务一体化。

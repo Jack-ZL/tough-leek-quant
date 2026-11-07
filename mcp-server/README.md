@@ -1,4 +1,4 @@
-# tick-stock-panel MCP 服务器
+# tough-leek-quant MCP 服务器
 
 把面板的开放接口包装成 **MCP (Model Context Protocol)** 工具, 让 Claude / ZCode / Cursor 等 AI 客户端直接查询行情、市场环境、策略与告警, 触发回测。
 
@@ -20,9 +20,9 @@ AI 客户端 ⇄ MCP stdio (本服务器) ⇄ HTTP + Bearer Token ⇄ 面板开�
 ```json
 {
   "mcpServers": {
-    "tick-stock-panel": {
+    "tough-leek-quant": {
       "command": "uv",
-      "args": ["--directory", "E:/tick-stock-panel/mcp-server", "run", "tsp-mcp-server"],
+      "args": ["--directory", "E:/tough-leek-quant/mcp-server", "run", "tlq-mcp-server"],
       "env": {
         "TSP_BASE": "http://127.0.0.1:3018",
         "TSP_TOKEN": "tsp_xxxx",
@@ -41,7 +41,7 @@ AI 客户端 ⇄ MCP stdio (本服务器) ⇄ HTTP + Bearer Token ⇄ 面板开�
 
 ```bash
 cd mcp-server
-TSP_TOKEN=tsp_xxx uv run tsp-mcp-server   # stdio JSON-RPC, 供客户端拉起
+TSP_TOKEN=tsp_xxx uv run tlq-mcp-server   # stdio JSON-RPC, 供客户端拉起
 ```
 
 ## 工具清单 (按 scope)

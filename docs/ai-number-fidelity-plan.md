@@ -1,6 +1,6 @@
 # AI 输出数字忠实度闸门 技术方案（design）
 
-> 状态：**已实现**（默认关，灰度中；设置 → AI → 「数字忠实度闸门」开启）。对应《同目录项目对比调研报告》P0 第 1 项「别让 AI 瞎编数字」，参照 Vibe-Research 的 `number_gate.ts` / `number_fidelity.ts` / `arithmetic.ts` 机制，适配 TSP v0.3.15 的流式链路。
+> 状态：**已实现**（默认关，灰度中；设置 → AI → 「数字忠实度闸门」开启）。对应《同目录项目对比调研报告》P0 第 1 项「别让 AI 瞎编数字」，参照 Vibe-Research 的 `number_gate.ts` / `number_fidelity.ts` / `arithmetic.ts` 机制，适配 TLQ v0.3.15 的流式链路。
 >
 > 分级：**L3（直接修改核心源码）+ 最小接线**。依据 `docs/secondary-development.md §2/§5.1`：横切校验必须介入各 `services/*_analyzer.py` 的 delta 出口，现有扩展点（后端唯一继承点 `NotificationFormatter`、3 个前端插槽）无法表达；按「优先新增独立模块，再对核心入口做最小接线」执行。首版**不预埋扩展点**（遵循 §10 YAGNI）。
 >
@@ -27,7 +27,7 @@
 5. 找不到的数字 → **就地包进「〖…※〗」高亮标记**（连紧跟的单位一起包进标记，数字保留可见不隐藏），**只标记该数字，绝不拒绝整段回答**。
 6. 回答末尾自动追加一句说明，API 响应带 `numbers_masked: N` 字段。
 
-为什么快：白名单池 `set` 去重 → 排序数组 → `bisect` 二分；每个数字最多试 `1 + 2×单位数` 种换算 × 2（绝对值）次二分。Vibe 实测资料池 30 万个数字、60 行回答，全量核对 < 3 秒；TSP 单股分析数据包只有几百个数字，预计单次 < 10ms。
+为什么快：白名单池 `set` 去重 → 排序数组 → `bisect` 二分；每个数字最多试 `1 + 2×单位数` 种换算 × 2（绝对值）次二分。Vibe 实测资料池 30 万个数字、60 行回答，全量核对 < 3 秒；TLQ 单股分析数据包只有几百个数字，预计单次 < 10ms。
 
 ---
 
@@ -38,18 +38,18 @@ Vibe 的数字可信度是 **5 层**机制。本方案**只取与"数字忠实�
 | Vibe 层 | 文件 | 本方案是否采用 |
 |---|---|---|
 | A. 算式重算 | `arithmetic.ts`(334行) | ✅ 采用（Phase 2，先做四则子集） |
-| B. 报告数字忠实度（same-line 引用比对） | `number_fidelity.ts`(800行) | ⚠️ 部分采用——TSP 报告无 `[资料:ev-xxx]` 逐行引用体系，改用 Vibe **对话侧**的"整轮资料池"比对模型 |
-| C. 对话数字闸门（整轮资料池 + 打码） | `number_gate.ts`(274行) | ✅ **主参照**，TSP 全部 5 条链路都按"对话侧"模型处理 |
+| B. 报告数字忠实度（same-line 引用比对） | `number_fidelity.ts`(800行) | ⚠️ 部分采用——TLQ 报告无 `[资料:ev-xxx]` 逐行引用体系，改用 Vibe **对话侧**的"整轮资料池"比对模型 |
+| C. 对话数字闸门（整轮资料池 + 打码） | `number_gate.ts`(274行) | ✅ **主参照**，TLQ 全部 5 条链路都按"对话侧"模型处理 |
 | D. 合规红线 gate（禁词整行移除） | `gate.ts`(216行) | ❌ 不做（是另一个 P 级议题，与数字无关） |
 | E. 回测输入闸 Plan/Refusal | `backtest/gate.py`(299行) | ❌ 不做（是 P0 第 6 项"回测 gate"，独立议题） |
 
 **重要修正**：调研报告里提到的"gate.ts 的 Plan/Refusal"实际在 `backtest/gate.py`（输入侧，与数字忠实度无关）；`gate.ts` 是合规禁词闸。本方案聚焦 C 层（+ A 层算式），即 `number_gate.ts` 的 Python 复刻。
 
-**Python 复刻必须补上的 Vibe 缺口**：Vibe 的 `number_gate.ts`/`number_fidelity.ts` **没有做 NFKC 规范化**（JS `\d` 不匹配全角数字 `１２３`），全角数字、零宽字符插数字、繁体"億"在 Vibe 对话闸是**漏检**的。Python 版必须先 `unicodedata.normalize("NFKC", text)` 再提取，并补零宽剥离与繁简单位归一——这是 TSP 版相对 Vibe 的**增强**，不是照抄。
+**Python 复刻必须补上的 Vibe 缺口**：Vibe 的 `number_gate.ts`/`number_fidelity.ts` **没有做 NFKC 规范化**（JS `\d` 不匹配全角数字 `１２３`），全角数字、零宽字符插数字、繁体"億"在 Vibe 对话闸是**漏检**的。Python 版必须先 `unicodedata.normalize("NFKC", text)` 再提取，并补零宽剥离与繁简单位归一——这是 TLQ 版相对 Vibe 的**增强**，不是照抄。
 
 ---
 
-## 3. TSP 现状（来自链路调研，落地时直接引用）
+## 3. TLQ 现状（来自链路调研，落地时直接引用）
 
 ### 3.1 5 条自由文本链路 + 唯一 LLM 入口
 
@@ -146,10 +146,10 @@ NUM_RE = re.compile(r"-?\d{1,3}(?:,\d{3})+(?![\d,])(?:\.\d+)?(?:e[+-]?\d+)?|-?\d
 UNIT_AFTER = re.compile(r"^\s*(?:%|倍|百分点|pp|万亿元|亿元|万元|万亿|亿|万|元/股|元|美元|港元|x(?![A-Za-z0-9]))")
 ```
 
-**豁免清单**（等长空格遮蔽，参照 `number_gate.ts:39-48` + `number_fidelity.ts:348-397`，按 TSP 场景裁剪）：
+**豁免清单**（等长空格遮蔽，参照 `number_gate.ts:39-48` + `number_fidelity.ts:348-397`，按 TLQ 场景裁剪）：
 - 日期时间：`2024-10-08`、`10月28日`、`10-08`、`09:35`（但"配比 35:65"仍核对——裸时刻不剥）
 - 列表序号：行首 `1. `、`3、`
-- 股票代码：6 位代码、`SH600519`/`SZ000001` 字母前缀（TSP 专属 `subjectCodePatterns`）
+- 股票代码：6 位代码、`SH600519`/`SZ000001` 字母前缀（TLQ 专属 `subjectCodePatterns`）
 - 指标参数组：`MACD (12,26,9)`
 - 时间窗口：`近 5 日`、`过去 3 个月`、`未来 2 周`
 - 小整数计数：`abs(n) <= 20` 的整数且后面**没跟** `%/倍/元/亿/万/期/x` 等单位（"3 个理由"豁免，"5%"/"11 期"不豁免）
@@ -223,7 +223,7 @@ for t in sorted(violations, key=lambda x: -x.index):
 
 ---
 
-## 6. 白名单采集（TSP 专属：收"形态族"而非原值）
+## 6. 白名单采集（TLQ 专属：收"形态族"而非原值）
 
 **统一接口**：`collect_whitelist(objs: list[Any]) -> NumberPool`。各 analyzer 在"结构化对象 → 拼串"两步之间调用（零成本，数据已在作用域内）。
 
@@ -265,7 +265,7 @@ for t in sorted(violations, key=lambda x: -x.index):
 
 ---
 
-## 8. fail-closed 与降级哲学（对齐 TSP 既有先例）
+## 8. fail-closed 与降级哲学（对齐 TLQ 既有先例）
 
 参照调研 §8（`enriched_generation.py` 世代协议、`factors/dsl.py:559` 错误即数据、`regime_alignment.py:47/80` 边界宽内部严、`chat_service.py:8-9` LLM 链路 fail-closed）：
 
@@ -391,14 +391,14 @@ cd .. && git diff --check
 | **不同厂商数值格式习惯差异**（千分位/正负号/亿万） | bound 规范化比对（非字符串精确匹配）；golden fixture 覆盖多厂商输出样本 |
 | **行缓冲切断跨行算式** | derived 集合 carry-over；算式几乎都在单行内 |
 | **标记破坏 Markdown 表格** | 只包裹数字 token、保留 `|`/单位/标点；MarkdownRenderer 块级正则不命中 `〖…〗` |
-| **词表未注册导致过度打码**（"沪深300"） | fail-safe 方向正确（宁严勿漏）；逐步注册 TSP 指数/均线/指标名词表 |
+| **词表未注册导致过度打码**（"沪深300"） | fail-safe 方向正确（宁严勿漏）；逐步注册 TLQ 指数/均线/指标名词表 |
 
 ### 14.2 非目标（本方案明确不做）
 
 - ❌ 合规红线禁词闸（Vibe `gate.ts`）——独立议题。
 - ❌ 回测输入 Plan/Refusal 闸（Vibe `backtest/gate.py`）——P0 第 6 项。
 - ❌ VERDICT 机读块信号解析（AShare）——P0 第 2 项。
-- ❌ 报告 same-line `[资料:ev-xxx]` 逐行引用体系（Vibe `number_fidelity.ts` 完整形态）——TSP 无此引用基础设施，用对话侧"整轮资料池"模型替代。
+- ❌ 报告 same-line `[资料:ev-xxx]` 逐行引用体系（Vibe `number_fidelity.ts` 完整形态）——TLQ 无此引用基础设施，用对话侧"整轮资料池"模型替代。
 - ❌ 证据链审计 hash 链（Vibe `audit_chain.ts`）——P2 第 23 项。
 - ❌ 完整量纲分析算式（`Term{v,k,scaled,dim,mag}`）——Phase 2 只做四则子集。
 

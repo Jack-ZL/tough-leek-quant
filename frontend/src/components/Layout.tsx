@@ -888,7 +888,7 @@ export function Layout() {
 						/>
 						{!railMode && (
 							<div className="font-semibold text-[11px] uppercase tracking-[0.12em] text-foreground/90 whitespace-nowrap">
-								Tick Stock Panel
+								Tough Leek Quant
 							</div>
 						)}
 						{/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}

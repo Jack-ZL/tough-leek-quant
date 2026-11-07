@@ -1,6 +1,6 @@
 """P1-11 数据体检打分 — 数据先体检, 再给 AI 用。
 
-学 astock `quality_gate.py` 的「评级注入下游 prompt」思路, 但按 TSP 哲学改造:
+学 astock `quality_gate.py` 的「评级注入下游 prompt」思路, 但按 TLQ 哲学改造:
 - **纯规则硬检查, 零 LLM 成本** (astock 用一次 LLM 复审出 A-F, 成本高且慢;
   本项目检查对象是结构化行情数据, 规则足够, 也符合 AI 成本台账的省钱原则)
 - **默认只警示不拦截** (fail-open): 体检结果注入 prompt 让 AI 自行降置信度;

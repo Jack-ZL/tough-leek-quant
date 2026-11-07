@@ -142,7 +142,7 @@ def test_standalone_bundle_carries_override(bundle_env, engine):
     names = _zip_names(data)
     assert "strategies/custom/custom_standalone.py" in names
     assert "user_data/strategy_overrides/custom_standalone.json" in names
-    assert filename == "tsp-strategy-custom_standalone.zip"
+    assert filename == "tlq-strategy-custom_standalone.zip"
     assert summary.counts == {"strategies": 1, "strategy_overrides": 1}
     assert summary.warnings == []
 
