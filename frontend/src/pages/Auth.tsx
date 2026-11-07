@@ -95,7 +95,7 @@ export function Auth() {
 				{/* Logo */}
 				<div className="mb-6 flex flex-col items-center gap-2">
 					<Logo className="h-10 w-10" />
-					<h1 className="text-lg font-semibold text-foreground">Tick Stock Panel</h1>
+					<h1 className="text-lg font-semibold text-foreground">Tough Leek Quant</h1>
 				</div>
 
 				<div className="rounded-card border border-border bg-surface/90 p-6 shadow-2xl backdrop-blur">
@@ -179,7 +179,7 @@ export function Auth() {
 							<p>
 								详细配置说明见{' '}
 								<a
-									href="https://github.com/shy3130/tickflow-stock-panel/blob/main/docs/deploy-password.md"
+									href="https://github.com/shy3130/tough-leek-quant/blob/main/docs/deploy-password.md"
 									target="_blank"
 									rel="noreferrer"
 									className="text-accent underline-offset-2 hover:underline"

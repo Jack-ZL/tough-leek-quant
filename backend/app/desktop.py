@@ -29,7 +29,7 @@ from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
 
-_APP_NAME = "TSP"
+_APP_NAME = "TLQ"
 _BASE_PORT = 3018
 _PORT_PROBE_RANGE = 50  # 从 3018 起最多试 50 个端口
 _instance_lock: BinaryIO | None = None
@@ -42,10 +42,10 @@ def _failed_html(reason: str | None = None) -> str:
     文案里的换行按 <br> 渲染, 用户照指引操作即可自助解决。
     """
     if reason is None:
-        title = "TSP 启动超时"
+        title = "TLQ 启动超时"
         body = "<p>后端未在预期时间内就绪，请关闭窗口后重新打开。</p>"
     else:
-        title = "TSP 启动失败"
+        title = "TLQ 启动失败"
         body = f"<p>{html.escape(reason).replace(chr(10), '<br>')}</p>"
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <style>
@@ -495,7 +495,7 @@ def main() -> int:
         # 写完整 traceback 到 data/desktop.log, 并弹原生 MessageBox 让用户截图反馈。
         # 必须排在 KeyboardInterrupt 之后 —— Exception 是基类, 在前会遮蔽它。
         logger.exception("桌面客户端启动失败")
-        _show_crash("TSP 启动失败", traceback.format_exc())
+        _show_crash("TLQ 启动失败", traceback.format_exc())
         return 1
     finally:
         if instance_acquired:

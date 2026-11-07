@@ -17,13 +17,13 @@
  *     (在 backend/ 目录执行)
  */
 
-export const PROJECT_COPYRIGHT = 'Copyright (c) 2026 tick-stock-panel contributors'
+export const PROJECT_COPYRIGHT = 'Copyright (c) 2026 tough-leek-quant contributors'
 export const PROJECT_LICENSE_NAME = 'MIT'
-export const PROJECT_REPO_URL = 'https://github.com/shy3130/tick-stock-panel'
+export const PROJECT_REPO_URL = 'https://github.com/shy3130/tough-leek-quant'
 
 export const PROJECT_LICENSE_TEXT = `MIT License
 
-Copyright (c) 2026 tick-stock-panel contributors
+Copyright (c) 2026 tough-leek-quant contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

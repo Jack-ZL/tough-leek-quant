@@ -109,7 +109,7 @@ export function Financials() {
 								当前财务数据源需付费,后续会接入免费数据源。如你常用某个免费财务数据源,欢迎在 Issues 中多多推荐哈 ~
 							</p>
 							<a
-								href="https://github.com/shy3130/tickflow-stock-panel/issues"
+								href="https://github.com/shy3130/tough-leek-quant/issues"
 								target="_blank"
 								rel="noreferrer"
 								className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"

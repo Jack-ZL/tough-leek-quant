@@ -14,7 +14,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def main() -> None:
     proc = subprocess.Popen(
-        [sys.executable, "-m", "tsp_mcp_server.server"],
+        [sys.executable, "-m", "tlq_mcp_server.server"],
         cwd=os.path.join(BASE_DIR, "src"),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

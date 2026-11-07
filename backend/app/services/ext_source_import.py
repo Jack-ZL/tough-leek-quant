@@ -137,7 +137,7 @@ def list_namespaces() -> list[str]:
 def compile_source(source_path: Path, pack_id_hint: str) -> tuple[bytes, str]:
     """esbuild 编译单个 .tsx 扩展为自包含页面插件产物。
 
-    编译临时目录放在 frontend/node_modules/.tsp-import-*/ 下: esbuild 按文件
+    编译临时目录放在 frontend/node_modules/.tlq-import-*/ 下: esbuild 按文件
     位置向上找 node_modules, 系统临时目录解析不到裸 import (react 等);
     node_modules 也是构建产物的归属地, Vite 不监视它。本项目内的源码保持
     原位编译 (保留其相对 import), 外部上传的源文件拷入临时目录。
@@ -157,7 +157,7 @@ def compile_source(source_path: Path, pack_id_hint: str) -> tuple[bytes, str]:
         raise SourceCompileError(f"源文件不可读: {e}") from e
     under_frontend = root.resolve() in source.parents
 
-    tmp = root / "node_modules" / f".tsp-import-{uuid.uuid4().hex[:8]}"
+    tmp = root / "node_modules" / f".tlq-import-{uuid.uuid4().hex[:8]}"
     try:
         tmp.mkdir(parents=True, exist_ok=True)
         if not under_frontend:

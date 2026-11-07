@@ -98,7 +98,7 @@ def _user_data_root() -> Path:
       1. 环境变量 DATA_DIR (pydantic-settings 自动注入到 settings.data_dir, 不在此处理)
       2. 打包桌面版:
          - macOS: ~/Library/Application Support/TSP —— 必须在 .app 包外。
-           升级用新 TSP.app 替换旧包时 Finder 会把整个旧包移入废纸篓,
+           升级用新 TLQ.app 替换旧包时 Finder 会把整个旧包移入废纸篓,
            数据放包内 (≤0.3.6 的 exe 同级 data) 等于每次覆盖安装都被清空;
            App Support 是 mac 用户数据惯例位置, 替换 .app 永不触碰,
            也规避向 /Applications 包内写入的权限问题。包内旧数据由

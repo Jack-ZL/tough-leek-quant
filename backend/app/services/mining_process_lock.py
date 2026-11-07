@@ -28,6 +28,7 @@ _APP_CMDLINE_HINTS = (
     "app.desktop",
     "desktop.py",
     "tick-stock-panel",
+    "tough-leek-quant",
     "tickflow",
     "panel",
 )

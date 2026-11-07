@@ -412,7 +412,7 @@ def build_backup(*, categories: Iterable[str] | None = None) -> tuple[bytes, str
         include_secrets,
         {k: counts[k] for k in _CATEGORY_ORDER if k in counts},
     )
-    return buf.getvalue(), f"tsp-config-backup-{now:%Y%m%d-%H%M}.zip"
+    return buf.getvalue(), f"tlq-config-backup-{now:%Y%m%d-%H%M}.zip"
 
 
 # ── 解析与校验 (inspect / apply 共用) ─────────────────────

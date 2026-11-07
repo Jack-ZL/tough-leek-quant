@@ -17,7 +17,7 @@
 
 ## 2. 库选择与当前情况
 
-选择 **TradingView Lightweight Charts**。它是适配自有数据与界面的开源渲染库；完整工具栏、指标计算、画线工具不是自动随库提供的。Advanced Charts 属于另外的授权产品，本次不接入。数据继续来自 TSP 的 `/api`，不接 TradingView 行情，不新增 TradingView 账号或 Key 要求。参考：[官方产品比较](https://tradingview.github.io/lightweight-charts/docs/product-comparison)。
+选择 **TradingView Lightweight Charts**。它是适配自有数据与界面的开源渲染库；完整工具栏、指标计算、画线工具不是自动随库提供的。Advanced Charts 属于另外的授权产品，本次不接入。数据继续来自 TLQ 的 `/api`，不接 TradingView 行情，不新增 TradingView 账号或 Key 要求。参考：[官方产品比较](https://tradingview.github.io/lightweight-charts/docs/product-comparison)。
 
 实施前 `package.json` 声明 `^4.2.0`，锁文件版本为 **4.2.3**。已有 `CandlestickChart.tsx` 只实现基础 K 线和成交量，源码搜索未发现业务调用，不能直接代替详情。板块成分弹窗也使用该库，须同步适配系列创建 API。
 

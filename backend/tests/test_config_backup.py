@@ -133,7 +133,7 @@ def _zip_entries(data: bytes) -> dict[str, bytes]:
 
 def test_export_contains_all_categories_and_manifest(src_env):
     data, filename = config_backup.build_backup()
-    assert filename.startswith("tsp-config-backup-") and filename.endswith(".zip")
+    assert filename.startswith("tlq-config-backup-") and filename.endswith(".zip")
     entries = _zip_entries(data)
     assert "manifest.json" in entries
     expected = {

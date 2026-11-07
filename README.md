@@ -1,7 +1,7 @@
 <div align="center">
 <a id="top"></a>
 
-# <picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark-title.svg"><img src="brand/logo-title.svg" width="30" alt="TSP Logo"></picture> TSP · A股智能量化工作台
+# <picture><source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark-title.svg"><img src="brand/logo-title.svg" width="30" alt="TLQ Logo"></picture> TLQ · A股智能量化工作台
 
 <br/>
 
@@ -11,9 +11,9 @@
 [![Node 20+](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 
-[![Build: Docker CI](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/docker.yml)
-[![Test: Backend + Frontend](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/shy3130/tick-stock-panel/actions/workflows/ci.yml)
-[![GitHub stars](https://img.shields.io/github/stars/shy3130/tick-stock-panel?style=social)](https://github.com/shy3130/tick-stock-panel/stargazers)
+[![Build: Docker CI](https://github.com/shy3130/tough-leek-quant/actions/workflows/docker.yml/badge.svg)](https://github.com/shy3130/tough-leek-quant/actions/workflows/docker.yml)
+[![Test: Backend + Frontend](https://github.com/shy3130/tough-leek-quant/actions/workflows/ci.yml/badge.svg)](https://github.com/shy3130/tough-leek-quant/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/shy3130/tough-leek-quant?style=social)](https://github.com/shy3130/tough-leek-quant/stargazers)
 
 **自托管 · 零运维 · 核心能力全部开放成接口的 A 股量化工作台**
 
@@ -21,8 +21,8 @@
 
 `策略` · `回测` · `监控` · `因子挖掘` · `AI 助手` · `Polars` · `React`
 
-<a href="https://trendshift.io/repositories/64327?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/64327" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
-<a href="https://trendshift.io/repositories/64327?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/64327/daily?language=TypeScript" alt="shy3130%2Ftick-stock-panel | Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/64327?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/64327" alt="shy3130%2Ftough-leek-quant | Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/64327?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-64327" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/64327/daily?language=TypeScript" alt="shy3130%2Ftough-leek-quant | Trendshift" width="250" height="55"/></a>
 
 <table>
 <tr><td align="center"><big><b>3.11+</b></big><br/><sub>Python 后端</sub></td>
@@ -67,9 +67,9 @@
 <a id="why-tsp"></a>
 <a id="-为什么做-tsp"></a>
 
-## 💡 为什么做 TSP
+## 💡 为什么做 TLQ
 
-| 用脚本/拼凑工具做量化,你大概率遇到过         | TSP 的解法                                                                                               |
+| 用脚本/拼凑工具做量化,你大概率遇到过         | TLQ 的解法                                                                                               |
 | :------------------------------------------- | :------------------------------------------------------------------------------------------------------- |
 | 数据源绑死,换一家要重写整套拉数代码          | **能力路由矩阵**:6 类数据集按源能力独立路由,随时换源,指标与回测口径不变                                  |
 | 策略、回测、监控各用一套工具,口径对不上      | 全站统一 **enriched 数据口径**:策略 → 回测 → 监控 → 复盘一条链                                           |
@@ -156,13 +156,13 @@
 
 ## 🏗️ 架构
 
-**TSP 的一切设计围绕一条主线:核心底座 + 扩展层。**
+**TLQ 的一切设计围绕一条主线:核心底座 + 扩展层。**
 
 - **核心域(8 个)** 拥有数据与语义 —— 数据底座、能力路由、指标与执行、事件与开放通道。它们是自洽的最小系统,不依赖任何外围。
 - **扩展域(5 条通道)** 只消费核心契约 —— 数据源插件、扩展数据表、自定义策略/信号、页面扩展、后端 custom 模块。**可整体替换或移除而不伤核心**:删除目录即卸载、复制目录即导入。
 - 你看到的 19 个页面里,**11 个官方页面本身就是扩展**(单文件 `frontend/src/custom/<ns>/extension.tsx`)—— 监控中心页面可以整个换掉,规则引擎与推送管道属核心照常运行。**连 AI 对话助手都是扩展域的参考实现。**
 
-> 一句话:核心是引擎,其余皆插件。下面这张图,先看懂虚线框与实线框的边界,就看懂了 TSP。
+> 一句话:核心是引擎,其余皆插件。下面这张图,先看懂虚线框与实线框的边界,就看懂了 TLQ。
 
 ### 总览 · 网关居中的开放单体
 
@@ -170,7 +170,7 @@
 > **双通道并行**:面板走密码会话,外部走 Token 网关 —— 互不影响、互不挤占限流。核心域 8 个域是数据与语义的所有者;扩展域 5 条通道只消费契约,零核心改动。
 
 <div align="center">
-  <img src="./assets/architecture.svg" width="920" alt="TSP 架构总览 — 网关居中的开放单体: 消费端双通道接入, 核心域 8 域拥有数据与语义, 扩展域 5 通道只消费契约">
+  <img src="./assets/architecture.svg" width="920" alt="TLQ 架构总览 — 网关居中的开放单体: 消费端双通道接入, 核心域 8 域拥有数据与语义, 扩展域 5 通道只消费契约">
 </div>
 
 ### 架构特点
@@ -265,7 +265,7 @@
 面板的核心能力不只长在页面上 —— **全部开放成受控接口**,外部程序与 AI 客户端平等消费:
 
 > 🌐 **开放平台门户已上线 → [tsp.shy313.com](https://tsp.shy313.com/)**
-> 浏览 TSP 全部功能 · 注册账户 · 邀请好友 · 创建 API Key · 在线调用开放接口,一个入口直达。
+> 浏览 TLQ 全部功能 · 注册账户 · 邀请好友 · 创建 API Key · 在线调用开放接口,一个入口直达。
 
 <table>
   <tr>
@@ -355,11 +355,11 @@ curl -H "Authorization: Bearer tsp_xxxx" \
 ### 已装 Docker?一条命令跑起来 ⬇️
 
 ```bash
-docker run -d --name tsp \
+docker run -d --name tlq \
   -p 3018:3018 \
   -e DATA_DIR=/app/data \
   -v "${PWD}/data:/app/data" \
-  ghcr.io/shy3130/tick-stock-panel:latest
+  ghcr.io/shy3130/tough-leek-quant:latest
 ```
 
 **打开 <http://localhost:3018> 即可使用** · 多架构镜像(linux/amd64 · arm64)由 CI 自动发布,本地无需 Python / Node
@@ -387,8 +387,8 @@ docker run -d --name tsp \
 - 需要配置时:从 [.env.example](./.env.example) 复制出 `.env`,命令里加 `--env-file .env`,保留 `-e DATA_DIR=/app/data` 与数据挂载。自定义目录时,同时修改 `DATA_DIR` 和挂载目标。
 - 升级前若凭据实际保存在容器的 `/data` 而非已挂载目录,请先按[旧容器数据备份说明](./docs/deployment.md#docker-升级前核对数据目录)备份迁出,再重建容器。
 - Linux `docker run` 部署:容器内要通过 `host.docker.internal` 访问宿主机服务(如自定义数据源)时,命令需加 `--add-host=host.docker.internal:host-gateway`;升级重建容器时务必保留 `-v ${PWD}/data:/app/data` 挂载并提前备份 `data/`,否则容器层数据会随旧容器静默丢失(详见 [docs/deployment.md](./docs/deployment.md))。
-- 跑自己改过的代码:fork 后到仓库 **Actions** 页启用 workflow(fork 默认禁用),构建出的 `ghcr.io/<你的用户名>/tick-stock-panel` 用法相同。
-- 想用 compose 编排(挂载 `.env` / `tiers.yaml`):参考 [docker-compose.yml](./docker-compose.yml),把 `build:` 段换成 `image: ghcr.io/shy3130/tick-stock-panel:latest`。
+- 跑自己改过的代码:fork 后到仓库 **Actions** 页启用 workflow(fork 默认禁用),构建出的 `ghcr.io/<你的用户名>/tough-leek-quant` 用法相同。
+- 想用 compose 编排(挂载 `.env` / `tiers.yaml`):参考 [docker-compose.yml](./docker-compose.yml),把 `build:` 段换成 `image: ghcr.io/shy3130/tough-leek-quant:latest`。
 - 现成镜像默认不含老 CPU 兼容内核(体积考虑),有此需求请用方式 B 自构建,详见 [docs/deployment.md](./docs/deployment.md)。
 
 <a id="install-compose"></a>
@@ -431,8 +431,8 @@ CODEX_CLI_VERSION=0.144.3 docker compose up --build
 装一个本机 AI 编程助手(Trae / Codex / OpenCode / ZCode / WorkBuddy 等,任选其一),新建一个空文件夹用助手打开,把下面这段话原样发给它:
 
 ```text
-帮我部署开源项目 https://github.com/shy3130/tick-stock-panel 到本机:
-克隆到当前文件夹;有 Docker 优先拉 ghcr.io/shy3130/tick-stock-panel:latest 现成镜像,没有就走 Dev 模式;
+帮我部署开源项目 https://github.com/shy3130/tough-leek-quant 到本机:
+克隆到当前文件夹;有 Docker 优先拉 ghcr.io/shy3130/tough-leek-quant:latest 现成镜像,没有就走 Dev 模式;
 缺少的依赖(Docker / Python / Node)帮我一起装好;
 最后告诉我浏览器打开哪个地址、需要填哪些 Key。
 ```
@@ -467,20 +467,20 @@ Windows 启动器的可用参数:
 
 ### 方式 E:桌面客户端(Windows / macOS)
 
-从 [Releases](https://github.com/shy3130/tick-stock-panel/releases/latest) 下载对应安装包:Windows 双击 `TSP-Setup-x64-*.exe` 按向导安装即可;macOS 下载 `TSP-macos-arm64-*.dmg`。
+从 [Releases](https://github.com/shy3130/tough-leek-quant/releases/latest) 下载对应安装包:Windows 双击 `TLQ-Setup-x64-*.exe` 按向导安装即可;macOS 下载 `TLQ-macos-arm64-*.dmg`。
 
 <details>
 <summary><b>🍎 macOS 安装注意事项(点开查看)</b></summary>
 
 - **仅支持 Apple Silicon(M 系列芯片)**,暂无 Intel 版本。
-- **数据位置**:用户数据(API Key、AI 配置、自选、行情数据)存放在 `~/Library/Application Support/TSP`,**升级替换 TSP.app 不会丢失**。
+- **数据位置**:用户数据(API Key、AI 配置、自选、行情数据)存放在 `~/Library/Application Support/TSP`,**升级替换 TLQ.app 不会丢失**。
 - **≤ v0.3.6 老用户升级须知**:旧版把数据存在 App 包内部(`TSP.app/Contents/MacOS/data`),直接用新 App 替换会把旧数据一起移入废纸篓。升级前请先备份该目录;若已替换,可从废纸篓把旧 `TSP.app` 拖出并取出 `Contents/MacOS/data`,恢复进新 App 同位置后启动一次,程序会自动把数据迁移到上述安全位置。
-- 打开 dmg 后,请先把 **TSP.app 拖入「应用程序(Applications)」再运行**;不要直接在 dmg 挂载窗口里双击运行 —— 挂载卷是只读的,会导致启动即退出。
-- 首次打开会被 macOS Gatekeeper 拦截(安装包暂未做开发者签名与公证):前往 **系统设置 → 隐私与安全性**,下滑到「已阻止使用 "TSP"」→ 点 **仍要打开**,再按提示确认一次。
-- 若提示 **「"TSP" 已损坏,无法打开」**,或完成上一步后仍一闪退出:打开「终端」执行下面的命令,然后再启动(`xattr` 为 macOS 自带命令,作用是移除下载文件上的隔离标记,不会改动系统设置):
+- 打开 dmg 后,请先把 **TLQ.app 拖入「应用程序(Applications)」再运行**;不要直接在 dmg 挂载窗口里双击运行 —— 挂载卷是只读的,会导致启动即退出。
+- 首次打开会被 macOS Gatekeeper 拦截(安装包暂未做开发者签名与公证):前往 **系统设置 → 隐私与安全性**,下滑到「已阻止使用 "TLQ"」→ 点 **仍要打开**,再按提示确认一次。
+- 若提示 **「"TLQ" 已损坏,无法打开」**,或完成上一步后仍一闪退出:打开「终端」执行下面的命令,然后再启动(`xattr` 为 macOS 自带命令,作用是移除下载文件上的隔离标记,不会改动系统设置):
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/TSP.app
+xattr -dr com.apple.quarantine /Applications/TLQ.app
 ```
 
 </details>
@@ -566,7 +566,7 @@ PORT=3018                      # 服务端口
 
 ## 🗺️ 路线图
 
-以下保留早期阶段与版本规划记录；最新已发布功能和版本状态请查看 [Releases](https://github.com/shy3130/tick-stock-panel/releases)。
+以下保留早期阶段与版本规划记录；最新已发布功能和版本状态请查看 [Releases](https://github.com/shy3130/tough-leek-quant/releases)。
 
 | Phase                 | 内容                                                                                                                               | 状态          |
 | :-------------------- | :--------------------------------------------------------------------------------------------------------------------------------- | :------------ |
@@ -637,7 +637,7 @@ PORT=3018                      # 服务端口
   <tr>
     <td align="center" width="50%">
 
-<sub>感谢支持 TSP，助力项目持续完善 ❤️</sub>
+<sub>感谢支持 TLQ，助力项目持续完善 ❤️</sub>
 
 <br/>
 
@@ -670,7 +670,7 @@ PORT=3018                      # 服务端口
 
 ## 📄 License
 
-[MIT](./LICENSE) © tick-stock-panel contributors
+[MIT](./LICENSE) © tough-leek-quant contributors
 
 > **分发与二次开发须知**:依据 MIT 协议,分发本软件或其任何部分(包括 fork 后发布、修改再发布、封装为自有产品或服务)时,必须完整保留原始版权声明与许可文本。未经版权所有者书面许可,移除、遮蔽或篡改版权署名、许可声明,或在再分发时隐匿本项目来源,均构成协议违约与著作权侵权,版权所有者保留依法追究责任的权利。
 >

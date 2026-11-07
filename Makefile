@@ -53,7 +53,7 @@ dev: install
 		sleep 1; \
 	fi
 	@echo -e "$(C_BLUE)================================================$(C_NC)"
-	@echo -e "$(C_BLUE)  $(C_GREEN)tick-stock-panel$(C_NC)"
+	@echo -e "$(C_BLUE)  $(C_GREEN)tough-leek-quant$(C_NC)"
 	@echo -e "$(C_BLUE)  backend   $(C_YELLOW)http://$(DISPLAY_HOST):$(BACKEND_PORT)$(C_NC)"
 	@echo -e "$(C_BLUE)  frontend  $(C_YELLOW)http://$(DISPLAY_HOST):$(FRONTEND_PORT)$(C_NC)"
 	@echo -e "$(C_BLUE)  Ctrl-C    $(C_NC)"

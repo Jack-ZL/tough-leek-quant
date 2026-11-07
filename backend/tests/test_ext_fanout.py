@@ -133,7 +133,7 @@ def mock_http(monkeypatch: pytest.MonkeyPatch):
             )
             if extra_params:
                 url = _append_query_params(url, extra_params)
-            headers = {"User-Agent": "test", "X-TSP-Client": "tick-stock-panel"}
+            headers = {"User-Agent": "test", "X-TSP-Client": "tough-leek-quant"}
             url = _apply_auth(config_id, pull.auth, url, headers)
             async with httpx.AsyncClient(timeout=30, transport=transport) as client:
                 resp = await client.request(pull.method.upper(), url, headers=headers)

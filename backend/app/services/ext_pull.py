@@ -45,7 +45,7 @@ async def _pull_client_scope():
 def outbound_headers(user_headers: dict[str, str] | None = None) -> dict[str, str]:
     """扩展数据出站请求的默认标识头。
 
-    默认携带 User-Agent: tsp/<版本> 与 X-TSP-Client: tick-stock-panel,
+    默认携带 User-Agent: tsp/<版本> 与 X-TSP-Client: tough-leek-quant,
     供服务端 (如 tickflow-hub) 识别本项目的请求。用户在拉取配置里显式
     设置的同名头优先 (大小写不敏感), 不被标识头覆盖。
     """
@@ -53,7 +53,7 @@ def outbound_headers(user_headers: dict[str, str] | None = None) -> dict[str, st
 
     defaults = {
         "User-Agent": f"tsp/{__version__}",
-        "X-TSP-Client": "tick-stock-panel",
+        "X-TSP-Client": "tough-leek-quant",
     }
     override = {k.lower() for k in (user_headers or {})}
     return {

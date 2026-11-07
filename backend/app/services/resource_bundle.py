@@ -1023,7 +1023,7 @@ def build_resources(data_dir: Path, engine: Any, roots: list[dict[str, str]]) ->
         blob = _zip(dict(items), keys, inputs)
         preview = inspect_resources([("resources.zip", blob)])
         preview["revision"] = _hash(json.dumps([(name, _hash(payload)) for name, payload in sorted(items)], ensure_ascii=False).encode())
-        return blob, "tsp-resources.zip", preview
+        return blob, "tlq-resources.zip", preview
     except (StrategyBundleError, config_backup.ConfigBackupError, ValueError, OSError) as exc:
         raise ResourceBundleError(str(exc)) from exc
 
@@ -1131,7 +1131,7 @@ def build_bundle(
             {"path": rel, "kind": config_backup._classify(PurePosixPath(rel), data_dir)[0]} for rel, _ in items
         ],
     }
-    return _archive(dict(items), manifest), f"tsp-strategy-{summary.strategy_id}.zip", summary
+    return _archive(dict(items), manifest), f"tlq-strategy-{summary.strategy_id}.zip", summary
 
 
 def inspect_bundle(data: bytes) -> dict[str, Any]:
