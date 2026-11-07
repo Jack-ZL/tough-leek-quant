@@ -358,7 +358,7 @@ _VENDOR_KEYWORDS: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini", "google"),
     "grok": ("grok",),
     "minimax": ("minimax", "abab"),
-    "hunyuan": ("hunyuan", "混元"),
+    "hunyuan": ("hunyuan", "混元", "hy"),
     "ernie": ("ernie", "文心", "qianfan", "千帆"),
     "baichuan": ("baichuan", "百川"),
     "stepfun": ("stepfun", "阶跃"),
