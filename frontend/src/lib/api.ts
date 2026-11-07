@@ -17,21 +17,21 @@ type RequestOptions = RequestInit & {
 }
 
 export class ApiError extends Error {
-  readonly status: number
-  readonly retryAfterMs?: number
+	readonly status: number
+	readonly retryAfterMs?: number
 
-  constructor(message: string, status: number, retryAfterMs?: number) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.retryAfterMs = retryAfterMs
-  }
+	constructor(message: string, status: number, retryAfterMs?: number) {
+		super(message)
+		this.name = 'ApiError'
+		this.status = status
+		this.retryAfterMs = retryAfterMs
+	}
 }
 
 export interface WatchlistPrepareResult {
-  symbol: string
-  status: 'ready' | 'no_data' | 'unsupported' | 'failed' | 'busy'
-  message: string
+	symbol: string
+	status: 'ready' | 'no_data' | 'unsupported' | 'failed' | 'busy'
+	message: string
 }
 
 /**
@@ -56,55 +56,56 @@ const COMPUTE_REQUEST_TIMEOUT_MS = 300_000
 const extPullTimeoutMs = (timeoutSeconds?: number) => (timeoutSeconds ?? 30) * 1000 + 10_000
 
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
-  const { quiet, responseType = 'json', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {}
-  const isFormData = fetchInit.body instanceof FormData
-  const headers: Record<string, string> = {}
-  if (!isFormData) headers['Content-Type'] = 'application/json'
-  // 合并调用方传入的 headers (此前会被整体覆盖丢弃)
-  Object.assign(headers, fetchInit.headers as Record<string, string> | undefined)
-  // 自带 signal 的调用方 (上传/串行队列) 由其自行控制中止; 其余走默认超时。
-  const ctl = timeoutMs == null || fetchInit.signal ? undefined : new AbortController()
-  const timeoutSeconds = Math.round((timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) / 1000)
-  let timer: number | undefined
-  if (ctl && timeoutMs != null) timer = window.setTimeout(() => ctl.abort(), timeoutMs)
-  let res: Response
-  try {
-    res = await fetch(`${BASE}${path}`, {
-      ...fetchInit,
-      headers,
-      ...(ctl ? { signal: ctl.signal } : {}),
-    })
-  } catch (err) {
-    if (ctl && err instanceof DOMException && err.name === 'AbortError') {
-      const msg = `请求超时（${timeoutSeconds}s）· ${path.split('?')[0]}`
-      if (!quiet) toast(msg, 'error')
-      throw new ApiError(msg, 0)
-    }
-    throw err
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer)
-  }
-  if (!res.ok) {
-    let detail = ''
-    try {
-      const j = JSON.parse(await res.text())
-      const raw = j.detail ?? j.message ?? ''
-      if (Array.isArray(raw)) {
-        // FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
-        detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
-      } else if (typeof raw === 'string') {
-        detail = raw
-      } else if (raw && typeof raw === 'object') {
-        detail = JSON.stringify(raw)
-      }
-    } catch { /* ignore */ }
-    const msg = detail || `${res.status} ${res.statusText}`
-    // 401 (未登录/会话过期) 不弹 toast — 由全局认证拦截器统一跳登录页, 避免刷屏
-    if (res.status !== 401 && !quiet) toast(msg, 'error')
-    const retryAfter = Number(res.headers.get('Retry-After'))
-    throw new ApiError(msg, res.status, retryAfter > 0 && Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined)
-  }
-  return (responseType === 'blob' ? res.blob() : res.json()) as Promise<T>
+	const { quiet, responseType = 'json', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {}
+	const isFormData = fetchInit.body instanceof FormData
+	const headers: Record<string, string> = {}
+	if (!isFormData) headers['Content-Type'] = 'application/json'
+	// 合并调用方传入的 headers (此前会被整体覆盖丢弃)
+	Object.assign(headers, fetchInit.headers as Record<string, string> | undefined)
+	// 自带 signal 的调用方 (上传/串行队列) 由其自行控制中止; 其余走默认超时。
+	const ctl = timeoutMs == null || fetchInit.signal ? undefined : new AbortController()
+	const timeoutSeconds = Math.round((timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) / 1000)
+	let timer: number | undefined
+	if (ctl && timeoutMs != null) timer = window.setTimeout(() => ctl.abort(), timeoutMs)
+	let res: Response
+	try {
+		res = await fetch(`${BASE}${path}`, {
+			...fetchInit,
+			headers,
+			...(ctl ? { signal: ctl.signal } : {}),
+		})
+	} catch (err) {
+		if (ctl && err instanceof DOMException && err.name === 'AbortError') {
+			const msg = `请求超时（${timeoutSeconds}s）· ${path.split('?')[0]}`
+			if (!quiet) toast(msg, 'error')
+			throw new ApiError(msg, 0)
+		}
+		throw err
+	} finally {
+		if (timer !== undefined) window.clearTimeout(timer)
+	}
+	if (!res.ok) {
+		let detail = ''
+		try {
+			const j = JSON.parse(await res.text())
+			const raw = j.detail ?? j.message ?? ''
+			if (Array.isArray(raw)) {
+				// FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
+				detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
+			} else if (typeof raw === 'string') {
+				detail = raw
+			} else if (raw && typeof raw === 'object') {
+				detail = JSON.stringify(raw)
+			}
+		} catch { /* ignore */
+		}
+		const msg = detail || `${res.status} ${res.statusText}`
+		// 401 (未登录/会话过期) 不弹 toast — 由全局认证拦截器统一跳登录页, 避免刷屏
+		if (res.status !== 401 && !quiet) toast(msg, 'error')
+		const retryAfter = Number(res.headers.get('Retry-After'))
+		throw new ApiError(msg, res.status, retryAfter > 0 && Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined)
+	}
+	return (responseType === 'blob' ? res.blob() : res.json()) as Promise<T>
 }
 
 // ===== Capabilities =====
@@ -476,55 +477,56 @@ export interface PriceLimitInfo {
 }
 
 export interface KlineRow {
-  symbol?: string
-  date: string
-  open: number
-  high: number
-  low: number
-  close: number
-  volume?: number
-  /** 图表异动判定使用未复权价格与引擎的当日判定价，不与复权 OHLC 混用。 */
-  raw_low?: number | null
-  raw_close?: number | null
-  limit_down_price?: number | null
-  signal_limit_down_recovery?: boolean | null
-  change_pct?: number
-  ma5?: number | null
-  ma20?: number | null
-  ma60?: number | null
-  macd_dif?: number | null
-  macd_dea?: number | null
-  macd_hist?: number | null
-  rsi_14?: number | null
-  vol_ratio_5d?: number | null
-  [key: string]: any
+	symbol?: string
+	date: string
+	open: number
+	high: number
+	low: number
+	close: number
+	volume?: number
+	/** 图表异动判定使用未复权价格与引擎的当日判定价，不与复权 OHLC 混用。 */
+	raw_low?: number | null
+	raw_close?: number | null
+	limit_down_price?: number | null
+	signal_limit_down_recovery?: boolean | null
+	change_pct?: number
+	ma5?: number | null
+	ma20?: number | null
+	ma60?: number | null
+	macd_dif?: number | null
+	macd_dea?: number | null
+	macd_hist?: number | null
+	rsi_14?: number | null
+	vol_ratio_5d?: number | null
+
+	[key: string]: any
 }
 
 export interface QuoteFreshness {
-  state: 'live' | 'delayed' | 'stale' | 'historical' | 'unknown' | 'missing' | 'paused' | 'disabled'
-  message: string
-  data_date: string | null
-  quote_ts: number | null
-  checked_at: number
-  max_age_ms: number
+	state: 'live' | 'delayed' | 'stale' | 'historical' | 'unknown' | 'missing' | 'paused' | 'disabled'
+	message: string
+	data_date: string | null
+	quote_ts: number | null
+	checked_at: number
+	max_age_ms: number
 }
 
 export interface KlineDailyResponse {
-  symbol: string
-  asset_type?: 'stock' | 'etf' | 'index'
-  name?: string
-  stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
-  rows: KlineRow[]
-  source?: string
-  quote_freshness?: QuoteFreshness | null
+	symbol: string
+	asset_type?: 'stock' | 'etf' | 'index'
+	name?: string
+	stock_info?: { name?: string; total_shares?: number; float_shares?: number; ext?: Record<string, unknown> }
+	rows: KlineRow[]
+	source?: string
+	quote_freshness?: QuoteFreshness | null
 }
 
 export interface KlineDailyLatestResponse {
-  symbol: string
-  asset_type?: 'stock' | 'etf' | 'index'
-  row: KlineRow | null
-  source: 'live' | 'none'
-  quote_freshness?: QuoteFreshness | null
+	symbol: string
+	asset_type?: 'stock' | 'etf' | 'index'
+	row: KlineRow | null
+	source: 'live' | 'none'
+	quote_freshness?: QuoteFreshness | null
 }
 
 // ===== Watchlist =====
@@ -639,39 +641,45 @@ export interface ScreenerResult {
 }
 
 export interface ScreenerResultSummary {
-  total: number
-  as_of: string
-  /** 渐进式 run_all 写入的计算时间戳 (Unix ms); 监控实时叠加等来源无此字段 */
-  computed_at?: number | null
-  available_at?: number | null
+	total: number
+	as_of: string
+	/** 渐进式 run_all 写入的计算时间戳 (Unix ms); 监控实时叠加等来源无此字段 */
+	computed_at?: number | null
+	available_at?: number | null
 }
 
 export interface ScreenerCachedSummary {
-  as_of: string | null
-  results: Record<string, ScreenerResultSummary>
-  today_ever_counts: Record<string, number>
-  updated_at: number | null
-  /** 分钟策略后台批量计算中尚未完成的策略 (结果不落盘, 由 handle 快照合入) */
-  minute_pending?: string[]
-  task?: { id: string; pending: string[]; errors: Record<string, string>; error: string | null; complete: boolean } | null
+	as_of: string | null
+	results: Record<string, ScreenerResultSummary>
+	today_ever_counts: Record<string, number>
+	updated_at: number | null
+	/** 分钟策略后台批量计算中尚未完成的策略 (结果不落盘, 由 handle 快照合入) */
+	minute_pending?: string[]
+	task?: {
+		id: string;
+		pending: string[];
+		errors: Record<string, string>;
+		error: string | null;
+		complete: boolean
+	} | null
 }
 
 /** run_all 渐进式返回: 快策略已算完, 慢策略后台继续算 */
 export interface ScreenerRunAllSummary {
-  as_of: string | null
-  results: Record<string, ScreenerResultSummary>
-  /** 尚未算完的策略 (后台继续, 逐个写入缓存) */
-  pending?: string[]
-  /** 全部算完时为 true */
-  complete?: boolean
-  /** 后台执行出错时的错误信息 (部分结果仍会返回) */
-  error?: string | null
-  errors?: Record<string, string>
-  /** 本次执行起点 (Unix ms, 后端时钟), 用于判断缓存结果是否属于本轮 */
-  started_at?: number | null
-  task_id?: string
-  /** 已跳过的失效策略 ID (策略池残留, 前端应从池中移除) */
-  skipped_unknown?: string[]
+	as_of: string | null
+	results: Record<string, ScreenerResultSummary>
+	/** 尚未算完的策略 (后台继续, 逐个写入缓存) */
+	pending?: string[]
+	/** 全部算完时为 true */
+	complete?: boolean
+	/** 后台执行出错时的错误信息 (部分结果仍会返回) */
+	error?: string | null
+	errors?: Record<string, string>
+	/** 本次执行起点 (Unix ms, 后端时钟), 用于判断缓存结果是否属于本轮 */
+	started_at?: number | null
+	task_id?: string
+	/** 已跳过的失效策略 ID (策略池残留, 前端应从池中移除) */
+	skipped_unknown?: string[]
 }
 
 export interface ScreenerCachedResult {
@@ -2539,31 +2547,31 @@ export type ImportCenterPreview =
 	}
 
 export interface PluginDataSourceItem {
-  can_test?: boolean
-  origin?: 'builtin' | 'external'
-  version?: string
-  enabled?: boolean
-  pending_version?: string | null
-  previous_version?: string | null
-  pending_remove?: boolean
-  update_error?: string | null
-  name: string
-  display_name: string
-  datasets: string[]
-  runtime: string          // node | python | none
-  available: boolean       // 依赖是否已安装
-  status: string           // 可用性原因 (供 UI 显示)
-  description: string
-  install_hint: string     // 未装依赖时显示的安装命令
-  homepage?: string        // 插件官网/申请地址 (manifest 可选声明)
-  homepage_label?: string  // 官网入口文案，缺省使用「显示名 官网」
-  api_key_env?: string     // 声明后设置页提供 Key 输入框 (先探后存)
-  api_key_masked?: string  // 当前生效 Key 的脱敏串 (secrets.json 优先, .env 兜底; 与 TickFlow Key 同一展示契约)
-  billing?: string         // 计费标识 (可选): "points" → 能力芯片/适配行标注「积分」
-  billing_note?: string    // 计费提示 (可选): 积分消耗与频率/范围的关系, 按警示样式展示
-  usage_notes?: string[]   // 使用要点 (可选): 各能力规模/节奏, 详情卡以列表展示
-  key_manage_url?: string  // Key/账务管理页 (可选): 插件详情展示入口链接
-  key_manage_label?: string // 账户入口文案，缺省使用「管理 Key / 查看账户用量」
+	can_test?: boolean
+	origin?: 'builtin' | 'external'
+	version?: string
+	enabled?: boolean
+	pending_version?: string | null
+	previous_version?: string | null
+	pending_remove?: boolean
+	update_error?: string | null
+	name: string
+	display_name: string
+	datasets: string[]
+	runtime: string          // node | python | none
+	available: boolean       // 依赖是否已安装
+	status: string           // 可用性原因 (供 UI 显示)
+	description: string
+	install_hint: string     // 未装依赖时显示的安装命令
+	homepage?: string        // 插件官网/申请地址 (manifest 可选声明)
+	homepage_label?: string  // 官网入口文案，缺省使用「显示名 官网」
+	api_key_env?: string     // 声明后设置页提供 Key 输入框 (先探后存)
+	api_key_masked?: string  // 当前生效 Key 的脱敏串 (secrets.json 优先, .env 兜底; 与 TickFlow Key 同一展示契约)
+	billing?: string         // 计费标识 (可选): "points" → 能力芯片/适配行标注「积分」
+	billing_note?: string    // 计费提示 (可选): 积分消耗与频率/范围的关系, 按警示样式展示
+	usage_notes?: string[]   // 使用要点 (可选): 各能力规模/节奏, 详情卡以列表展示
+	key_manage_url?: string  // Key/账务管理页 (可选): 插件详情展示入口链接
+	key_manage_label?: string // 账户入口文案，缺省使用「管理 Key / 查看账户用量」
 }
 
 /** 数据源路由偏好字段 (每个能力一个, 与后端能力注册表一一对应) */
@@ -4096,11 +4104,15 @@ export const api = {
 			body: JSON.stringify({ columns }),
 		}),
 
-  capabilities: () => request<CapabilitiesResponse>('/api/capabilities'),
-  version: () => request<{ version: string }>('/api/data/version'),
-  workload: () => request<{ uptime_s: number; groups: Record<string, Record<string, number>>; resources: Record<string, Record<string, number | string>> }>('/api/data/workload'),
-  redetectCapabilities: () =>
-    request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
+	capabilities: () => request<CapabilitiesResponse>('/api/capabilities'),
+	version: () => request<{ version: string }>('/api/data/version'),
+	workload: () => request<{
+		uptime_s: number;
+		groups: Record<string, Record<string, number>>;
+		resources: Record<string, Record<string, number | string>>
+	}>('/api/data/workload'),
+	redetectCapabilities: () =>
+		request<CapabilitiesResponse>('/api/capabilities/redetect', { method: 'POST' }),
 
 	klineDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }, extColumns?: string) =>
 		request<KlineDailyResponse>(
@@ -4252,133 +4264,133 @@ export const api = {
 			method: 'POST',
 		}),
 
-  watchlistList: () => request<{ symbols: WatchlistEntry[] }>('/api/watchlist'),
-  watchlistAdd: (symbol: string, note = '', groupId?: string | null) =>
-    request<{ symbols: WatchlistEntry[] }>('/api/watchlist', {
-      method: 'POST',
-      body: JSON.stringify({ symbol, note, group_id: groupId ?? null }),
-    }),
-  watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null, groupIds?: string[]) =>
-    request<{ symbols: WatchlistEntry[]; added: number }>('/api/watchlist/batch', {
-      method: 'POST',
-      body: JSON.stringify({
-        symbols,
-        note,
-        group_id: groupId ?? null,
-        group_ids: groupIds?.length ? groupIds : null,
-      }),
-    }),
-  watchlistGroups: () =>
-    request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups'),
-  watchlistGroupCreate: (name: string, color: WatchlistGroupColor) =>
-    request<{ groups: WatchlistGroup[]; group: WatchlistGroup }>('/api/watchlist/groups', {
-      method: 'POST',
-      body: JSON.stringify({ name, color }),
-    }),
-  watchlistGroupRename: (groupId: string, name: string, color: WatchlistGroupColor) =>
-    request<{ groups: WatchlistGroup[] }>(
-      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
-      { method: 'PUT', body: JSON.stringify({ name, color }) },
-    ),
-  watchlistGroupReorder: (orderedIds: string[]) =>
-    request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups/reorder', {
-      method: 'PUT',
-      body: JSON.stringify({ ordered_ids: orderedIds }),
-    }),
-  watchlistGroupDelete: (groupId: string) =>
-    request<{ groups: WatchlistGroup[]; symbols: WatchlistEntry[] }>(
-      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
-      { method: 'DELETE' },
-    ),
-  watchlistGroupClear: (groupId: string) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/groups/${encodeURIComponent(groupId)}/clear`,
-      { method: 'POST' },
-    ),
-  watchlistSetGroup: (symbol: string, groupId: string | null) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/${encodeURIComponent(symbol)}/group`,
-      { method: 'PUT', body: JSON.stringify({ group_id: groupId }) },
-    ),
-  watchlistGroupAddMember: (groupId: string, symbol: string) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
-      { method: 'POST' },
-    ),
-  watchlistGroupRemoveMember: (groupId: string, symbol: string) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
-      { method: 'DELETE' },
-    ),
-  watchlistOcrStatus: () =>
-    request<{ provider: string; available: boolean }>('/api/watchlist/ocr-status'),
-  watchlistImportImage: (file: File, signal?: AbortSignal, quiet = false) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<WatchlistImportResult>('/api/watchlist/import-image', {
-      method: 'POST',
-      body: fd,
-      signal,
-      quiet,
-    })
-  },
-  watchlistImportCsv: (file: File, signal?: AbortSignal, quiet = false) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<WatchlistImportResult>('/api/watchlist/import-csv', {
-      method: 'POST',
-      body: fd,
-      signal,
-      quiet,
-    })
-  },
-  /** 通达信板块文件（.blk/.ebk）导入：只解析不写库，返回候选清单 + 建议分组名（取文件名主干）。 */
-  watchlistImportBlk: (file: File, signal?: AbortSignal, quiet = false) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<WatchlistImportResult>('/api/watchlist/import-blk', {
-      method: 'POST',
-      body: fd,
-      signal,
-      quiet,
-    })
-  },
-  watchlistImportCodes: (text: string, signal?: AbortSignal) =>
-    request<WatchlistImportResult>('/api/watchlist/import-codes', {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-      signal,
-    }),
-  watchlistRemove: (symbol: string) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/${encodeURIComponent(symbol)}`,
-      { method: 'DELETE' },
-    ),
-  watchlistMoveToTop: (symbol: string) =>
-    request<{ symbols: WatchlistEntry[] }>(
-      `/api/watchlist/${encodeURIComponent(symbol)}/top`,
-      { method: 'POST' },
-    ),
-  watchlistClear: () =>
-    request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
-  watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
-  watchlistEnriched: (extColumns?: string) =>
-    request<{
-      rows: any[]
-      as_of: string | null
-      elapsed_ms: number
-      /** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
-      dates?: { stock: string | null; etf: string | null; index: string | null }
-    }>(
-      extColumns
-        ? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
-        : '/api/watchlist/enriched',
-    ),
-  watchlistPrepare: (symbols: string[]) => request<{ results: WatchlistPrepareResult[] }>(
-    '/api/watchlist/prepare',
-    { method: 'POST', body: JSON.stringify({ symbols }), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true },
-  ),
-  dataVersions: () => request<{ versions: Record<string, string> }>('/api/intraday/data-versions', { quiet: true }),
+	watchlistList: () => request<{ symbols: WatchlistEntry[] }>('/api/watchlist'),
+	watchlistAdd: (symbol: string, note = '', groupId?: string | null) =>
+		request<{ symbols: WatchlistEntry[] }>('/api/watchlist', {
+			method: 'POST',
+			body: JSON.stringify({ symbol, note, group_id: groupId ?? null }),
+		}),
+	watchlistBatchAdd: (symbols: string[], note = '', groupId?: string | null, groupIds?: string[]) =>
+		request<{ symbols: WatchlistEntry[]; added: number }>('/api/watchlist/batch', {
+			method: 'POST',
+			body: JSON.stringify({
+				symbols,
+				note,
+				group_id: groupId ?? null,
+				group_ids: groupIds?.length ? groupIds : null,
+			}),
+		}),
+	watchlistGroups: () =>
+		request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups'),
+	watchlistGroupCreate: (name: string, color: WatchlistGroupColor) =>
+		request<{ groups: WatchlistGroup[]; group: WatchlistGroup }>('/api/watchlist/groups', {
+			method: 'POST',
+			body: JSON.stringify({ name, color }),
+		}),
+	watchlistGroupRename: (groupId: string, name: string, color: WatchlistGroupColor) =>
+		request<{ groups: WatchlistGroup[] }>(
+			`/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+			{ method: 'PUT', body: JSON.stringify({ name, color }) },
+		),
+	watchlistGroupReorder: (orderedIds: string[]) =>
+		request<{ groups: WatchlistGroup[] }>('/api/watchlist/groups/reorder', {
+			method: 'PUT',
+			body: JSON.stringify({ ordered_ids: orderedIds }),
+		}),
+	watchlistGroupDelete: (groupId: string) =>
+		request<{ groups: WatchlistGroup[]; symbols: WatchlistEntry[] }>(
+			`/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+			{ method: 'DELETE' },
+		),
+	watchlistGroupClear: (groupId: string) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/groups/${encodeURIComponent(groupId)}/clear`,
+			{ method: 'POST' },
+		),
+	watchlistSetGroup: (symbol: string, groupId: string | null) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/${encodeURIComponent(symbol)}/group`,
+			{ method: 'PUT', body: JSON.stringify({ group_id: groupId }) },
+		),
+	watchlistGroupAddMember: (groupId: string, symbol: string) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
+			{ method: 'POST' },
+		),
+	watchlistGroupRemoveMember: (groupId: string, symbol: string) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(symbol)}`,
+			{ method: 'DELETE' },
+		),
+	watchlistOcrStatus: () =>
+		request<{ provider: string; available: boolean }>('/api/watchlist/ocr-status'),
+	watchlistImportImage: (file: File, signal?: AbortSignal, quiet = false) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<WatchlistImportResult>('/api/watchlist/import-image', {
+			method: 'POST',
+			body: fd,
+			signal,
+			quiet,
+		})
+	},
+	watchlistImportCsv: (file: File, signal?: AbortSignal, quiet = false) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<WatchlistImportResult>('/api/watchlist/import-csv', {
+			method: 'POST',
+			body: fd,
+			signal,
+			quiet,
+		})
+	},
+	/** 通达信板块文件（.blk/.ebk）导入：只解析不写库，返回候选清单 + 建议分组名（取文件名主干）。 */
+	watchlistImportBlk: (file: File, signal?: AbortSignal, quiet = false) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<WatchlistImportResult>('/api/watchlist/import-blk', {
+			method: 'POST',
+			body: fd,
+			signal,
+			quiet,
+		})
+	},
+	watchlistImportCodes: (text: string, signal?: AbortSignal) =>
+		request<WatchlistImportResult>('/api/watchlist/import-codes', {
+			method: 'POST',
+			body: JSON.stringify({ text }),
+			signal,
+		}),
+	watchlistRemove: (symbol: string) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/${encodeURIComponent(symbol)}`,
+			{ method: 'DELETE' },
+		),
+	watchlistMoveToTop: (symbol: string) =>
+		request<{ symbols: WatchlistEntry[] }>(
+			`/api/watchlist/${encodeURIComponent(symbol)}/top`,
+			{ method: 'POST' },
+		),
+	watchlistClear: () =>
+		request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
+	watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
+	watchlistEnriched: (extColumns?: string) =>
+		request<{
+			rows: any[]
+			as_of: string | null
+			elapsed_ms: number
+			/** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
+			dates?: { stock: string | null; etf: string | null; index: string | null }
+		}>(
+			extColumns
+				? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
+				: '/api/watchlist/enriched',
+		),
+	watchlistPrepare: (symbols: string[]) => request<{ results: WatchlistPrepareResult[] }>(
+		'/api/watchlist/prepare',
+		{ method: 'POST', body: JSON.stringify({ symbols }), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true },
+	),
+	dataVersions: () => request<{ versions: Record<string, string> }>('/api/intraday/data-versions', { quiet: true }),
 
 	// timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
 	screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index', timeframe: '1d' | '1m' | 'all' = '1d') => {
@@ -4434,8 +4446,8 @@ export const api = {
 		},
 		),
 	screenerCachedSummary: (taskId?: string) =>
-        request<ScreenerCachedSummary>('/api/screener/cached-summary' + (taskId ? `?task_id=${encodeURIComponent(taskId)}` : '')),
-    screenerCachedResult: (strategyId: string, extColumns?: string) =>
+		request<ScreenerCachedSummary>('/api/screener/cached-summary' + (taskId ? `?task_id=${encodeURIComponent(taskId)}` : '')),
+	screenerCachedResult: (strategyId: string, extColumns?: string) =>
 		request<ScreenerCachedResult>(
 			extColumns
 				? `/api/screener/cached-result/${encodeURIComponent(strategyId)}?ext_columns=${encodeURIComponent(extColumns)}`
@@ -5155,30 +5167,30 @@ export const api = {
 	extDataDelete: (id: string) =>
 		request<{ status: string }>(`/api/ext-data/${id}`, { method: 'DELETE' }),
 
-  extDataConfigExport: (id: string) =>
-    request<Blob>(`/api/ext-data/${encodeURIComponent(id)}/config/export`, { responseType: 'blob', quiet: true }),
+	extDataConfigExport: (id: string) =>
+		request<Blob>(`/api/ext-data/${encodeURIComponent(id)}/config/export`, { responseType: 'blob', quiet: true }),
 
-  extDataConfigInspect: (file: File) => {
-    const body = new FormData()
-    body.append('file', file)
-    return request<ExtDataConfigPreview>('/api/ext-data/config/inspect', { method: 'POST', body, quiet: true })
-  },
+	extDataConfigInspect: (file: File) => {
+		const body = new FormData()
+		body.append('file', file)
+		return request<ExtDataConfigPreview>('/api/ext-data/config/inspect', { method: 'POST', body, quiet: true })
+	},
 
-  extDataConfigImport: (file: File, id: string) => {
-    const body = new FormData()
-    body.append('file', file)
-    body.append('config_id', id)
-    return request<ExtDataConfig>('/api/ext-data/config/import', { method: 'POST', body, quiet: true })
-  },
+	extDataConfigImport: (file: File, id: string) => {
+		const body = new FormData()
+		body.append('file', file)
+		body.append('config_id', id)
+		return request<ExtDataConfig>('/api/ext-data/config/import', { method: 'POST', body, quiet: true })
+	},
 
-  extDataUpload: (id: string, file: File, snapshotDate?: string) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    return request<{ status: string; rows: number; date: string }>(
-      `/api/ext-data/${id}/upload${snapshotDate ? `?snapshot_date=${snapshotDate}` : ''}`,
-      { method: 'POST', body: fd },
-    )
-  },
+	extDataUpload: (id: string, file: File, snapshotDate?: string) => {
+		const fd = new FormData()
+		fd.append('file', file)
+		return request<{ status: string; rows: number; date: string }>(
+			`/api/ext-data/${id}/upload${snapshotDate ? `?snapshot_date=${snapshotDate}` : ''}`,
+			{ method: 'POST', body: fd },
+		)
+	},
 
 	extDataIngest: (id: string, body: { date?: string; rows: Record<string, unknown>[] }) =>
 		request<{ status: string; rows: number; date: string }>(
@@ -5198,15 +5210,22 @@ export const api = {
 			}[]
 		}>('/api/ext-data/schema-all'),
 
-  /** 列表扩展序列: 按日 / 按日内读取, 不指定显示周期时跟随数据表。 */
-  extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number, granularity?: 'daily' | 'intraday') =>
-    request<{ config_id: string; field: string; date: string | null; granularity?: 'intraday' | 'daily'; days?: number; items: Record<string, [string, number][]> }>(
-      `/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
-        + (date ? `&date=${date}` : '')
-        + (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
-        + (days ? `&days=${days}` : '')
-        + (granularity ? `&granularity=${granularity}` : ''),
-    ),
+	/** 列表扩展序列: 按日 / 按日内读取, 不指定显示周期时跟随数据表。 */
+	extDataSeries: (configId: string, field: string, date?: string | null, symbols?: string[], days?: number, granularity?: 'daily' | 'intraday') =>
+		request<{
+			config_id: string;
+			field: string;
+			date: string | null;
+			granularity?: 'intraday' | 'daily';
+			days?: number;
+			items: Record<string, [string, number][]>
+		}>(
+			`/api/ext-data/${configId}/series?field=${encodeURIComponent(field)}`
+			+ (date ? `&date=${date}` : '')
+			+ (symbols?.length ? `&symbols=${encodeURIComponent(symbols.join(','))}` : '')
+			+ (days ? `&days=${days}` : '')
+			+ (granularity ? `&granularity=${granularity}` : ''),
+		),
 
 	extDataPullConfig: (id: string, body: {
 		url: string; method?: string; headers?: Record<string, string>; body?: string;
@@ -6331,57 +6350,57 @@ interface InstrumentsStats {
 }
 
 export interface DataStatus {
-  daily: TableStats | null
-  enriched: TableStats | null
-  index_daily: TableStats | null
-  index_enriched: TableStats | null
-  index_instruments: InstrumentsStats | null
-  etf_daily: TableStats | null
-  etf_enriched: TableStats | null
-  etf_instruments: InstrumentsStats | null
-  minute: TableStats | null
-  adj_factor: TableStats | null
-  instruments: InstrumentsStats | null
-  financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
-  storage: {
-    daily_files: number
-    daily_size_mb: number
-    enriched_files: number
-    enriched_size_mb: number
-    index_daily_files?: number
-    index_daily_size_mb?: number
-    index_enriched_files?: number
-    index_enriched_size_mb?: number
-    index_instruments_files?: number
-    index_instruments_size_mb?: number
-    etf_daily_files?: number
-    etf_daily_size_mb?: number
-    etf_enriched_files?: number
-    etf_enriched_size_mb?: number
-    etf_instruments_files?: number
-    etf_instruments_size_mb?: number
-    etf_adj_factor_files?: number
-    etf_adj_factor_size_mb?: number
-    minute_files: number
-    minute_size_mb: number
-    adj_factor_files: number
-    adj_factor_size_mb: number
-    instruments_files: number
-    instruments_size_mb: number
-    financials_files?: number
-    financials_size_mb?: number
-    ext_data_files?: number
-    ext_data_size_mb?: number
-    total_size_mb: number
-  } | null  // 后台统计尚未生成快照时为 null, 不代表无数据
-  next_pipeline_run: string | null
-  next_instruments_run: string | null
-  last_pipeline_run: string | null
-  last_instruments_run: string | null
-  checked_at: string
-  /** 后台刷新或预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
-  stats_pending?: boolean
-  indicators_ready?: boolean
+	daily: TableStats | null
+	enriched: TableStats | null
+	index_daily: TableStats | null
+	index_enriched: TableStats | null
+	index_instruments: InstrumentsStats | null
+	etf_daily: TableStats | null
+	etf_enriched: TableStats | null
+	etf_instruments: InstrumentsStats | null
+	minute: TableStats | null
+	adj_factor: TableStats | null
+	instruments: InstrumentsStats | null
+	financials: { rows: number; tables: Record<string, { rows: number; symbols: number }> } | null
+	storage: {
+		daily_files: number
+		daily_size_mb: number
+		enriched_files: number
+		enriched_size_mb: number
+		index_daily_files?: number
+		index_daily_size_mb?: number
+		index_enriched_files?: number
+		index_enriched_size_mb?: number
+		index_instruments_files?: number
+		index_instruments_size_mb?: number
+		etf_daily_files?: number
+		etf_daily_size_mb?: number
+		etf_enriched_files?: number
+		etf_enriched_size_mb?: number
+		etf_instruments_files?: number
+		etf_instruments_size_mb?: number
+		etf_adj_factor_files?: number
+		etf_adj_factor_size_mb?: number
+		minute_files: number
+		minute_size_mb: number
+		adj_factor_files: number
+		adj_factor_size_mb: number
+		instruments_files: number
+		instruments_size_mb: number
+		financials_files?: number
+		financials_size_mb?: number
+		ext_data_files?: number
+		ext_data_size_mb?: number
+		total_size_mb: number
+	} | null  // 后台统计尚未生成快照时为 null, 不代表无数据
+	next_pipeline_run: string | null
+	next_instruments_run: string | null
+	last_pipeline_run: string | null
+	last_instruments_run: string | null
+	checked_at: string
+	/** 后台刷新或预热/同步/修复期间统计暂不可用或仅为旧缓存, 空值不代表无数据。 */
+	stats_pending?: boolean
+	indicators_ready?: boolean
 }
 
 export interface EnrichedField {
@@ -6544,17 +6563,17 @@ export interface ExtDataConfig {
 }
 
 export interface ExtDataConfigPreview {
-  id: string
-  label: string
-  mode: 'snapshot' | 'timeseries'
-  fields: ExtDataField[]
-  field_count: number
-  conflict: boolean
-  requires_key: boolean
-  has_pull: boolean
-  pull_url?: string | null
-  pull_method?: string | null
-  warnings: string[]
+	id: string
+	label: string
+	mode: 'snapshot' | 'timeseries'
+	fields: ExtDataField[]
+	field_count: number
+	conflict: boolean
+	requires_key: boolean
+	has_pull: boolean
+	pull_url?: string | null
+	pull_method?: string | null
+	warnings: string[]
 }
 
 export interface ExtDataRowsResult {
