@@ -226,6 +226,80 @@ def test_save_ai_settings_syncs_active_profile(data_dir: Path) -> None:
     assert resp["ai_active_profile"] == "default"
 
 
+def test_save_ai_settings_new_profile_appends_without_overwriting(data_dir: Path) -> None:
+    _write_secrets(data_dir, {
+        "ai_provider": "openai_compat", "ai_base_url": "https://relay/v1",
+        "ai_api_key": "sk-qwen", "ai_model": "qwen-max",
+    })
+    # 造第二个档案并激活, 模拟「当前在用」
+    settings_api.save_ai_profile(settings_api.AiProfileIn(
+        name="DeepSeek", provider="openai_compat", base_url="https://api.deepseek.com",
+        api_key="sk-ds", model="deepseek-v4-pro", apply=True,
+    ))
+    assert secrets_store.get_active_ai_profile_id() == "deepseek"
+
+    # 设置页「新建」: profile_id 空 + new_profile=True → 追加, 绝不覆盖在用档案
+    resp = settings_api.save_ai_settings(settings_api.AiSettingsIn(
+        provider="openai_compat", base_url="https://token-plan/v1", api_key="sk-new",
+        model="glm-4.7", user_agent="", profile_name="GLM", new_profile=True,
+    ))
+    # 响应里是精简档案, 全量字段从存储层读
+    profiles = {p["id"]: p for p in secrets_store.list_ai_profiles()}
+    assert profiles["deepseek"]["model"] == "deepseek-v4-pro"
+    assert profiles["deepseek"]["api_key"] == "sk-ds"
+    assert profiles["deepseek"]["base_url"] == "https://api.deepseek.com"
+    assert profiles["glm"]["model"] == "glm-4.7"  # id 由档案名生成
+    assert resp["ai_model"] == "glm-4.7"
+    assert resp["ai_active_profile"] == "glm"  # 保存即生效, 指针跟随新档案
+
+    # 同名再新建 → 序号后缀, 仍不覆盖
+    settings_api.save_ai_settings(settings_api.AiSettingsIn(
+        provider="openai_compat", base_url="https://token-plan/v1", api_key="sk-new",
+        model="glm-5", user_agent="", profile_name="GLM", new_profile=True,
+    ))
+    profiles2 = {p["id"]: p for p in secrets_store.list_ai_profiles()}
+    assert profiles2["glm"]["model"] == "glm-4.7"
+    assert profiles2["glm-2"]["model"] == "glm-5"
+
+
+def test_save_ai_settings_without_new_profile_updates_active_in_place(data_dir: Path) -> None:
+    _write_secrets(data_dir, {
+        "ai_provider": "openai_compat", "ai_base_url": "https://relay/v1",
+        "ai_api_key": "sk-qwen", "ai_model": "qwen-max",
+    })
+    settings_api.save_ai_profile(settings_api.AiProfileIn(
+        name="DeepSeek", provider="openai_compat", base_url="https://api.deepseek.com",
+        api_key="sk-ds", model="deepseek-v4-pro", apply=True,
+    ))
+    # 旧客户端不带 new_profile → 契约④不变: 写回激活档案, 不追加
+    resp = settings_api.save_ai_settings(settings_api.AiSettingsIn(
+        provider="openai_compat", base_url="https://relay/v2", api_key="sk-ds2",
+        model="deepseek-v5", user_agent="",
+    ))
+    profiles = {p["id"]: p for p in resp["ai_profiles"]}
+    assert set(profiles) == {"default", "deepseek"}
+    assert profiles["deepseek"]["model"] == "deepseek-v5"
+    assert resp["ai_active_profile"] == "deepseek"
+
+
+def test_save_profile_without_apply_keeps_active_config(data_dir: Path) -> None:
+    _write_secrets(data_dir, {
+        "ai_provider": "openai_compat", "ai_base_url": "https://relay/v1",
+        "ai_api_key": "sk-qwen", "ai_model": "qwen-max",
+    })
+    # 前端「新建」保存走这条路: 只入库, 生效配置与指针一个字段都不动
+    resp = settings_api.save_ai_profile(settings_api.AiProfileIn(
+        name="DeepSeek", provider="openai_compat", base_url="https://api.deepseek.com",
+        api_key="sk-ds", model="deepseek-v4-pro",
+    ))
+    assert resp["saved_id"] == "deepseek"
+    assert {p["id"] for p in resp["profiles"]} == {"default", "deepseek"}
+    assert resp["ai_active_profile"] == "default" and resp["ai_model"] == "qwen-max"
+    data = secrets_store.load()
+    assert data["ai_model"] == "qwen-max" and data["ai_api_key"] == "sk-qwen"
+    assert data["ai_active_profile"] == "default"
+
+
 def test_clear_ai_settings_wipes_profiles(data_dir: Path) -> None:
     _write_secrets(data_dir, {
         "ai_provider": "openai_compat", "ai_base_url": "https://relay/v1",

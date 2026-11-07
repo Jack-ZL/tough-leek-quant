@@ -3395,7 +3395,7 @@ export const api = {
 			'/api/settings/onboarding/complete', { method: 'POST' },
 		),
 
-	/** 保存 AI 配置 (同步写回当前模型档案) */
+	/** 保存 AI 配置 (同步写回当前模型档案; new_profile=true 追加新档案) */
 	saveAiSettings: (ai: {
 		provider?: string;
 		base_url?: string;
@@ -3411,7 +3411,8 @@ export const api = {
 		round_checkpoint?: number;
 		web_search?: boolean;
 		profile_id?: string;
-		profile_name?: string
+		profile_name?: string;
+		new_profile?: boolean
 	}) =>
 		request<AiEffectiveState>('/api/settings/ai', {
 			method: 'POST',

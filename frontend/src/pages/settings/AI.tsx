@@ -322,6 +322,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 	const [profileName, setProfileName] = useState('')
 	const [profileBusy, setProfileBusy] = useState<string | null>(null)
 	const [profileError, setProfileError] = useState('')
+	const [savedLibrary, setSavedLibrary] = useState(false)
 	const directDrafts = useRef({
 		custom: { baseUrl: '', model: '' },
 		openai: { baseUrl: 'https://api.openai.com/v1', model: DEFAULT_OPENAI_MODEL },
@@ -592,11 +593,51 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		// 档案同步: 保存时把表单写回当前编辑的档案 (无档案则后端生成 "default")
 		profile_id: editingProfileId || undefined,
 		profile_name: profileName.trim() || undefined,
+		// 「新建」态 (无编辑目标) 必须追加新档案, 否则后端回退激活档案把在用的覆盖掉
+		new_profile: !editingProfileId,
+	})
+
+	// 「新建」且档案库非空: 保存只入库不生效 — 保存按钮不能把在用的模型顶掉;
+	// 首启 (档案库为空) 仍走 saveAiSettings, 由后端 new_profile 追加并激活。
+	const libraryOnlySave = !editingProfileId && profiles.length > 0
+
+	const profilePayload = () => ({
+		name: profileName.trim(),
+		provider,
+		...(!isCodexProvider ? { protocol } : {}),
+		base_url: baseUrl,
+		api_key: apiKey || undefined,
+		model: isCodexProvider ? codexModel : model,
+		...(isOpenAIProvider ? { reasoning_effort: reasoningEffort } : {}),
+		codex_command: isCodexProvider ? CODEX_COMMAND : codexCommand,
+		codex_reasoning_effort: isCodexProvider ? codexReasoningEffort : '',
+		user_agent: customUa ? userAgent : '',
+		max_output_tokens: toPositiveInt(maxOutputTokens),
+		context_window: toPositiveInt(contextWindow),
+		web_search: webSearch,
+		apply: false,
 	})
 
 	const save = useMutation({
-		mutationFn: () => api.saveAiSettings(payload()),
+		mutationFn: () => (libraryOnlySave
+			? api.saveAiProfile(profilePayload())
+			: api.saveAiSettings(payload())),
 		onSuccess: (result) => {
+			// 仅入库: 生效配置一个字段都不动、指针不迁移; 表单转为编辑新档案, 列表里点 ⚡ 才启用。
+			// saved_id 只有档案端点的响应才有 — 用它区分两种保存, 比 in 收窄稳。
+			const savedId = (result as { saved_id?: string }).saved_id
+			if (savedId) {
+				setSaved(true)
+				setSavedLibrary(true)
+				setApiKey('')
+				setEditingProfileId(savedId)
+				setTestResult(null)
+				void refreshProfiles()
+				qc.invalidateQueries({ queryKey: QK.settings })
+				setTimeout(() => setSaved(false), 2000)
+				return
+			}
+			setSavedLibrary(false)
 			setSaved(true)
 			setApiKey('')
 			qc.setQueryData<SettingsState>(QK.settings, prev => prev ? {
@@ -980,6 +1021,11 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 										})}
 									</div>
 								)}
+							{libraryOnlySave && (
+								<p className="border-t border-border/40 px-3.5 py-2 text-[10px] leading-relaxed text-muted">
+									新建保存只存入档案库, 不会顶替当前在用的模型; 保存后点档案旁的 ⚡ 启用。
+								</p>
+							)}
 							</section>
 						</aside>
 						{/* 右栏: 配置表单 (服务商下拉 + 按厂商适配的字段) */}
@@ -1284,7 +1330,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 											{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ?
 												<Check className="h-4 w-4" /> :
 												<Save className="h-4 w-4" />}
-											{save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
+											{save.isPending ? '保存中...' : saved ? (savedLibrary ? '已入库' : '已保存') : (libraryOnlySave ? '存入档案库' : '保存配置')}
 										</button>
 										<button onClick={handleTest} disabled={testing || !canTest} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-elevated hover:text-foreground text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="测试当前表单的连接, 不保存配置">
 											{testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
