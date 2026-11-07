@@ -213,7 +213,7 @@ export function LightweightDaily({
 								: currentEvent.label && /^\d+$/.test(currentEvent.label) ? `${currentEvent.label}连板` : '涨停'}
 						</span>}
 					{([['开', current?.open], ['高', current?.high], ['低', current?.low], ['收', current?.close]] as const).map(([name, value]) =>
-						<span key={name} className="text-muted">{name}
+						<span key={name} className="text-muted">{name}{' '}
 							<span className="text-secondary">{price(value, precision)}</span></span>)}
 					{change != null && <span style={{ color: change >= 0 ? C.up : C.down }}>{fmtPct(change)}</span>}
 					{turnover != null && <span className="text-muted">换手 {fmtPct(turnover)}</span>}
