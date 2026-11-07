@@ -104,6 +104,8 @@ def test_system_prompt_search_variant():
     assert "股东行为" in online and "资本运作" in online
     # 防幻觉/客观性关键约束
     assert "未检索到相关消息" in online
+    # 结构化缺失标记 (固定格式, 供程序识别; 借鉴 TradingAgents-astock [数据缺失:])
+    assert "[数据缺失: 消息面]" in online
     assert "[消息]" in online and "[推断]" in online
     assert "交叉验证" in online
     # 头尾结构完整 (第 6 节与免责仍在)
@@ -123,6 +125,8 @@ def test_system_prompt_offline_variant():
     assert "综合研判与风险提示" in offline
     # 不得声称有搜索能力
     assert "你已启用联网搜索" not in offline
+    # 缺失标记只属于联网检索变体 (离线变体本就不检索, 不要求标记)
+    assert "[数据缺失: 消息面]" not in offline
 
 
 def test_user_prompt_news_hint_follows_web_search():

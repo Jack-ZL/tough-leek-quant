@@ -2,11 +2,12 @@
 
 覆盖:
 - parse_ruling: 机读裁决块解析 (fail-honest + 打回降级规则)
-- _strip_ruling_deltas: 流式剥离裁决标记 (跨 chunk 切开也不漏)
+- parse_claims: 机读主张清单解析 (主张账本, fail-honest)
+- _strip_marker_deltas: 流式剥离机读标记 (跨 chunk 切开也不漏)
 - preferences.get/set_debate_role_profiles: 角色档案分配存取清洗
 - resolve_role_profiles / role_model_display: 失效档案静默回退
 - debate_reports: 辩论记录 CRUD
-- debate_stream: 全流程编排 (直通 / 打回重写 / 裁决解析失败 / 角色失败 / 无数据)
+- debate_stream: 全流程编排 (直通 / 打回重写 / 主张账本 / 裁决解析失败 / 角色失败 / 无数据)
 - API: role-profiles GET/PUT, reports CRUD
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.services import stock_debate
-from app.services.stock_debate import parse_ruling, strip_ruling
+from app.services.stock_debate import parse_claims, parse_ruling, strip_ruling
 
 
 # ================================================================
@@ -27,6 +28,10 @@ from app.services.stock_debate import parse_ruling, strip_ruling
 
 def _marker(payload: dict) -> str:
     return f"<!-- DEBATE_RULING: {json.dumps(payload, ensure_ascii=False)} -->"
+
+
+def _claims_marker(items: list) -> str:
+    return f"<!-- CLAIMS: {json.dumps(items, ensure_ascii=False)} -->"
 
 
 def test_parse_ruling_pass():
@@ -101,7 +106,51 @@ def test_strip_ruling_removes_marker():
 
 
 # ================================================================
-# _strip_ruling_deltas (流式剥离)
+# parse_claims (主张账本)
+# ================================================================
+
+def test_parse_claims_valid():
+    assert parse_claims("正文\n" + _claims_marker(["主张一", "主张二"])) == ["主张一", "主张二"]
+
+
+def test_parse_claims_no_marker_returns_none():
+    assert parse_claims("普通正文, 没有清单") is None
+
+
+def test_parse_claims_bad_json_returns_none():
+    assert parse_claims("<!-- CLAIMS: [不是JSON] -->") is None
+
+
+def test_parse_claims_non_list_payload_returns_none():
+    assert stock_debate._claims_payload_to_list('{"a": 1}') is None
+
+
+def test_parse_claims_filters_non_str_and_blank_items():
+    out = parse_claims(_claims_marker(["主张", 42, "", "   ", "二"]))
+    assert out == ["主张", "二"]
+
+
+def test_parse_claims_truncates_long_item():
+    out = parse_claims(_claims_marker(["长" * 200]))
+    assert len(out[0]) <= stock_debate._CLAIM_MAX + 1 and out[0].endswith("…")
+
+
+def test_parse_claims_caps_count():
+    out = parse_claims(_claims_marker([f"主张{i}" for i in range(10)]))
+    assert len(out) == stock_debate._CLAIMS_MAX_N
+
+
+def test_parse_claims_empty_list_returns_none():
+    assert parse_claims(_claims_marker([])) is None
+
+
+def test_parse_claims_last_marker_wins():
+    text = _claims_marker(["旧"]) + "\n" + _claims_marker(["新"])
+    assert parse_claims(text) == ["新"]
+
+
+# ================================================================
+# _strip_marker_deltas (流式剥离)
 # ================================================================
 
 async def _aiter(items):
@@ -115,7 +164,8 @@ async def test_strip_deltas_marker_split_across_chunks():
                                     "direction": "偏多", "reason": "r"})
     # 逐字符切碎, 最恶劣的切法
     captured: list[str] = []
-    out = [c async for c in stock_debate._strip_ruling_deltas(_aiter(list(full)), captured)]
+    out = [c async for c in stock_debate._strip_marker_deltas(
+        _aiter(list(full)), captured, stock_debate.RULING_RE)]
     joined = "".join(out)
     assert "DEBATE_RULING" not in joined
     assert "结论正文" in joined
@@ -123,10 +173,21 @@ async def test_strip_deltas_marker_split_across_chunks():
     assert json.loads(captured[0])["direction"] == "偏多"
 
 
+async def test_strip_deltas_claims_marker_split_across_chunks():
+    full = "论点正文\n" + _claims_marker(["主张一"])
+    captured: list[str] = []
+    out = [c async for c in stock_debate._strip_marker_deltas(
+        _aiter(list(full)), captured, stock_debate.CLAIMS_RE)]
+    joined = "".join(out)
+    assert "CLAIMS" not in joined
+    assert "论点正文" in joined
+    assert json.loads(captured[0]) == ["主张一"]
+
+
 async def test_strip_deltas_plain_text_passthrough():
     captured: list[str] = []
-    out = [c async for c in stock_debate._strip_ruling_deltas(
-        _aiter(["第一段\n", "第二段"]), captured)]
+    out = [c async for c in stock_debate._strip_marker_deltas(
+        _aiter(["第一段\n", "第二段"]), captured, stock_debate.RULING_RE)]
     assert "".join(out) == "第一段\n第二段"
     assert captured == []
 
@@ -275,8 +336,12 @@ _FAKE_MATERIALS = {
 }
 
 
-def _fake_llm(scripts: dict[str, list[str] | Exception], calls: list[str]):
-    """按系统提示词关键字路由的假 stream_ai_text。"""
+def _fake_llm(scripts: dict[str, list[str] | Exception], calls: list[str],
+              prompts: list[tuple[str, str]] | None = None):
+    """按系统提示词关键字路由的假 stream_ai_text。
+
+    prompts 非 None 时记录 (最终剧本键, 用户消息) — 供断言主管/重写方拿到了什么。
+    """
     async def _fake(messages, **kwargs):
         system = messages[0]["content"]
         # 用带括号的角色名路由 — 空方提示词里也出现"多方辩手"字样 (分工说明), 裸词会撞车
@@ -293,6 +358,8 @@ def _fake_llm(scripts: dict[str, list[str] | Exception], calls: list[str]):
             if alt in scripts:
                 key = alt
         calls.append(key)
+        if prompts is not None:
+            prompts.append((key, user))
         script = scripts[key]
         if isinstance(script, Exception):
             raise script
@@ -319,9 +386,9 @@ def debate_env(monkeypatch):
     return monkeypatch
 
 
-def _install_llm(monkeypatch, scripts, calls):
+def _install_llm(monkeypatch, scripts, calls, prompts=None):
     monkeypatch.setattr("app.services.ai_provider.stream_ai_text",
-                        _fake_llm(scripts, calls))
+                        _fake_llm(scripts, calls, prompts))
 
 
 async def _collect(agen):
@@ -398,6 +465,70 @@ async def test_debate_rewrite_round(debate_env):
     assert rulings[1]["verdict"]["direction"] == "看多"
     # 硬上限 5 次调用: bull + bear + judge + bear2 + judge2
     assert len(calls) == 5
+
+
+async def test_debate_claims_ledger_flow(debate_env):
+    """主张账本: claims 事件下发、辩手正文干净、账本进主管提示词、对方主张进重写提示词。"""
+    calls: list[str] = []
+    prompts: list[tuple[str, str]] = []
+    _install_llm(debate_env, {
+        "bull": ["多方论点。\n", _claims_marker(["多方主张A", "多方主张B"])],
+        "bear": ["空方论点。\n", _claims_marker(["空方主张C"])],
+        "judge": _JUDGE_REWRITE_BEAR,
+        "bear2": ["空方重写论点。\n", _claims_marker(["空方新主张D"])],
+        "judge2": _JUDGE_FINAL_PASS,
+    }, calls, prompts)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH"))
+
+    types = [e["type"] for e in events]
+    assert types[-1] == "done" and "error" not in types
+    # claims 事件: 首轮多/空各一条 + 空方重写轮一条 (新账替换旧账)
+    claims_evs = [e for e in events if e["type"] == "claims"]
+    assert len(claims_evs) == 3
+    latest = {}
+    for e in claims_evs:
+        latest[e["role"]] = e["claims"]
+    assert latest["bull"] == ["多方主张A", "多方主张B"]
+    assert latest["bear"] == ["空方新主张D"]
+    # 辩手 role_done 正文干净 (标记已剥离, 客户端看不到残片)
+    for e in events:
+        if e["type"] == "role_done":
+            assert "CLAIMS" not in e["content"]
+    by_key = dict(prompts)
+    # 主管初审提示词带双方账本
+    assert "主张账本" in by_key["judge"]
+    assert "多方主张A" in by_key["judge"] and "空方主张C" in by_key["judge"]
+    # 重写提示词注入对方 (多方) 主张 + 逐条回应要求
+    assert "对方主张清单" in by_key["bear2"]
+    assert "多方主张A" in by_key["bear2"] and "多方主张B" in by_key["bear2"]
+    assert "逐条正面回应" in by_key["bear2"]
+    # 终审账本用重写后的新清单
+    assert "空方新主张D" in by_key["judge2"] and "空方主张C" not in by_key["judge2"]
+    # 账本零额外调用: 仍是硬上限 5 次
+    assert len(calls) == 5
+
+
+async def test_debate_claims_missing_or_broken_fail_open(debate_env):
+    """清单缺失/损坏 → 不发 claims 事件、主管提示词不注入账本段, 辩论照常 (非门控)。"""
+    calls: list[str] = []
+    prompts: list[tuple[str, str]] = []
+    _install_llm(debate_env, {
+        "bull": ["多方论点。\n", "<!-- CLAIMS: [损坏的JSON -->"],  # 缺右括号, 正则不匹配
+        "bear": ["空方论点。"],  # 压根没输出清单
+        "judge": _JUDGE_PASS,
+    }, calls, prompts)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH"))
+
+    types = [e["type"] for e in events]
+    assert "claims" not in types
+    assert types[-1] == "done" and "error" not in types
+    judge_prompt = next(p for k, p in prompts if k == "judge")
+    assert "主张账本" not in judge_prompt
+    # 直通裁决不受影响
+    rulings = [e for e in events if e["type"] == "ruling"]
+    assert len(rulings) == 1 and rulings[0]["ok"] is True
 
 
 async def test_debate_ruling_parse_fail_is_honest(debate_env):

@@ -8,11 +8,14 @@
 
   ① 备料: 复用 stock_analyzer 的数据包 (日K+指标 / 关键价位 / 财务摘要),
      三方拿同一份材料, 数字闸门白名单也从这份材料采集。
-  ② 多方 & 空方 **并行** 独立分析 (asyncio 并发, 互相看不到对方输出 —
+  ② 多方 & 空方 **并行** 独立分析 (asyncio 并发, 首轮互相看不到对方输出 —
      两个独立 LLM 会话, 不存在共享上下文)。系统提示词强制立场。
-  ③ 风控主管审阅材料 + 双方全文, 输出机读裁决块 DEBATE_RULING:
-     通过(pass) 或 打回(rewrite, 指定打回哪一方 + 理由) + 答题卡研判。
-  ④ 打回 → 被批评方带意见重写 **一轮** → 主管终审 (终审必拍板)。
+     每方文末附机读主张清单 CLAIMS (三至五条最强论点) → 汇成主张账本,
+     清单内嵌在辩手输出里, 零额外 LLM 调用。
+  ③ 风控主管审阅材料 + 双方全文 + 主张账本, 逐条核对主张后输出机读裁决块
+     DEBATE_RULING: 通过(pass) 或 打回(rewrite, 指定打回哪一方 + 理由) + 答题卡研判。
+  ④ 打回 → 被批评方带主管意见 + **对方主张清单** 重写一轮 (须逐条正面回应
+     对方主张) → 主管终审 (终审必拍板)。
      硬上限 5 次 LLM 调用: 多、空、裁决、重写×1、终审。
 
 ## 角色模型分配 (调研报告特别提示)
@@ -25,6 +28,7 @@
 
   {"type":"meta","symbol","name","summary","levels","close","roles":{...}}
   {"type":"role_delta","role":"bull|bear|judge","content":"..."}
+  {"type":"claims","role":"bull|bear","claims":["..."]}  主张账本 (解析失败不发, 流程不断)
   {"type":"role_done","role":"...","content":"该角色全文(干净)","rewritten":bool}
   {"type":"rewrite","role":"...","reason":"主管打回理由"}
   {"type":"ruling","ok":true,"decision":"pass|rewrite","verdict":{"direction","reason"},"final":bool}
@@ -35,7 +39,8 @@
 
   裁决块缺失/JSON 损坏/枚举外 → ruling ok=false, 前端明示"未解析出裁决",
   绝不从主管正文里猜结论。打回解析不出目标角色 → 视为通过 (宁可少重写,
-  不可错重写)。
+  不可错重写)。主张清单缺失/损坏 → 该方不进账本 (claims 事件不发), 辩论
+  照常 — 账本是碰撞增强件, 不是流程门控。
 """
 from __future__ import annotations
 
@@ -72,7 +77,11 @@ _BULL_SYSTEM = """你是一场多空辩论中的【多方辩手】。你的唯�
 二、立场鲜明: 只讲看多的理由 (上涨逻辑、支撑因素、催化剂、估值优势), 不允许骑墙、不允许"但也存在风险"式的和稀泥 — 风险提示是风控主管的事。
 三、每个论点都要落到材料里的具体数据 (价位、指标、财务), 空喊口号视为无效论证。
 四、全文控制在一千二百字以内, 分条陈述, 结尾用一句话给出多方核心结论。
-五、不输出具体买卖操作指令 (点位目标可以谈, "建议买入/卖出"不可以)。"""
+五、不输出具体买卖操作指令 (点位目标可以谈, "建议买入/卖出"不可以)。
+六、核心结论之后, 在全文最末另起一行输出机读主张清单, 格式固定:
+<!-- CLAIMS: ["主张一", "主张二", "主张三"] -->
+   - 三至五条, 每条一句话且必须落到材料中的具体数据, 选你最有底气、最希望空方正面回应的论点
+   - 该清单是给程序读的, 不要在正文里解释、引用或复述它"""
 
 _BEAR_SYSTEM = """你是一场多空辩论中的【空方辩手】。你的唯一任务是论证看空该标的。
 
@@ -81,13 +90,19 @@ _BEAR_SYSTEM = """你是一场多空辩论中的【空方辩手】。你的唯�
 二、立场鲜明: 只讲看空的理由 (下跌风险、压力因素、利空信号、估值泡沫), 不允许骑墙、不允许"但也有积极因素"式的和稀泥 — 亮点陈述是多方辩手的事。
 三、每个论点都要落到材料里的具体数据 (价位、指标、财务), 空喊口号视为无效论证。
 四、全文控制在一千二百字以内, 分条陈述, 结尾用一句话给出空方核心结论。
-五、不输出具体买卖操作指令 (点位风险可以谈, "建议买入/卖出"不可以)。"""
+五、不输出具体买卖操作指令 (点位风险可以谈, "建议买入/卖出"不可以)。
+六、核心结论之后, 在全文最末另起一行输出机读主张清单, 格式固定:
+<!-- CLAIMS: ["主张一", "主张二", "主张三"] -->
+   - 三至五条, 每条一句话且必须落到材料中的具体数据, 选你最有底气、最希望多方正面回应的论点
+   - 该清单是给程序读的, 不要在正文里解释、引用或复述它"""
 
 _JUDGE_SYSTEM = """你是一场多空辩论的【风控主管】。双方辩手已就同一份材料各自陈述, 你负责审阅并拍板。
 
 你的输出分三部分, 依次进行:
-一、逐方点评: 分别指出多方与空方论证中的硬伤 — 引用材料数据错误、逻辑跳跃、
-   以偏概全、空喊口号无数据支撑。哪一方论证质量高就说高, 不各打五十大板。
+一、逐方点评: 用户消息附有双方文末登记的主张账本 (机读清单) 时, 对照账本逐条
+   核对 — 哪些主张有材料数据支撑、哪些被对方数据反驳、哪些空喊口号无据; 并指出
+   论证中的其他硬伤 — 引用材料数据错误、逻辑跳跃、以偏概全。哪一方论证质量高就
+   说高, 不各打五十大板。打回时 rewrite_reason 尽量点名具体主张。
 二、综合裁决: 基于材料与双方论证, 给出你自己的独立研判结论 (不是简单站队,
    双方都错时你要给出第三种判断)。
 三、机读裁决块 (必须输出, 格式固定, 键名不可改动): 在全文最末另起一行输出
@@ -111,8 +126,48 @@ _FINAL_NOTE = "\n\n【终审】本轮为终审, 重写机会已用完, decision 
 # DOTALL: 容忍模型违规把字符串写出换行, 整体捕获交给 json.loads 裁决
 RULING_RE = re.compile(r"<!--\s*DEBATE_RULING:\s*(\{.*?\})\s*-->", re.DOTALL)
 
+# 辩手主张清单标记 (主张账本): JSON 字符串数组, 解析纪律同裁决块 — fail-honest
+CLAIMS_RE = re.compile(r"<!--\s*CLAIMS:\s*(\[.*?\])\s*-->", re.DOTALL)
+
 _REASON_MAX = 60          # 研判理由展示截断 (同 ai_verdict)
 _REWRITE_REASON_MAX = 120  # 打回理由截断 (要转给重写方, 放宽些)
+_CLAIM_MAX = 80           # 单条主张展示截断 (账本注入主管/对方重写提示词, 防刷屏)
+_CLAIMS_MAX_N = 6          # 每方主张条数上限 (提示词要求三至五, 放宽一格兜底)
+
+
+def parse_claims(text: str) -> list[str] | None:
+    """从辩手全文解析主张清单 → 合法 list[str] 或 None (缺失/损坏一律 None)。
+
+    多处标记取最后一处 (模型复述示例时以末尾为准, 同 parse_ruling)。
+    """
+    last: re.Match | None = None
+    for m in CLAIMS_RE.finditer(text):
+        last = m
+    if last is None:
+        return None
+    return _claims_payload_to_list(last.group(1))
+
+
+def _claims_payload_to_list(payload: str) -> list[str] | None:
+    """CLAIMS 标记内的 JSON 数组原文 → 清洗后的主张列表 (空/损坏 → None)。"""
+    try:
+        obj = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("[debate] 主张清单 JSON 损坏: %s", payload[:120])
+        return None
+    if not isinstance(obj, list):
+        return None
+    claims: list[str] = []
+    for item in obj:
+        if not isinstance(item, str):
+            continue  # 混入非字符串项只丢该项, 不废整份清单
+        s = item.strip()
+        if not s:
+            continue
+        if len(s) > _CLAIM_MAX:
+            s = s[:_CLAIM_MAX] + "…"
+        claims.append(s)
+    return claims[:_CLAIMS_MAX_N] or None
 
 
 def parse_ruling(text: str) -> dict | None:
@@ -166,18 +221,19 @@ def strip_ruling(text: str) -> str:
     return RULING_RE.sub("", text)
 
 
-async def _strip_ruling_deltas(chunks: AsyncIterator[str], captured: list[str]) -> AsyncIterator[str]:
-    """流式剥离裁决标记: 行缓冲, 残行不下发 (标记可能跨 chunk 被切开)。
+async def _strip_marker_deltas(chunks: AsyncIterator[str], captured: list[str],
+                               pattern: re.Pattern) -> AsyncIterator[str]:
+    """流式剥离机读标记 (裁决块/主张清单): 行缓冲, 残行不下发 (标记可能跨 chunk 被切开)。
 
     与 ai_verdict.verdict_ndjson_stream 同款纪律: 客户端永远看不到标记残片。
-    捕获的标记原文追加进 captured, 供流结束后 parse。
+    捕获的标记内 JSON 原文追加进 captured, 供流结束后 parse。
     """
     buf = ""
 
     def _strip(segment: str) -> str:
-        for m in RULING_RE.finditer(segment):
+        for m in pattern.finditer(segment):
             captured.append(m.group(1))
-        return RULING_RE.sub("", segment)
+        return pattern.sub("", segment)
 
     async for chunk in chunks:
         buf += chunk
@@ -185,13 +241,13 @@ async def _strip_ruling_deltas(chunks: AsyncIterator[str], captured: list[str]) 
         while (nl := buf.find("\n")) >= 0:
             line = buf[: nl + 1]
             buf = buf[nl + 1 :]
-            had_marker = bool(RULING_RE.search(line))
+            had_marker = bool(pattern.search(line))
             line = _strip(line)
             if had_marker and not line.strip():
                 continue  # 标记独占一行 → 整行丢弃, 不留尾部空行
             if line:
                 yield line
-    # 流结束: 冲刷余量 (裁决块缺失时正文尾巴不能吞)
+    # 流结束: 冲刷余量 (标记缺失时正文尾巴不能吞)
     if buf:
         out = _strip(buf)
         if out:
@@ -318,29 +374,58 @@ def _role_user_prompt(materials_text: str, focus: str, role: str) -> str:
     return "\n".join(parts)
 
 
+def _format_ledger(ledger: dict[str, list[str]]) -> str:
+    """主张账本 → 主管用户消息附段。双方清单都缺失时返回空串 (不注入空段)。"""
+    sections = []
+    for role, label in ((ROLE_BULL, "多方"), (ROLE_BEAR, "空方")):
+        claims = ledger.get(role)
+        if claims:
+            lines = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))
+            sections.append(f"{label}主张:\n{lines}")
+    if not sections:
+        return ""
+    return "\n\n===== 主张账本 (辩手文末登记的机读清单) =====\n" + "\n\n".join(sections)
+
+
 def _judge_user_prompt(materials_text: str, bull_text: str, bear_text: str,
-                       final: bool = False) -> str:
-    """主管用户消息: 材料 + 双方全文 (+ 终审标记)。"""
+                       final: bool = False, ledger: dict[str, list[str]] | None = None) -> str:
+    """主管用户消息: 材料 + 双方全文 + 主张账本 (+ 终审标记)。"""
     parts = [
         materials_text,
         "\n\n===== 多方辩手陈述 =====\n" + bull_text,
         "\n\n===== 空方辩手陈述 =====\n" + bear_text,
-        "\n请按系统提示词要求: 先逐方点评, 再综合裁决, 最后输出机读裁决块。",
     ]
+    ledger_text = _format_ledger(ledger or {})
+    if ledger_text:
+        parts.append(ledger_text)
+    parts.append("\n请按系统提示词要求: 先逐方点评, 再综合裁决, 最后输出机读裁决块。")
     if final:
         parts.append(_FINAL_NOTE)
     return "\n".join(parts)
 
 
-def _rewrite_user_prompt(materials_text: str, focus: str, role: str, critique: str) -> str:
-    """重写方用户消息: 原材料 + 主管打回意见 (立场不变, 只修论证质量)。"""
+def _rewrite_user_prompt(materials_text: str, focus: str, role: str, critique: str,
+                         opponent_claims: list[str] | None = None) -> str:
+    """重写方用户消息: 原材料 + 主管打回意见 + 对方主张清单 (立场不变, 只修论证质量)。
+
+    对方主张注入是碰撞的关键一环: 首轮多空并行互相看不到对方, 重写轮是被打回方
+    唯一能正面回应对方论点的机会 — 要求逐条回应, 不得回避。
+    """
     base = _role_user_prompt(materials_text, focus, role)
-    return base + (
+    extra = (
         f"\n\n【打回重写】风控主管对你的上一版陈述不满意, 打回理由如下:\n{critique}\n"
         "请针对打回理由重写你的完整陈述 (立场不变, 仍是"
         + ("看多论证" if role == ROLE_BULL else "看空论证")
         + "), 不要提及打回过程本身。"
     )
+    if opponent_claims:
+        label = "空方" if role == ROLE_BULL else "多方"
+        lines = "\n".join(f"{i}. {c}" for i, c in enumerate(opponent_claims, 1))
+        extra += (
+            f"\n\n【对方主张清单】以下是{label}辩手登记的核心主张, 重写时须逐条正面回应"
+            f" — 用材料数据反驳, 或指出其不成立之处; 回应不了的不得假装没看见:\n{lines}"
+        )
+    return base + extra
 
 
 # ================================================================
@@ -350,21 +435,30 @@ def _rewrite_user_prompt(materials_text: str, focus: str, role: str, critique: s
 async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
                         profile: dict | None, pool, temperature: float,
                         out_q: asyncio.Queue) -> None:
-    """跑一个辩手角色: 流式产出经数字闸门过滤后推入队列。
+    """跑一个辩手角色: 流式产出剥主张标记、经数字闸门过滤后推入队列。
 
     profile_override 在任务协程内生效 (contextvar 按任务隔离, 并行不串扰)。
+    主张清单标记经 _strip_marker_deltas 行缓冲剥离 (客户端看不到残片),
+    剥离层在闸门内侧 — 先剥标记再过闸门, 否则闸门会把清单 JSON 里的数字
+    包进〖〗破坏 JSON (同 _judge_phase 裁决块纪律)。
+    正常结束推 ("done", role, 干净全文, claims|None);
     异常推 ("error", role, message), 由编排器统一收敛。
     """
     from app.services.ai_number_gate import gate_ndjson_stream
     from app.services.ai_provider import profile_override, stream_ai_text
 
+    captured: list[str] = []
+
     async def _ndjson_deltas() -> AsyncIterator[str]:
-        async for chunk in stream_ai_text(
-            [{"role": "system", "content": system_prompt},
-             {"role": "user", "content": user_prompt}],
-            temperature=temperature,
+        async for clean in _strip_marker_deltas(
+            stream_ai_text(
+                [{"role": "system", "content": system_prompt},
+                 {"role": "user", "content": user_prompt}],
+                temperature=temperature,
+            ),
+            captured, CLAIMS_RE,
         ):
-            yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False)
+            yield json.dumps({"type": "delta", "content": clean}, ensure_ascii=False)
         yield json.dumps({"type": "done"}, ensure_ascii=False)
 
     try:
@@ -379,7 +473,9 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
                     content = ev.get("content", "")
                     full += content
                     await out_q.put(("delta", role, content))
-        await out_q.put(("done", role, full))
+        # 多处标记取最后一处 (同 parse_claims 语义); 解析失败 → None, 不进账本
+        claims = _claims_payload_to_list(captured[-1]) if captured else None
+        await out_q.put(("done", role, full, claims))
     except Exception as exc:  # noqa: BLE001 — 单角色失败交给编排器收敛
         logger.warning("[debate] 角色 %s 调用失败: %s", role, exc)
         await out_q.put(("error", role, str(exc)))
@@ -387,7 +483,8 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
 
 async def _judge_phase(role_profiles: dict, pool, materials_text: str,
                        bull_text: str, bear_text: str, final: bool,
-                       out_q: asyncio.Queue) -> None:
+                       out_q: asyncio.Queue,
+                       ledger: dict[str, list[str]] | None = None) -> None:
     """主管阶段 (队列模式, 与辩手一致 — 增量实时转发, 不缓冲)。
 
     向 out_q 推送:
@@ -395,24 +492,25 @@ async def _judge_phase(role_profiles: dict, pool, materials_text: str,
       ("result", full, ruling) — 正常结束: 干净全文 + 裁决 (可能 None)
       ("error", msg)          — 调用失败, 编排器收敛为 error 事件
 
-    裁决标记经 _strip_ruling_deltas 行缓冲剥离, 客户端看不到标记残片;
+    裁决标记经 _strip_marker_deltas 行缓冲剥离, 客户端看不到标记残片;
     数字闸门包在剥离层外侧 (先剥标记再过闸门, 同 ai_verdict 纪律 —
     否则闸门会把裁决 JSON 里的数字包进〖〗破坏 JSON)。
     """
     from app.services.ai_number_gate import gate_ndjson_stream
     from app.services.ai_provider import profile_override, stream_ai_text
 
-    user_prompt = _judge_user_prompt(materials_text, bull_text, bear_text, final=final)
+    user_prompt = _judge_user_prompt(materials_text, bull_text, bear_text,
+                                     final=final, ledger=ledger)
     captured: list[str] = []
 
     async def _ndjson_deltas() -> AsyncIterator[str]:
-        async for clean in _strip_ruling_deltas(
+        async for clean in _strip_marker_deltas(
             stream_ai_text(
                 [{"role": "system", "content": _JUDGE_SYSTEM},
                  {"role": "user", "content": user_prompt}],
                 temperature=0.3,  # 裁判要稳, 不要发挥
             ),
-            captured,
+            captured, RULING_RE,
         ):
             yield json.dumps({"type": "delta", "content": clean}, ensure_ascii=False)
         yield json.dumps({"type": "done"}, ensure_ascii=False)
@@ -513,22 +611,28 @@ async def debate_stream(
             role_profiles.get(ROLE_BEAR), pool, 0.7, q)),
     ]
     arg_texts: dict[str, str] = {}
+    ledger: dict[str, list[str]] = {}  # 主张账本: role → 机读主张清单 (解析失败方缺席)
     failed = False
     done_count = 0
     while done_count < 2:
-        kind, role, payload = await q.get()
+        msg = await q.get()
+        kind, role = msg[0], msg[1]
         if kind == "delta":
-            yield json.dumps({"type": "role_delta", "role": role, "content": payload},
+            yield json.dumps({"type": "role_delta", "role": role, "content": msg[2]},
                              ensure_ascii=False)
         elif kind == "done":
-            arg_texts[role] = payload
+            arg_texts[role] = msg[2]
+            if msg[3]:
+                ledger[role] = msg[3]
+                yield json.dumps({"type": "claims", "role": role, "claims": msg[3]},
+                                 ensure_ascii=False)
             done_count += 1
-            yield json.dumps({"type": "role_done", "role": role, "content": payload,
+            yield json.dumps({"type": "role_done", "role": role, "content": msg[2],
                               "rewritten": False}, ensure_ascii=False)
         else:  # error
             failed = True
             yield json.dumps({"type": "error",
-                              "message": f"{'多方' if role == ROLE_BULL else '空方'}辩手调用失败: {payload}"},
+                              "message": f"{'多方' if role == ROLE_BULL else '空方'}辩手调用失败: {msg[2]}"},
                              ensure_ascii=False)
             break
     for t in tasks:
@@ -542,7 +646,8 @@ async def debate_stream(
     jq: asyncio.Queue = asyncio.Queue()
     jt = asyncio.create_task(_judge_phase(
         role_profiles, pool, materials["text"],
-        arg_texts[ROLE_BULL], arg_texts[ROLE_BEAR], final=False, out_q=jq))
+        arg_texts[ROLE_BULL], arg_texts[ROLE_BEAR], final=False,
+        out_q=jq, ledger=ledger))
     while True:
         msg = await jq.get()
         if msg[0] == "ev":
@@ -563,29 +668,36 @@ async def debate_stream(
     # ---- ④ 打回重写 (至多一轮) + 终审 ----
     if ruling and ruling["decision"] == "rewrite":
         target = ruling["rewrite_role"]
+        opponent = ROLE_BEAR if target == ROLE_BULL else ROLE_BULL
         yield json.dumps({"type": "rewrite", "role": target,
                           "reason": ruling["rewrite_reason"]}, ensure_ascii=False)
         rq: asyncio.Queue = asyncio.Queue()
         rt = asyncio.create_task(_run_role_llm(
             target,
             _BULL_SYSTEM if target == ROLE_BULL else _BEAR_SYSTEM,
-            _rewrite_user_prompt(materials["text"], focus, target, ruling["rewrite_reason"]),
+            _rewrite_user_prompt(materials["text"], focus, target, ruling["rewrite_reason"],
+                                 opponent_claims=ledger.get(opponent)),
             role_profiles.get(target), pool, 0.7, rq))
         rewrite_failed = False
         while True:
-            kind, role, payload = await rq.get()
+            msg = await rq.get()
+            kind, role = msg[0], msg[1]
             if kind == "delta":
-                yield json.dumps({"type": "role_delta", "role": role, "content": payload},
+                yield json.dumps({"type": "role_delta", "role": role, "content": msg[2]},
                                  ensure_ascii=False)
             elif kind == "done":
-                arg_texts[role] = payload
-                yield json.dumps({"type": "role_done", "role": role, "content": payload,
+                arg_texts[role] = msg[2]
+                if msg[3]:
+                    ledger[role] = msg[3]  # 重写版主张替换旧账 (终审看最新清单)
+                    yield json.dumps({"type": "claims", "role": role, "claims": msg[3]},
+                                     ensure_ascii=False)
+                yield json.dumps({"type": "role_done", "role": role, "content": msg[2],
                                   "rewritten": True}, ensure_ascii=False)
                 break
             else:
                 rewrite_failed = True
                 yield json.dumps({"type": "error",
-                                  "message": f"重写调用失败: {payload}"}, ensure_ascii=False)
+                                  "message": f"重写调用失败: {msg[2]}"}, ensure_ascii=False)
                 break
         rt.cancel()
         if rewrite_failed:
@@ -596,7 +708,8 @@ async def debate_stream(
         fq: asyncio.Queue = asyncio.Queue()
         ft = asyncio.create_task(_judge_phase(
             role_profiles, pool, materials["text"],
-            arg_texts[ROLE_BULL], arg_texts[ROLE_BEAR], final=True, out_q=fq))
+            arg_texts[ROLE_BULL], arg_texts[ROLE_BEAR], final=True,
+            out_q=fq, ledger=ledger))
         while True:
             msg = await fq.get()
             if msg[0] == "ev":
