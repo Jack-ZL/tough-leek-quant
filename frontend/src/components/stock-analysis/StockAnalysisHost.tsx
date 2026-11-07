@@ -8,12 +8,12 @@ import { DebateDialog } from './DebateDialog'
  * 多空辩论对话框 (P1-9) 也挂在这里 — 由个股分析对话框的 ⚔️ 按钮唤起。
  */
 export function StockAnalysisHost() {
-  const { task, mode } = useDialogTask()
-  const { minimized } = useDialogState()
-  return (
-    <>
-      <StockAnalysisDialog task={task} mode={mode} minimized={minimized} />
-      <DebateDialog />
-    </>
-  )
+	const { task, mode } = useDialogTask()
+	const { minimized } = useDialogState()
+	return (
+		<>
+			<StockAnalysisDialog task={task} mode={mode} minimized={minimized} />
+			<DebateDialog />
+		</>
+	)
 }

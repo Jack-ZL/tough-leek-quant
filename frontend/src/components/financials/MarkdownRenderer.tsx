@@ -1,4 +1,4 @@
-import {Fragment, type ReactNode} from 'react'
+import { Fragment, type ReactNode } from 'react'
 
 /**
  * 轻量 Markdown 渲染器 — 零依赖,专为 AI 财务分析报告设计。
@@ -43,38 +43,38 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
 			// 加粗; 内容递归渲染, 让 **+2.35%** 这类嵌套 token 也拿到语义色
 			nodes.push(
 				<strong key={`${keyBase}-b-${i}`} className="font-semibold text-foreground">
-          {renderInline(m[2], `${keyBase}-b-${i}`)}
-        </strong>,
+					{renderInline(m[2], `${keyBase}-b-${i}`)}
+				</strong>,
 			)
 		} else if (m[3]) {
 			// 行内代码
 			nodes.push(
 				<code key={`${keyBase}-c-${i}`} className="px-1 py-0.5 rounded bg-elevated text-[0.85em] font-mono text-accent">
-          {m[4]}
-        </code>,
+					{m[4]}
+				</code>,
 			)
 		} else if (m[5] !== undefined) {
 			// 带符号涨跌幅: 红涨绿跌 + 中等字重
 			nodes.push(
 				<span key={`${keyBase}-p-${i}`} className={`font-medium ${m[5].startsWith('+') ? 'text-bull' : 'text-bear'}`}>
-          {m[5]}
-        </span>,
+					{m[5]}
+				</span>,
 			)
 		} else if (m[6]) {
 			// 涨跌停: 徽章式底色, 对齐信号标签样式
 			const up = m[6] === '涨停'
 			nodes.push(
 				<span key={`${keyBase}-l-${i}`} className={`rounded px-1 font-medium ${up ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
-          {m[6]}
-        </span>,
+					{m[6]}
+				</span>,
 			)
 		} else if (m[7]) {
 			// 方向词: 仅着色不加底色
 			const up = m[7] === '上涨' || m[7] === '高开' || m[7] === '走强'
 			nodes.push(
 				<span key={`${keyBase}-d-${i}`} className={up ? 'text-bull' : 'text-bear'}>
-          {m[7]}
-        </span>,
+					{m[7]}
+				</span>,
 			)
 		} else if (m[8]) {
 			// 闸门高亮标记 〖数字※〗: 该数字在本轮数据里找不到出处 —
@@ -85,8 +85,8 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
 					className="rounded px-1 font-semibold bg-amber-500/15 text-amber-500 cursor-help"
 					title="该数字在本轮提供的数据里找不到出处, 已被数字忠实度闸门标出, 请谨慎采信"
 				>
-          ⚠ {m[9]}
-        </span>,
+					⚠ {m[9]}
+				</span>,
 			)
 		} else if (m[11]) {
 			// markdown 链接: 只放行 http/https, 其余原样输出文本 (不执行原始 HTML)
@@ -97,16 +97,16 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
 			}
 			nodes.push(safe ? (
 				<a key={`${keyBase}-a-${i}`} href={m[13]} target="_blank" rel="noopener noreferrer"
-				   className="break-words text-accent underline underline-offset-2 hover:decoration-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          {renderInline(m[12], `${keyBase}-a-${i}`)}
-        </a>
+					className="break-words text-accent underline underline-offset-2 hover:decoration-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+					{renderInline(m[12], `${keyBase}-a-${i}`)}
+				</a>
 			) : <Fragment key={`${keyBase}-a-${i}`}>{m[11]}</Fragment>)
 		} else {
 			// 金额数字: 等宽(设计语言: 数字等宽); 单位留在 span 外
 			nodes.push(
 				<span key={`${keyBase}-n-${i}`} className="font-mono">
-          {m[10]}
-        </span>,
+					{m[10]}
+				</span>,
 			)
 		}
 		last = m.index + m[0].length
@@ -135,12 +135,12 @@ function parseTable(lines: string[], start: number): { rows: string[][]; consume
 		line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim())
 	const header = parseRow(tableLines[0])
 	const body = tableLines.slice(2).map(parseRow)
-	return {rows: [header, ...body], consumed: tableLines.length}
+	return { rows: [header, ...body], consumed: tableLines.length }
 }
 
 // ===== 主渲染 =====
 
-export function MarkdownRenderer({content, compact = false}: { content: string; compact?: boolean }) {
+export function MarkdownRenderer({ content, compact = false }: { content: string; compact?: boolean }) {
 	const lines = content.replace(/\r\n/g, '\n').split('\n')
 	const blocks: ReactNode[] = []
 	let i = 0
@@ -158,7 +158,7 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 
 		// 分隔线
 		if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-			blocks.push(<hr key={key++} className="my-6 border-border"/>)
+			blocks.push(<hr key={key++} className="my-6 border-border" />)
 			i++
 			continue
 		}
@@ -172,8 +172,8 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 			const mtCls = level <= 2 ? 'mt-6' : 'mt-5'
 			blocks.push(
 				<div key={key++} className={`${sizeCls} ${mtCls} mb-3 font-semibold text-foreground flex items-center gap-1.5`}>
-          {renderInline(text, `h-${key}`)}
-        </div>,
+					{renderInline(text, `h-${key}`)}
+				</div>,
 			)
 			i++
 			continue
@@ -188,8 +188,8 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 			}
 			blocks.push(
 				<blockquote key={key++} className="my-4 pl-3 border-l-2 border-amber-400/40 bg-amber-400/[0.04] py-1.5 pr-2 rounded-r text-xs text-secondary">
-          {renderInline(quoteLines.join(' '), `q-${key}`)}
-        </blockquote>,
+					{renderInline(quoteLines.join(' '), `q-${key}`)}
+				</blockquote>,
 			)
 			continue
 		}
@@ -206,40 +206,40 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 				const wide = ncol > 4
 				blocks.push(
 					<div key={key++} className={`my-5 rounded-btn border border-border/30 ${wide ? 'overflow-x-auto' : 'overflow-hidden'}`}>
-            <table className={wide
-	            ? 'min-w-full w-max text-xs border-collapse table-auto'
-	            : 'w-full text-xs border-collapse table-fixed'}>
-              {!wide && (
-	              <colgroup>
-                  {/* 首列(维度)较窄;末列(判断/说明)最宽并允许折行 */}
-		              <col className="w-auto"/>
-		              {Array.from({length: ncol - 1}).map((_, ci) => (
-			              <col key={ci} className={ci === ncol - 2 ? 'w-1/2' : 'w-auto'}/>
-		              ))}
-                </colgroup>
-              )}
-	            <thead>
-                <tr className="bg-elevated/50">
-                  {header.map((cell, ci) => (
-	                  <th key={ci} className="px-2.5 py-1.5 text-left font-medium text-foreground border-b border-border/40 whitespace-nowrap">
-                      {renderInline(cell, `th-${key}-${ci}`)}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {body.map((row, ri) => (
-	                <tr key={ri} className="border-b border-border/20 last:border-0 hover:bg-elevated/20">
-                    {row.map((cell, ci) => (
-	                    <td key={ci} className={`px-2.5 py-1.5 text-foreground align-top ${wide ? 'whitespace-nowrap' : 'break-words'}`}>
-                        {renderInline(cell, `td-${key}-${ri}-${ci}`)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>,
+						<table className={wide
+							? 'min-w-full w-max text-xs border-collapse table-auto'
+							: 'w-full text-xs border-collapse table-fixed'}>
+							{!wide && (
+								<colgroup>
+									{/* 首列(维度)较窄;末列(判断/说明)最宽并允许折行 */}
+									<col className="w-auto" />
+									{Array.from({ length: ncol - 1 }).map((_, ci) => (
+										<col key={ci} className={ci === ncol - 2 ? 'w-1/2' : 'w-auto'} />
+									))}
+								</colgroup>
+							)}
+							<thead>
+								<tr className="bg-elevated/50">
+									{header.map((cell, ci) => (
+										<th key={ci} className="px-2.5 py-1.5 text-left font-medium text-foreground border-b border-border/40 whitespace-nowrap">
+											{renderInline(cell, `th-${key}-${ci}`)}
+										</th>
+									))}
+								</tr>
+							</thead>
+							<tbody>
+								{body.map((row, ri) => (
+									<tr key={ri} className="border-b border-border/20 last:border-0 hover:bg-elevated/20">
+										{row.map((cell, ci) => (
+											<td key={ci} className={`px-2.5 py-1.5 text-foreground align-top ${wide ? 'whitespace-nowrap' : 'break-words'}`}>
+												{renderInline(cell, `td-${key}-${ri}-${ci}`)}
+											</td>
+										))}
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>,
 				)
 				i += table.consumed
 				continue
@@ -255,13 +255,13 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 			}
 			blocks.push(
 				<ul key={key++} className="my-4 space-y-2">
-          {items.map((item, ii) => (
-	          <li key={ii} className="flex items-start gap-2 text-sm text-foreground leading-relaxed">
-              <span className="mt-[7px] h-1 w-1 rounded-full bg-accent/60 shrink-0"/>
-              <span>{renderInline(item, `li-${key}-${ii}`)}</span>
-            </li>
-          ))}
-        </ul>,
+					{items.map((item, ii) => (
+						<li key={ii} className="flex items-start gap-2 text-sm text-foreground leading-relaxed">
+							<span className="mt-[7px] h-1 w-1 rounded-full bg-accent/60 shrink-0" />
+							<span>{renderInline(item, `li-${key}-${ii}`)}</span>
+						</li>
+					))}
+				</ul>,
 			)
 			continue
 		}
@@ -275,15 +275,15 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 			}
 			blocks.push(
 				<ol key={key++} className="my-4 space-y-2">
-          {items.map((item, ii) => (
-	          <li key={ii} className="flex items-start gap-2 text-xs text-foreground/90 leading-relaxed">
-              <span className="mt-0.5 h-4 w-4 rounded-full bg-accent/10 text-accent text-[10px] font-mono flex items-center justify-center shrink-0">
-                {ii + 1}
-              </span>
-              <span className="flex-1 text-foreground">{renderInline(item, `ol-${key}-${ii}`)}</span>
-            </li>
-          ))}
-        </ol>,
+					{items.map((item, ii) => (
+						<li key={ii} className="flex items-start gap-2 text-xs text-foreground/90 leading-relaxed">
+							<span className="mt-0.5 h-4 w-4 rounded-full bg-accent/10 text-accent text-[10px] font-mono flex items-center justify-center shrink-0">
+								{ii + 1}
+							</span>
+							<span className="flex-1 text-foreground">{renderInline(item, `ol-${key}-${ii}`)}</span>
+						</li>
+					))}
+				</ol>,
 			)
 			continue
 		}
@@ -291,8 +291,8 @@ export function MarkdownRenderer({content, compact = false}: { content: string; 
 		// 普通段落
 		blocks.push(
 			<p key={key++} className="my-3 text-sm text-foreground leading-relaxed">
-        {renderInline(trimmed, `p-${key}`)}
-      </p>,
+				{renderInline(trimmed, `p-${key}`)}
+			</p>,
 		)
 		i++
 	}

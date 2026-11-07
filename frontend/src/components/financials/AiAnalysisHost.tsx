@@ -1,5 +1,5 @@
-import {useDialogTask, useDialogState} from '@/lib/aiReportStore'
-import {AiAnalysisDialog} from './AiAnalysisDialog'
+import { useDialogTask, useDialogState } from '@/lib/aiReportStore'
+import { AiAnalysisDialog } from './AiAnalysisDialog'
 
 /**
  * AI 分析对话框宿主 —— 单点挂载在 Layout。
@@ -8,7 +8,7 @@ import {AiAnalysisDialog} from './AiAnalysisDialog'
  * 一次挂载,全局生效:任意页面发起的分析都会显示在这个对话框里。
  */
 export function AiAnalysisHost() {
-	const {task, mode} = useDialogTask()
-	const {minimized} = useDialogState()
-	return <AiAnalysisDialog task={task} mode={mode} minimized={minimized}/>
+	const { task, mode } = useDialogTask()
+	const { minimized } = useDialogState()
+	return <AiAnalysisDialog task={task} mode={mode} minimized={minimized} />
 }
