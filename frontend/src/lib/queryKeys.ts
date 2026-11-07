@@ -16,70 +16,70 @@ export const DAILY_DATA_QUERY_PREFIXES = new Set([
 
 /** 分钟落盘补拉后的体检与直接消费查询, 不影响日K/财务或独立的指数分钟数据。 */
 export const MINUTE_DATA_QUERY_PREFIXES = new Set([
-  'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range',
+	'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range',
 ])
 
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
 export const EXT_DATA_QUERY_PREFIXES = new Set([
-  'ext-data', 'ext-data-rows', 'ext-data-schema-all', 'ext-schema-all', 'ext-series',
-  'watchlist-enriched', 'screener-cached', 'dimension-members', 'dimension-intraday',
-  'table-schema', 'custom-signals-options',
+	'ext-data', 'ext-data-rows', 'ext-data-schema-all', 'ext-schema-all', 'ext-series',
+	'watchlist-enriched', 'screener-cached', 'dimension-members', 'dimension-intraday',
+	'table-schema', 'custom-signals-options',
 ])
 
 export const QK = {
-  dataVersions: ['data-versions'] as const,
-  extensionPackages: ['extension-packages'] as const,
-  // 全局 / 共享 (Layout 预取)
-  capabilities:   ['capabilities'] as const,
-  settings:       ['settings'] as const,
-  endpoints:      ['endpoints'] as const,
-  version:        ['version'] as const,
-  preferences:    ['preferences'] as const,
-  soundPacks:     ['sound-packs'] as const,
-  dataSources:    ['data-sources'] as const,
-  capabilityMatrix: ['capability-matrix'] as const,
-  quoteStatus:    ['quote-status'] as const,
-  quoteInterval:  ['quote-interval'] as const,
-  marketTradingStatus: ['market-trading-status'] as const,
-  overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
-  indexQuotes:    ['index-quotes'] as const,
+	dataVersions: ['data-versions'] as const,
+	extensionPackages: ['extension-packages'] as const,
+	// 全局 / 共享 (Layout 预取)
+	capabilities: ['capabilities'] as const,
+	settings: ['settings'] as const,
+	endpoints: ['endpoints'] as const,
+	version: ['version'] as const,
+	preferences: ['preferences'] as const,
+	soundPacks: ['sound-packs'] as const,
+	dataSources: ['data-sources'] as const,
+	capabilityMatrix: ['capability-matrix'] as const,
+	quoteStatus: ['quote-status'] as const,
+	quoteInterval: ['quote-interval'] as const,
+	marketTradingStatus: ['market-trading-status'] as const,
+	overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
+	indexQuotes: ['index-quotes'] as const,
 
-  // Watchlist
-  watchlist:            ['watchlist'] as const,
-  watchlistGroups:      ['watchlist-groups'] as const,
-  watchlistPrepare:     (symbols: string[]) => ['watchlist-prepare', symbols] as const,
-  watchlistQuotes:      ['watchlist-quotes'] as const,
-  watchlistEnriched:    (ext?: string) => ['watchlist-enriched', ext ?? ''] as const,
-  // 异动边缘总览 (开启监控时才查询, 参数为 min_closeness/limit)
-  abnormalOverview:     (minCloseness: number, limit: number) => ['abnormal-overview', minCloseness, limit] as const,
-  // 盘中异动信号聚合 (异动监控「盘中」tab)
-  abnormalIntraday:     (limit: number) => ['abnormal-intraday', limit] as const,
-  // 不用 watchlist- 前缀: 日K历史盘中几乎不变, 若被 SSE quotes_updated 高频失效
-  // (expert 1s) 会导致全自选日K每秒重拉, staleTime 形同虚设。
-  // 刷新点: staleTime 过期 + Watchlist 增删自选/改蜡烛天数时的手动失效;
-  // 当日最后一根蜡烛由 Watchlist 用 enriched 实时 OHLC 前端修补 (零额外请求)。
-  // symbols 不进 key: 千只自选时 key 内嵌全量拼串 (12-17KB), 增删 1 只即换 key
-  // 整批重拉且新旧两份共存; 数据按 symbol upsert 进单 key, 仅天数变化换 key。
-  watchlistKlineBatch:  (days: number) => ['kline-batch', days] as const,
-  // 不用 watchlist- 前缀: 避免被 SSE quotes_updated 高频失效(expert 1s/pro 2s)
-  // 导致每次都拉 TickFlow 触限流。分时图用固定 refetchInterval 刷新即可。
-  // 同上不嵌 symbols: 单 key + 按 symbol 增量合并, 请求集合由视口收敛
-  // (见 lib/minuteBatchIncremental.ts)。
-  minuteBatch:          () => ['minute-batch'] as const,
-  instrumentSearch:     (q: string, assetTypes?: string) => ['instrument-search', q, assetTypes ?? 'stock'] as const,
+	// Watchlist
+	watchlist: ['watchlist'] as const,
+	watchlistGroups: ['watchlist-groups'] as const,
+	watchlistPrepare: (symbols: string[]) => ['watchlist-prepare', symbols] as const,
+	watchlistQuotes: ['watchlist-quotes'] as const,
+	watchlistEnriched: (ext?: string) => ['watchlist-enriched', ext ?? ''] as const,
+	// 异动边缘总览 (开启监控时才查询, 参数为 min_closeness/limit)
+	abnormalOverview: (minCloseness: number, limit: number) => ['abnormal-overview', minCloseness, limit] as const,
+	// 盘中异动信号聚合 (异动监控「盘中」tab)
+	abnormalIntraday: (limit: number) => ['abnormal-intraday', limit] as const,
+	// 不用 watchlist- 前缀: 日K历史盘中几乎不变, 若被 SSE quotes_updated 高频失效
+	// (expert 1s) 会导致全自选日K每秒重拉, staleTime 形同虚设。
+	// 刷新点: staleTime 过期 + Watchlist 增删自选/改蜡烛天数时的手动失效;
+	// 当日最后一根蜡烛由 Watchlist 用 enriched 实时 OHLC 前端修补 (零额外请求)。
+	// symbols 不进 key: 千只自选时 key 内嵌全量拼串 (12-17KB), 增删 1 只即换 key
+	// 整批重拉且新旧两份共存; 数据按 symbol upsert 进单 key, 仅天数变化换 key。
+	watchlistKlineBatch: (days: number) => ['kline-batch', days] as const,
+	// 不用 watchlist- 前缀: 避免被 SSE quotes_updated 高频失效(expert 1s/pro 2s)
+	// 导致每次都拉 TickFlow 触限流。分时图用固定 refetchInterval 刷新即可。
+	// 同上不嵌 symbols: 单 key + 按 symbol 增量合并, 请求集合由视口收敛
+	// (见 lib/minuteBatchIncremental.ts)。
+	minuteBatch: () => ['minute-batch'] as const,
+	instrumentSearch: (q: string, assetTypes?: string) => ['instrument-search', q, assetTypes ?? 'stock'] as const,
 
-  // Screener
-  screener:             ['screener'] as const,
-  screenerStrategies:   (assetType: string = 'stock', timeframe: '1d' | '1m' | 'all' = '1d') => ['screener-strategies', assetType, timeframe] as const,
-  screenerCachedSummary: ['screener-cached', 'summary'] as const,
-  screenerCachedResult: (strategyId: string, asOf?: string, ext?: string) => ['screener-cached', 'strategy', strategyId, asOf ?? '', ext ?? ''] as const,
-  screenerCached:       (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
-  screenerKlineBatch:   (symbols: string) => ['screener-kline-batch', symbols] as const,
-  /** 扩展列迷你图: 列集 (含显示周期和天数) + 日期 + 标的集。 */
-  extSeriesAll:        ['ext-series'] as const,
-  extSeries:           (colsKey: string, date?: string | null, symbolsKey?: string) => ['ext-series', colsKey, date ?? '', symbolsKey ?? ''] as const,
-  marketSnapshot:       ['market-snapshot'] as const,
-  limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
+	// Screener
+	screener: ['screener'] as const,
+	screenerStrategies: (assetType: string = 'stock', timeframe: '1d' | '1m' | 'all' = '1d') => ['screener-strategies', assetType, timeframe] as const,
+	screenerCachedSummary: ['screener-cached', 'summary'] as const,
+	screenerCachedResult: (strategyId: string, asOf?: string, ext?: string) => ['screener-cached', 'strategy', strategyId, asOf ?? '', ext ?? ''] as const,
+	screenerCached: (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
+	screenerKlineBatch: (symbols: string) => ['screener-kline-batch', symbols] as const,
+	/** 扩展列迷你图: 列集 (含显示周期和天数) + 日期 + 标的集。 */
+	extSeriesAll: ['ext-series'] as const,
+	extSeries: (colsKey: string, date?: string | null, symbolsKey?: string) => ['ext-series', colsKey, date ?? '', symbolsKey ?? ''] as const,
+	marketSnapshot: ['market-snapshot'] as const,
+	limitLadder: (asOf?: string) => ['limit-ladder', asOf] as const,
 
 	// Backtest
 	backtestStatus: ['backtest-status'] as const,

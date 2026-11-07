@@ -4,11 +4,14 @@
  */
 
 /** 列表导航项 (股票等可按 key 定位的候选项) */
-export interface NavItem { symbol: string; name?: string }
+export interface NavItem {
+	symbol: string;
+	name?: string
+}
 
 /** 把 symbol+name 的列表转成导航列表项 (统一 name 归一化为 undefined, 免去各处重复 map + as 断言) */
 export function toNavItems<T extends { symbol: string; name?: string | null }>(xs: T[]): NavItem[] {
-  return xs.map(x => ({ symbol: x.symbol, name: x.name ?? undefined }))
+	return xs.map(x => ({symbol: x.symbol, name: x.name ?? undefined}))
 }
 
 /** 股票列表的导航 key (模块级函数, 保证引用稳定) */
@@ -20,18 +23,18 @@ export const navItemKey = (item: NavItem): string => item.symbol
  * 不去重会让切项空跳或计数虚高。
  */
 export function uniqueBy<T>(xs: T[], keyOf: (item: T) => string): T[] {
-  const seen = new Set<string>()
-  const out: T[] = []
-  for (const x of xs) {
-    const k = keyOf(x)
-    if (seen.has(k)) continue
-    seen.add(k)
-    out.push(x)
-  }
-  return out
+	const seen = new Set<string>()
+	const out: T[] = []
+	for (const x of xs) {
+		const k = keyOf(x)
+		if (seen.has(k)) continue
+		seen.add(k)
+		out.push(x)
+	}
+	return out
 }
 
 /** 首↔尾循环的索引换算 (切项与邻近预取共用同一换行规则) */
 export function wrapNavIndex(navIdx: number, delta: number, navTotal: number): number {
-  return (navIdx + delta + navTotal) % navTotal
+	return (navIdx + delta + navTotal) % navTotal
 }

@@ -1,15 +1,15 @@
-import { useEffect, useRef, useCallback, useSyncExternalStore } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { SSE_INVALIDATE_PREFIXES, QK } from './queryKeys'
-import { klineDailyLatestQueryOptions, mergeLatestKlineRow } from './kline'
-import { getQueryConfig } from './useQueryConfig'
-import { toast } from '@/components/Toast'
-import { pushAlertToasts } from '@/components/AlertToast'
-import { feedReviewEvent } from './reviewStore'
-import { createEnrichedThrottler } from './enrichedInvalidateThrottle'
-import { createRevisionTracker, retryDelay } from './refreshPolicy'
-import type { KlineDailyResponse, StrategyAlertEvent } from './api'
-import { useDataVersions } from './useDataVersions'
+import {useEffect, useRef, useCallback, useSyncExternalStore} from 'react'
+import {useQueryClient} from '@tanstack/react-query'
+import {SSE_INVALIDATE_PREFIXES, QK} from './queryKeys'
+import {klineDailyLatestQueryOptions, mergeLatestKlineRow} from './kline'
+import {getQueryConfig} from './useQueryConfig'
+import {toast} from '@/components/Toast'
+import {pushAlertToasts} from '@/components/AlertToast'
+import {feedReviewEvent} from './reviewStore'
+import {createEnrichedThrottler} from './enrichedInvalidateThrottle'
+import {createRevisionTracker, retryDelay} from './refreshPolicy'
+import type {KlineDailyResponse, StrategyAlertEvent} from './api'
+import {useDataVersions} from './useDataVersions'
 
 // ===== 全局 SSE 连接状态 (模块级 store, 仿 AlertToast.tsx 模式) =====
 // 实时行情 SSE 断开时 UI 无感知 → 会漏掉策略告警。这里暴露连接状态,
@@ -54,8 +54,8 @@ export function useQuoteStreamStatus(): QuoteStreamStatus {
 // 个股对话框打开时注册当前 symbol, SSE quotes_updated 推送时只取当日最新行，
 // 再原位更新该 symbol 的日K查询缓存，避免重复下载整段历史。
 // 不加进 SSE_INVALIDATE_PREFIXES 全局列表 —— 避免回测弹窗等也每秒重拉。
-export { setFocusSymbol, clearFocusSymbol } from './quote-focus'
-import { focusSymbols } from './quote-focus'
+export {setFocusSymbol, clearFocusSymbol} from './quote-focus'
+import {focusSymbols} from './quote-focus'
 
 /**
  * 全局 SSE hook: 监听后端行情更新推送 + 策略监控通知。
@@ -70,15 +70,15 @@ export function useQuoteStream(
 	sseRefreshPages: Record<string, boolean> | undefined,
 	onAlert?: (alerts: StrategyAlertEvent[]) => void,
 ) {
-  useDataVersions()
-  const qc = useQueryClient()
-  const esRef = useRef<EventSource | null>(null)
-  const retryRef = useRef<ReturnType<typeof setTimeout>>()
-  const pagesRef = useRef(sseRefreshPages)
-  pagesRef.current = sseRefreshPages
-  // watchlist-enriched 单独节流 5s: SSE 每秒到达, 该前缀整表重拉代价最大
-  const enrichedThrottlerRef = useRef(createEnrichedThrottler())
-  const strategyThrottlerRef = useRef(createEnrichedThrottler(6000))
+	useDataVersions()
+	const qc = useQueryClient()
+	const esRef = useRef<EventSource | null>(null)
+	const retryRef = useRef<ReturnType<typeof setTimeout>>()
+	const pagesRef = useRef(sseRefreshPages)
+	pagesRef.current = sseRefreshPages
+	// watchlist-enriched 单独节流 5s: SSE 每秒到达, 该前缀整表重拉代价最大
+	const enrichedThrottlerRef = useRef(createEnrichedThrottler())
+	const strategyThrottlerRef = useRef(createEnrichedThrottler(6000))
 
 	const handleAlerts = useCallback((alerts: StrategyAlertEvent[]) => {
 		// depth 系统接管通知: 单独处理, 不走 strategy 回调
@@ -114,7 +114,7 @@ export function useQuoteStream(
 		const revisions = createRevisionTracker()
 		const refetchType = () => document.visibilityState === 'hidden' ? 'none' as const : 'active' as const
 		const refreshStrategies = () => strategyThrottlerRef.current.fire(() => {
-			qc.invalidateQueries({ queryKey: ['screener-cached'], refetchType: refetchType() })
+			qc.invalidateQueries({queryKey: ['screener-cached'], refetchType: refetchType()})
 		})
 
 		// 分组 invalidation: watchlist-enriched 走 5s 节流 (整表 N 行×64 字段重拉,
@@ -144,16 +144,16 @@ export function useQuoteStream(
 			const es = new EventSource('/api/intraday/stream')
 			esRef.current = es
 
-      es.onopen = () => {
-        // 连接成功: 重置退避与 toast 标记
-        failCount = 0
-        toastFired = false
-        _setStatus('connected')
-        // Reconnect may have missed a notification; read snapshots without creating work.
-        invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
-        refreshStrategies()
-        void qc.invalidateQueries({ queryKey: QK.dataVersions })
-      }
+			es.onopen = () => {
+				// 连接成功: 重置退避与 toast 标记
+				failCount = 0
+				toastFired = false
+				_setStatus('connected')
+				// Reconnect may have missed a notification; read snapshots without creating work.
+				invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+				refreshStrategies()
+				void qc.invalidateQueries({queryKey: QK.dataVersions})
+			}
 
 			// sse-starlette ping 心跳走 SSE comment，不会到达这里
 
@@ -184,24 +184,25 @@ export function useQuoteStream(
 				}
 				// 焦点股票日K增量刷新: 只取内存中的当日行并合并缓存尾部。
 				if (document.visibilityState !== 'hidden') for (const symbol of focusSymbols()) {
-					void qc.fetchQuery({ ...klineDailyLatestQueryOptions(symbol), staleTime: 0 })
-						.then((latest) => {
-							if (!focusSymbols().includes(symbol)) return
-							const latestDate = latest.row ? String(latest.row.date).slice(0, 10) : ''
-							const queries = qc.getQueryCache().findAll({ queryKey: ['kline', symbol] })
-							for (const query of queries) {
-								const start = String(query.queryKey[2] ?? '')
-								const end = String(query.queryKey[3] ?? '')
-								// 空串边界 = 滚动"最近 N 根"窗口 (无日期边界): 尾部合并总是适用,
-								// 不得因 latestDate > '' 被跳过 — 否则这类看板收不到实时修补
-								if (latestDate && ((start && latestDate < start) || (end && latestDate > end))) continue
-								qc.setQueryData<KlineDailyResponse>(
-									query.queryKey,
-									current => mergeLatestKlineRow(current, latest),
-								)
-							}
-						})
-						.catch(() => {})
+					void qc.fetchQuery({...klineDailyLatestQueryOptions(symbol), staleTime: 0})
+					.then((latest) => {
+						if (!focusSymbols().includes(symbol)) return
+						const latestDate = latest.row ? String(latest.row.date).slice(0, 10) : ''
+						const queries = qc.getQueryCache().findAll({queryKey: ['kline', symbol]})
+						for (const query of queries) {
+							const start = String(query.queryKey[2] ?? '')
+							const end = String(query.queryKey[3] ?? '')
+							// 空串边界 = 滚动"最近 N 根"窗口 (无日期边界): 尾部合并总是适用,
+							// 不得因 latestDate > '' 被跳过 — 否则这类看板收不到实时修补
+							if (latestDate && ((start && latestDate < start) || (end && latestDate > end))) continue
+							qc.setQueryData<KlineDailyResponse>(
+								query.queryKey,
+								current => mergeLatestKlineRow(current, latest),
+							)
+						}
+					})
+					.catch(() => {
+					})
 				}
 			})
 
@@ -212,20 +213,20 @@ export function useQuoteStream(
 			})
 
 			es.addEventListener('daily_integrity_updated', () => {
-				qc.invalidateQueries({ queryKey: QK.dataIntegrity })
-				qc.invalidateQueries({ queryKey: QK.dataStatus })
+				qc.invalidateQueries({queryKey: QK.dataIntegrity})
+				qc.invalidateQueries({queryKey: QK.dataStatus})
 			})
 
-      es.addEventListener('data_updated', () => {
-        void qc.invalidateQueries({ queryKey: QK.dataVersions })
-      })
+			es.addEventListener('data_updated', () => {
+				void qc.invalidateQueries({queryKey: QK.dataVersions})
+			})
 
-      es.addEventListener('depth_updated', () => {
-        // 五档修正完成: 刷新连板梯队 + 看板封单数据。
-        // 不受实时行情开关限制 — 修正轮询独立于行情轮询, 用户开了修正就想看实时封单。
-        qc.invalidateQueries({ queryKey: ['limit-ladder'], refetchType: refetchType() })
-        qc.invalidateQueries({ queryKey: ['overview-market'], refetchType: refetchType() })
-      })
+			es.addEventListener('depth_updated', () => {
+				// 五档修正完成: 刷新连板梯队 + 看板封单数据。
+				// 不受实时行情开关限制 — 修正轮询独立于行情轮询, 用户开了修正就想看实时封单。
+				qc.invalidateQueries({queryKey: ['limit-ladder'], refetchType: refetchType()})
+				qc.invalidateQueries({queryKey: ['overview-market'], refetchType: refetchType()})
+			})
 
 			es.addEventListener('strategy_alert', (e: MessageEvent) => {
 				try {
@@ -234,8 +235,8 @@ export function useQuoteStream(
 					if (alerts.length > 0) {
 						handleAlerts(alerts)
 						// 实时刷新触发记录列表 + 监控中心徽标
-						qc.invalidateQueries({ queryKey: ['alerts'] })
-						qc.invalidateQueries({ queryKey: ['alerts-total'] })
+						qc.invalidateQueries({queryKey: ['alerts']})
+						qc.invalidateQueries({queryKey: ['alerts-total']})
 					}
 				} catch {
 					// 忽略解析错误
@@ -250,7 +251,7 @@ export function useQuoteStream(
 					feedReviewEvent(evt)
 					// done(后端已归档) → 刷新历史列表, 让新报告出现并可查看
 					if (evt.type === 'done') {
-						qc.invalidateQueries({ queryKey: QK.reviewReports })
+						qc.invalidateQueries({queryKey: QK.reviewReports})
 					}
 				} catch {
 					// 忽略解析错误
@@ -274,14 +275,14 @@ export function useQuoteStream(
 			}
 		}
 
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') return
-      void qc.invalidateQueries({ queryKey: QK.dataVersions })
-      invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
-      refreshStrategies()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    connect()
+		const onVisibility = () => {
+			if (document.visibilityState === 'hidden') return
+			void qc.invalidateQueries({queryKey: QK.dataVersions})
+			invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+			refreshStrategies()
+		}
+		document.addEventListener('visibilitychange', onVisibility)
+		connect()
 
 		return () => {
 			clearTimeout(retryRef.current)

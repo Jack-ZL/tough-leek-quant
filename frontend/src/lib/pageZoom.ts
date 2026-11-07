@@ -15,8 +15,8 @@
  * - 应用后派发 window resize, echarts 等监听 resize 的图表随之重排。
  * - z=1 时清空 transform/宽高, 与未开启缩放的状态完全一致。
  */
-import { storage } from '@/lib/storage'
-import { setUiPref } from '@/lib/uiPrefs'
+import {storage} from '@/lib/storage'
+import {setUiPref} from '@/lib/uiPrefs'
 
 export const ZOOM_MIN = 0.8
 export const ZOOM_MAX = 1.5
@@ -25,55 +25,56 @@ export const ZOOM_STEP = 0.05
 export const ZOOM_DEFAULT = 1
 
 function clamp(v: number): number {
-  if (!Number.isFinite(v)) return ZOOM_DEFAULT
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(v * 100) / 100))
+	if (!Number.isFinite(v)) return ZOOM_DEFAULT
+	return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(v * 100) / 100))
 }
 
 /** 把缩放应用到 #root 并通知图表重排, 返回 clamp 后的实际值。 */
 export function applyPageZoom(v: number): number {
-  const z = clamp(v)
-  const root = document.getElementById('root')
-  if (root) {
-    if (z === 1) {
-      root.style.transform = ''
-      root.style.width = ''
-      root.style.height = ''
-    } else {
-      root.style.transformOrigin = '0 0'
-      root.style.transform = `scale(${z})`
-      // 布局占位 = 视口/z, 缩放后视觉正好铺满视口; 不补偿会留白 (z<1) 或溢出 (z>1)。
-      root.style.width = `${100 / z}%`
-      root.style.height = `${100 / z}%`
-    }
-  }
-  window.dispatchEvent(new Event('resize'))
-  return z
+	const z = clamp(v)
+	const root = document.getElementById('root')
+	if (root) {
+		if (z === 1) {
+			root.style.transform = ''
+			root.style.width = ''
+			root.style.height = ''
+		} else {
+			root.style.transformOrigin = '0 0'
+			root.style.transform = `scale(${z})`
+			// 布局占位 = 视口/z, 缩放后视觉正好铺满视口; 不补偿会留白 (z<1) 或溢出 (z>1)。
+			root.style.width = `${100 / z}%`
+			root.style.height = `${100 / z}%`
+		}
+	}
+	window.dispatchEvent(new Event('resize'))
+	return z
 }
 
 /** 当前生效的缩放 (读 #root transform 矩阵, 未缩放时 1)。
  *  浮层定位/拖拽做视觉→布局坐标换算时用。 */
 export function getPageScale(): number {
-  const root = document.getElementById('root')
-  const m = root ? getComputedStyle(root).transform : ''
-  if (m && m !== 'none') {
-    try {
-      const s = new DOMMatrixReadOnly(m).a
-      if (Number.isFinite(s) && s > 0) return s
-    } catch { /* matrix 解析失败按未缩放处理 */ }
-  }
-  return 1
+	const root = document.getElementById('root')
+	const m = root ? getComputedStyle(root).transform : ''
+	if (m && m !== 'none') {
+		try {
+			const s = new DOMMatrixReadOnly(m).a
+			if (Number.isFinite(s) && s > 0) return s
+		} catch { /* matrix 解析失败按未缩放处理 */
+		}
+	}
+	return 1
 }
 
 /** 读取持久化的缩放值 (越界/缺失回落默认 1)。 */
 export function getPageZoom(): number {
-  return clamp(storage.pageZoom.get(ZOOM_DEFAULT))
+	return clamp(storage.pageZoom.get(ZOOM_DEFAULT))
 }
 
 /** 持久化并立即生效。 */
 export function setPageZoom(v: number): number {
-  const z = clamp(v)
-  // 经 setUiPref 双写: localStorage 供 index.html 首帧脚本同步读取,
-  // 后端副本保证换端口 (桌面版端口递增 → origin 变化) 后缩放仍能恢复
-  setUiPref('tf-page-zoom', JSON.stringify(z))
-  return applyPageZoom(z)
+	const z = clamp(v)
+	// 经 setUiPref 双写: localStorage 供 index.html 首帧脚本同步读取,
+	// 后端副本保证换端口 (桌面版端口递增 → origin 变化) 后缩放仍能恢复
+	setUiPref('tf-page-zoom', JSON.stringify(z))
+	return applyPageZoom(z)
 }

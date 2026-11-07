@@ -1,7 +1,7 @@
-import type { QueryClient } from '@tanstack/react-query'
-import { api, type MinuteKlineRow } from '@/lib/api'
-import { getMinuteBatchChunkSize } from '@/lib/klineBatchLimits'
-import { QK } from '@/lib/queryKeys'
+import type {QueryClient} from '@tanstack/react-query'
+import {api, type MinuteKlineRow} from '@/lib/api'
+import {getMinuteBatchChunkSize} from '@/lib/klineBatchLimits'
+import {QK} from '@/lib/queryKeys'
 
 // 分钟批量分时的增量轮询助手:
 // 后端 /api/kline/minute-batch 已支持 since 增量 (只回 >= since 的K, 含形成中
@@ -26,9 +26,9 @@ export const MINUTE_CACHE_MAX_SYMBOLS = 500
 export const MINUTE_SEED_MAX = 60
 
 function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
+	const out: T[][] = []
+	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+	return out
 }
 
 /**
@@ -46,25 +46,25 @@ function chunk<T>(items: T[], size: number): T[][] {
 export const MIN_CACHED_BARS = 2
 
 function sinceBySymbol(data: MinuteBatchData, symbols: string[]): (sym: string) => string | undefined {
-  const lastOf = new Map<string, string>()
-  for (const sym of symbols) {
-    const rows = data[sym]
-    if (!rows || rows.length < MIN_CACHED_BARS) continue   // 残序列 → 全量重取
-    lastOf.set(sym, rows[rows.length - 1].datetime)
-  }
-  return (sym: string) => lastOf.get(sym)
+	const lastOf = new Map<string, string>()
+	for (const sym of symbols) {
+		const rows = data[sym]
+		if (!rows || rows.length < MIN_CACHED_BARS) continue   // 残序列 → 全量重取
+		lastOf.set(sym, rows[rows.length - 1].datetime)
+	}
+	return (sym: string) => lastOf.get(sym)
 }
 
 export function mergeInto(base: MinuteBatchData, patch: MinuteBatchData): MinuteBatchData {
-  const merged: MinuteBatchData = { ...base }
-  for (const [sym, rows] of Object.entries(patch)) {
-    const cache = merged[sym] ?? []
-    const byTs = new Map(cache.map(r => [r.datetime, r]))
-    for (const r of rows) byTs.set(r.datetime, r)   // 新值覆盖 (动态K定版)
-    merged[sym] = Array.from(byTs.values())
-      .sort((a, b) => (a.datetime < b.datetime ? -1 : a.datetime > b.datetime ? 1 : 0))
-  }
-  return merged
+	const merged: MinuteBatchData = {...base}
+	for (const [sym, rows] of Object.entries(patch)) {
+		const cache = merged[sym] ?? []
+		const byTs = new Map(cache.map(r => [r.datetime, r]))
+		for (const r of rows) byTs.set(r.datetime, r)   // 新值覆盖 (动态K定版)
+		merged[sym] = Array.from(byTs.values())
+		.sort((a, b) => (a.datetime < b.datetime ? -1 : a.datetime > b.datetime ? 1 : 0))
+	}
+	return merged
 }
 
 /**
@@ -73,30 +73,30 @@ export function mergeInto(base: MinuteBatchData, patch: MinuteBatchData): Minute
  * 维护; requested 集合内的 symbol 恒保留。
  */
 export function pruneMinuteCache(
-  data: MinuteBatchData,
-  requested: Iterable<string>,
-  lastTouch: ReadonlyMap<string, number>,
-  max: number,
+	data: MinuteBatchData,
+	requested: Iterable<string>,
+	lastTouch: ReadonlyMap<string, number>,
+	max: number,
 ): MinuteBatchData {
-  const keys = Object.keys(data)
-  if (keys.length <= max) return data
-  const keep = new Set(requested)
-  const candidates = keys
-    .filter(sym => !keep.has(sym))
-    .sort((a, b) => (lastTouch.get(a) ?? -1) - (lastTouch.get(b) ?? -1))  // 最旧在前
-  let drop = keys.length - max
-  const dropped = new Set<string>()
-  for (const sym of candidates) {
-    if (drop <= 0) break
-    dropped.add(sym)
-    drop -= 1
-  }
-  if (!dropped.size) return data
-  const out: MinuteBatchData = {}
-  for (const sym of keys) {
-    if (!dropped.has(sym)) out[sym] = data[sym]
-  }
-  return out
+	const keys = Object.keys(data)
+	if (keys.length <= max) return data
+	const keep = new Set(requested)
+	const candidates = keys
+	.filter(sym => !keep.has(sym))
+	.sort((a, b) => (lastTouch.get(a) ?? -1) - (lastTouch.get(b) ?? -1))  // 最旧在前
+	let drop = keys.length - max
+	const dropped = new Set<string>()
+	for (const sym of candidates) {
+		if (drop <= 0) break
+		dropped.add(sym)
+		drop -= 1
+	}
+	if (!dropped.size) return data
+	const out: MinuteBatchData = {}
+	for (const sym of keys) {
+		if (!dropped.has(sym)) out[sym] = data[sym]
+	}
+	return out
 }
 
 // 模块级 LRU touch 状态 (页面生命周期内单调递增)
@@ -108,29 +108,29 @@ let _touchSeq = 0
  * { data: 完整序列 } (保持端点响应形状, 下游零改动)。
  */
 export async function fetchMinuteBatchIncremental(
-  qc: QueryClient,
-  symbols: string[],
-  preferLocal?: boolean,
+	qc: QueryClient,
+	symbols: string[],
+	preferLocal?: boolean,
 ): Promise<{ data: MinuteBatchData }> {
-  const cacheKey = QK.minuteBatch()
-  const prev = qc.getQueryData<{ data: MinuteBatchData }>(cacheKey)?.data
-  let data: MinuteBatchData = prev ?? {}
-  const sinceOf = sinceBySymbol(data, symbols)
-  for (const part of chunk(symbols, getMinuteBatchChunkSize())) {
-    // 按 since 分组: 端点单请求只收一个 since, 而块的 symbols 可能混合
-    // 「已缓存(有 since)」与「新增(无 since)」。混发会把新 symbol 裁成 1 根。
-    const groups = new Map<string | undefined, string[]>()
-    for (const sym of part) {
-      const s = sinceOf(sym)
-      const list = groups.get(s)
-      if (list) list.push(sym)
-      else groups.set(s, [sym])
-    }
-    for (const [since, group] of groups) {
-      const resp = await api.klineMinuteBatch(group, undefined, preferLocal, since)
-      data = mergeInto(data, resp.data ?? {})
-    }
-  }
-  for (const sym of symbols) _lastTouch.set(sym, (_touchSeq += 1))
-  return { data: pruneMinuteCache(data, symbols, _lastTouch, MINUTE_CACHE_MAX_SYMBOLS) }
+	const cacheKey = QK.minuteBatch()
+	const prev = qc.getQueryData<{ data: MinuteBatchData }>(cacheKey)?.data
+	let data: MinuteBatchData = prev ?? {}
+	const sinceOf = sinceBySymbol(data, symbols)
+	for (const part of chunk(symbols, getMinuteBatchChunkSize())) {
+		// 按 since 分组: 端点单请求只收一个 since, 而块的 symbols 可能混合
+		// 「已缓存(有 since)」与「新增(无 since)」。混发会把新 symbol 裁成 1 根。
+		const groups = new Map<string | undefined, string[]>()
+		for (const sym of part) {
+			const s = sinceOf(sym)
+			const list = groups.get(s)
+			if (list) list.push(sym)
+			else groups.set(s, [sym])
+		}
+		for (const [since, group] of groups) {
+			const resp = await api.klineMinuteBatch(group, undefined, preferLocal, since)
+			data = mergeInto(data, resp.data ?? {})
+		}
+	}
+	for (const sym of symbols) _lastTouch.set(sym, (_touchSeq += 1))
+	return {data: pruneMinuteCache(data, symbols, _lastTouch, MINUTE_CACHE_MAX_SYMBOLS)}
 }

@@ -7,7 +7,7 @@
  * 由调用方传 null，分时图按实际数据区间显示。
  */
 export function boardLimitRate(symbol: string): number {
-  if (symbol.endsWith('.BJ')) return 0.30
-  if (/^(300|301|302|688|689)/.test(symbol)) return 0.20
-  return 0.10
+	if (symbol.endsWith('.BJ')) return 0.30
+	if (/^(300|301|302|688|689)/.test(symbol)) return 0.20
+	return 0.10
 }

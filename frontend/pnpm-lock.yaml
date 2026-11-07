@@ -23,9 +23,9 @@ importers:
       '@fontsource/jetbrains-mono':
         specifier: ^5.3.0
         version: 5.3.0
-      '@tanstack/query-sync-storage-persister':
+      '@tanstack/query-async-storage-persister':
         specifier: ^5.104.1
-        version: 5.104.1
+        version: 5.107.1
       '@tanstack/react-query':
         specifier: ^5.104.1
         version: 5.104.1(react@18.3.1)
@@ -458,79 +458,66 @@ packages:
     resolution: {integrity: sha512-EIPRXTVQpHyF8WOo219AD2yEltPehLTcTMz2fn6JsatLYSzQf00hj3rulF+yauOlF9/FtM2WpkT/hJh/KJFGhA==}
     cpu: [arm]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.60.4':
     resolution: {integrity: sha512-J3Yh9PzzF1Ovah2At+lHiGQdsYgArxBbXv/zHfSyaiFQEqvNv7DcW98pCrmdjCZBrqBiKrKKe2V+aaSGWuBe/w==}
     cpu: [arm]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.60.4':
     resolution: {integrity: sha512-BFDEZMYfUvLn37ONE1yMBojPxnMlTFsdyNoqncT0qFq1mAfllL+ATMMJd8TeuVMiX84s1KbcxcZbXInmcO2mRg==}
     cpu: [arm64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.60.4':
     resolution: {integrity: sha512-pc9EYOSlOgdQ2uPl1o9PF6/kLSgaUosia7gOuS8mB69IxJvlclko1MECXysjs5ryez1/5zjYqx3+xYU0TU6R1A==}
     cpu: [arm64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.60.4':
     resolution: {integrity: sha512-NxnomyxYerDh5n4iLrNa+sH+Z+U4BMEE46V2PgQ/hoB909i8gV1M5wPojWg9fk1jWpO3IQnOs20K4wyZuFLEFQ==}
     cpu: [loong64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.60.4':
     resolution: {integrity: sha512-nbJnQ8a3z1mtmrwImCYhc6BGpThAyYVRQxw9uKSKG4wR6aAYno9sVjJ0zaZcW9BPJX1GbrDPf+SvdWjgTuDmnw==}
     cpu: [loong64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.60.4':
     resolution: {integrity: sha512-2EU6acNrQLd8tYvo/LXW535wupT3m6fo7HKo6lr7ktQoItxTyOL1ZCR/GfGCuXl2vR+zmfI6eRXkSemafv+iVg==}
     cpu: [ppc64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.60.4':
     resolution: {integrity: sha512-WeBtoMuaMxiiIrO2IYP3xs6GMWkJP2C0EoT8beTLkUPmzV1i/UcOSVw1d5r9KBODtHKilG5yFxsGRnBbK3wJ4A==}
     cpu: [ppc64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.60.4':
     resolution: {integrity: sha512-FJHFfqpKUI3A10WrWKiFbBZ7yVbGT4q4B5o1qKFFojqpaYoh9LrQgqWCmmcxQzVSXYtyB5bzkXrYzlHTs21MYA==}
     cpu: [riscv64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.60.4':
     resolution: {integrity: sha512-mcEl6CUT5IAUmQf1m9FYSmVqCJlpQ8r8eyftFUHG8i9OhY7BkBXSUdnLH5DOf0wCOjcP9v/QO93zpmF1SptCCw==}
     cpu: [riscv64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.60.4':
     resolution: {integrity: sha512-ynt3JxVd2w2buzoKDWIyiV1pJW93xlQic1THVLXilz429oijRpSHivZAgp65KBu+cMcgf1eVVjdnTLvPxgCuoQ==}
     cpu: [s390x]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.60.4':
     resolution: {integrity: sha512-Boiz5+MsaROEWDf+GGEwF8VMHGhlUoQMtIPjOgA5fv4osupqTVnJteQNKJwUcnUog2G55jYXH7KZFFiJe0TEzQ==}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.60.4':
     resolution: {integrity: sha512-+qfSY27qIrFfI/Hom04KYFw3GKZSGU4lXus51wsb5EuySfFlWRwjkKWoE9emgRw/ukoT4Udsj4W/+xxG8VbPKg==}
     cpu: [x64]
     os: [linux]
-    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.60.4':
     resolution: {integrity: sha512-VpTfOPHgVXEBeeR8hZ2O0F3aSso+JDWqTWmTmzcQKted54IAdUVbxE+j/MVxUsKa8L20HJhv3vUezVPoquqWjA==}
@@ -562,14 +549,20 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@tanstack/query-async-storage-persister@5.107.1':
+    resolution: {integrity: sha512-yBUPWoe3mclko1NcjIXXeXyoO3oLwzgQaCppxK5KS73gTDA+bJtRJ1hIRHc5tKwMdD0ZDi9TzWqOCWnLsbrNDQ==}
+
   '@tanstack/query-core@5.104.1':
     resolution: {integrity: sha512-TiRghcrGkUTE+M4JBxvpPSpBhxvIzQairw+cksrHYGr+2uwC77yW1SY9nYxnYRYOppvucf8rEg6b5byoz4rTpw==}
+
+  '@tanstack/query-core@5.107.1':
+    resolution: {integrity: sha512-PSyAik11oQBEVOiVy5hjZWHmoUqOXqK1WYy4v55mcxozEfKaQgpUMsgnXhWjuESzSht8JfzqMS1m6M/9CpNgvg==}
 
   '@tanstack/query-persist-client-core@5.104.1':
     resolution: {integrity: sha512-ONiadXqe56iNrw6RESqKILpTIVG9ZMI/DageTQnrBDt/nZ6WiP4G13iIiMwJEsiO12gQ3Gychx8tcFIPw4k25g==}
 
-  '@tanstack/query-sync-storage-persister@5.104.1':
-    resolution: {integrity: sha512-eDsBMNds48+sjXILn0dQKu+uYwfh9tGIB+Rb0cKRdoxD22HHBMzJes5DJOhJVLUhBQbxtoFq+Hpha/Vohh14NQ==}
+  '@tanstack/query-persist-client-core@5.107.1':
+    resolution: {integrity: sha512-/qDxEcKh44xViKKFlf8MUoeITritIn58XcT3YkCOQ0Ovj4Wa2EgZtqvHSlw+tnQQGhtq9+gLVZSeUtSfkIL9Kg==}
 
   '@tanstack/react-query-persist-client@5.104.1':
     resolution: {integrity: sha512-kU3YaqjkwEUzUUfPF0JVg56d6gJKWHaFVqOlQztwc4C2IT0P5sv/23orrSoQqjxKaUe6Ejw5IIQtA/G12uNmow==}
@@ -1781,16 +1774,22 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.4':
     optional: true
 
+  '@tanstack/query-async-storage-persister@5.107.1':
+    dependencies:
+      '@tanstack/query-core': 5.107.1
+      '@tanstack/query-persist-client-core': 5.107.1
+
   '@tanstack/query-core@5.104.1': {}
+
+  '@tanstack/query-core@5.107.1': {}
 
   '@tanstack/query-persist-client-core@5.104.1':
     dependencies:
       '@tanstack/query-core': 5.104.1
 
-  '@tanstack/query-sync-storage-persister@5.104.1':
+  '@tanstack/query-persist-client-core@5.107.1':
     dependencies:
-      '@tanstack/query-core': 5.104.1
-      '@tanstack/query-persist-client-core': 5.104.1
+      '@tanstack/query-core': 5.107.1
 
   '@tanstack/react-query-persist-client@5.104.1(@tanstack/react-query@5.104.1(react@18.3.1))(react@18.3.1)':
     dependencies:

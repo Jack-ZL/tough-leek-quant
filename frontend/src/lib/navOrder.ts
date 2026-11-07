@@ -11,17 +11,17 @@
  * 修改本清单需同步回归 navOrder.test.ts。
  */
 export const DEFAULT_NAV_PATHS = [
-  '/', '/watchlist', '/screener', '/factors', '/backtest',
-  '/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
-  '/monitor', '/regime', '/abnormal', '/lots', '/paper', '/signals', '/review',
-  '/indices', '/data',
+	'/', '/watchlist', '/screener', '/factors', '/backtest',
+	'/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
+	'/monitor', '/regime', '/abnormal', '/lots', '/paper', '/signals', '/review',
+	'/indices', '/data',
 ] as const
 
 const INDEX = new Map<string, number>(DEFAULT_NAV_PATHS.map((p, i) => [p, i]))
 
 /** 路径的默认序号; 未知路径返回 Infinity (排在全部已知路径之后) */
 export function defaultNavIndex(path: string): number {
-  return INDEX.get(path) ?? Number.POSITIVE_INFINITY
+	return INDEX.get(path) ?? Number.POSITIVE_INFINITY
 }
 
 /**
@@ -29,10 +29,10 @@ export function defaultNavIndex(path: string): number {
  * 必须先判等再相减 (相等时依赖 sort 的稳定性保持相对顺序)。
  */
 export function compareByDefaultNav(a: string, b: string): number {
-  const ia = defaultNavIndex(a)
-  const ib = defaultNavIndex(b)
-  if (ia === ib) return 0
-  return ia - ib
+	const ia = defaultNavIndex(a)
+	const ib = defaultNavIndex(b)
+	if (ia === ib) return 0
+	return ia - ib
 }
 
 /**
@@ -42,8 +42,8 @@ export function compareByDefaultNav(a: string, b: string): number {
  * 设置 → 菜单设置 里点眼睛图标逐个开启。
  */
 export const EXT_DOMAIN_PAGE_PATHS: readonly string[] = [
-  '/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
-  '/monitor', '/abnormal', '/lots', '/paper', '/signals', '/review',
+	'/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
+	'/monitor', '/abnormal', '/lots', '/paper', '/signals', '/review',
 ]
 
 /**
@@ -52,11 +52,11 @@ export const EXT_DOMAIN_PAGE_PATHS: readonly string[] = [
  * 向导强制完成, 升级前用过应用的用户必然为 true。
  */
 export function seedHiddenForNewUser(
-  onboardingCompleted: boolean | undefined,
-  currentHidden: readonly string[] | null | undefined,
+	onboardingCompleted: boolean | undefined,
+	currentHidden: readonly string[] | null | undefined,
 ): string[] | null {
-  if (onboardingCompleted !== false) return null
-  const hidden = new Set(currentHidden ?? [])
-  for (const p of EXT_DOMAIN_PAGE_PATHS) hidden.add(p)
-  return [...hidden]
+	if (onboardingCompleted !== false) return null
+	const hidden = new Set(currentHidden ?? [])
+	for (const p of EXT_DOMAIN_PAGE_PATHS) hidden.add(p)
+	return [...hidden]
 }

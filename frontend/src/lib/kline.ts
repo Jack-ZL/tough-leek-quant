@@ -7,57 +7,60 @@
  * placeholderData 内置"仅同 symbol 占位"守卫: 改日期范围/扩展字段时旧数据可暂显(不闪),
  * 切股时不透传上一只股票的数据(不误显示)。
  */
-import { api, type KlineDailyLatestResponse, type KlineDailyResponse } from '@/lib/api'
-import { QK } from '@/lib/queryKeys'
+import {api, type KlineDailyLatestResponse, type KlineDailyResponse} from '@/lib/api'
+import {QK} from '@/lib/queryKeys'
 
 /** 分时 tab 多日分时默认周期 (StockPanel 预取与弹窗存储回退共用, 避免魔数两处漂移) */
 export const DEFAULT_INTRADAY_DAYS = 10
 
 export function klineDailyQueryOptions(
-  symbol: string,
-  dateRange: { start: string; end: string },
-  extColumns?: string,
+	symbol: string,
+	dateRange: { start: string; end: string },
+	extColumns?: string,
 ) {
-  return {
-    queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns),
-    queryFn: () => api.klineDaily(symbol, undefined, dateRange, extColumns),
-    // 工厂无 TData 泛型, 参数用 any 以便 useQuery/prefetchQuery 共用
-    placeholderData: (prev: any, prevQuery: any) => {
-      const prevKey = prevQuery?.queryKey as readonly unknown[] | undefined
-      return prevKey?.[1] === symbol ? prev : undefined
-    },
-  }
+	return {
+		queryKey: QK.kline(symbol, dateRange.start, dateRange.end, extColumns),
+		queryFn: () => api.klineDaily(symbol, undefined, dateRange, extColumns),
+		// 工厂无 TData 泛型, 参数用 any 以便 useQuery/prefetchQuery 共用
+		placeholderData: (prev: any, prevQuery: any) => {
+			const prevKey = prevQuery?.queryKey as readonly unknown[] | undefined
+			return prevKey?.[1] === symbol ? prev : undefined
+		},
+	}
 }
 
 export function klineDailyLatestQueryOptions(symbol: string) {
-  return {
-    queryKey: QK.klineLatest(symbol),
-    queryFn: () => api.klineDailyLatest(symbol),
-  }
+	return {
+		queryKey: QK.klineLatest(symbol),
+		queryFn: () => api.klineDailyLatest(symbol),
+	}
 }
 
 export function mergeLatestKlineRow(
-  current: KlineDailyResponse | undefined,
-  latest: KlineDailyLatestResponse,
+	current: KlineDailyResponse | undefined,
+	latest: KlineDailyLatestResponse,
 ): KlineDailyResponse | undefined {
-  if (!current || current.symbol !== latest.symbol) return current
-  if (latest.asset_type && latest.asset_type !== current.asset_type) current = { ...current, asset_type: latest.asset_type }
-  if (latest.quote_freshness) current = { ...current, quote_freshness: latest.quote_freshness }
-  if (!latest.row) return current
+	if (!current || current.symbol !== latest.symbol) return current
+	if (latest.asset_type && latest.asset_type !== current.asset_type) current = {
+		...current,
+		asset_type: latest.asset_type
+	}
+	if (latest.quote_freshness) current = {...current, quote_freshness: latest.quote_freshness}
+	if (!latest.row) return current
 
-  const latestDate = String(latest.row.date).slice(0, 10)
-  const last = current.rows.at(-1)
-  if (!last) return { ...current, rows: [{ ...latest.row, date: latestDate }] }
+	const latestDate = String(latest.row.date).slice(0, 10)
+	const last = current.rows.at(-1)
+	if (!last) return {...current, rows: [{...latest.row, date: latestDate}]}
 
-  const lastDate = String(last.date).slice(0, 10)
-  if (latestDate < lastDate) return current
-  if (latestDate === lastDate) {
-    return {
-      ...current,
-      rows: [...current.rows.slice(0, -1), { ...last, ...latest.row, date: latestDate }],
-    }
-  }
-  return { ...current, rows: [...current.rows, { ...latest.row, date: latestDate }] }
+	const lastDate = String(last.date).slice(0, 10)
+	if (latestDate < lastDate) return current
+	if (latestDate === lastDate) {
+		return {
+			...current,
+			rows: [...current.rows.slice(0, -1), {...last, ...latest.row, date: latestDate}],
+		}
+	}
+	return {...current, rows: [...current.rows, {...latest.row, date: latestDate}]}
 }
 
 /**
@@ -67,10 +70,10 @@ export function mergeLatestKlineRow(
  * 历史日期后端自行忽略 live, 故多日图与预取恒传 true 亦不影响历史读取。
  */
 export function klineMinuteQueryOptions(symbol: string, date?: string, live?: boolean) {
-  return {
-    queryKey: QK.klineMinute(symbol, date ?? ''),
-    queryFn: () => api.klineMinute(symbol, date ?? undefined, live),
-  }
+	return {
+		queryKey: QK.klineMinute(symbol, date ?? ''),
+		queryFn: () => api.klineMinute(symbol, date ?? undefined, live),
+	}
 }
 
 /** 收盘分钟标签: 连续竞价全天最后一根分钟K的时间。 */
@@ -83,26 +86,31 @@ const MARKET_ALL_OVER = '15:30'
 
 /** 北京时间今日 YYYY-MM-DD (与后端 cn_today 同口径; 不用 UTC toISOString, 避免傍晚错日)。 */
 export function cnToday(now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now)
+	return new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai'}).format(now)
 }
 
 export function klineDateRange(months = 6, today = cnToday()): { start: string; end: string } {
-  const [year, month, day] = today.split('-').map(Number)
-  const start = new Date(Date.UTC(year, month - 1 - months, 1))
-  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate()
-  start.setUTCDate(Math.min(day, lastDay))
-  return { start: start.toISOString().slice(0, 10), end: today }
+	const [year, month, day] = today.split('-').map(Number)
+	const start = new Date(Date.UTC(year, month - 1 - months, 1))
+	const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate()
+	start.setUTCDate(Math.min(day, lastDay))
+	return {start: start.toISOString().slice(0, 10), end: today}
 }
 
 /** 北京时间此刻 'HH:MM'。 */
 function cnNowHHMM(): string {
-  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date())
+	return new Intl.DateTimeFormat('en-GB', {
+		timeZone: 'Asia/Shanghai',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false
+	}).format(new Date())
 }
 
 /** 行 datetime ('YYYY-MM-DD HH:MM:SS' 北京墙钟契约) → 'HH:MM'; 非常规格式返回 ''。 */
 function rowMinute(r: { datetime?: string } | undefined): string {
-  const s = String(r?.datetime ?? '')
-  return s.length >= 16 ? s.slice(11, 16) : ''
+	const s = String(r?.datetime ?? '')
+	return s.length >= 16 ? s.slice(11, 16) : ''
 }
 
 /**
@@ -122,28 +130,28 @@ function rowMinute(r: { datetime?: string } | undefined): string {
  * - 其余 (当日 15:30 前) → 按间隔继续
  */
 export function minuteRefetchInterval(ms?: number) {
-  return (query: any): number | false => {
-    if (ms == null) return false
-    const d = query.state.data
-    if (!d) return ms
-    if (d.source === 'none') return false
-    if (typeof d.date === 'string' && d.date < cnToday()) return false
-    const closeBarArrived = (d.rows ?? []).some((r: { datetime?: string }) => rowMinute(r) >= CLOSE_MINUTE)
-    if (closeBarArrived && cnNowHHMM() >= MARKET_ALL_OVER) return false
-    return ms
-  }
+	return (query: any): number | false => {
+		if (ms == null) return false
+		const d = query.state.data
+		if (!d) return ms
+		if (d.source === 'none') return false
+		if (typeof d.date === 'string' && d.date < cnToday()) return false
+		const closeBarArrived = (d.rows ?? []).some((r: { datetime?: string }) => rowMinute(r) >= CLOSE_MINUTE)
+		if (closeBarArrived && cnNowHHMM() >= MARKET_ALL_OVER) return false
+		return ms
+	}
 }
 
 /** 多日分时查询配置 — 分时 tab 的 StockMultiDayIntradayChart 与 邻近预取 共用。
  * 内嵌「仅同 symbol 占位」守卫 (key 结构 ['kline-minute-range', symbol, days], index 1 为 symbol),
  * 与 klineDailyQueryOptions 同源, 调用点不再各自手写。 */
 export function klineMinuteRangeQueryOptions(symbol: string, days: number) {
-  return {
-    queryKey: QK.klineMinuteRange(symbol, days),
-    queryFn: () => api.klineMinuteRange(symbol, days),
-    placeholderData: (prev: any, prevQuery: any) => {
-      const prevKey = prevQuery?.queryKey as readonly unknown[] | undefined
-      return prevKey?.[1] === symbol ? prev : undefined
-    },
-  }
+	return {
+		queryKey: QK.klineMinuteRange(symbol, days),
+		queryFn: () => api.klineMinuteRange(symbol, days),
+		placeholderData: (prev: any, prevQuery: any) => {
+			const prevKey = prevQuery?.queryKey as readonly unknown[] | undefined
+			return prevKey?.[1] === symbol ? prev : undefined
+		},
+	}
 }

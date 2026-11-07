@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import {useRef, useCallback} from 'react'
 
 /**
  * 对话框遮罩"点击外部关闭"的共享逻辑, 防止拖拽穿透。
@@ -20,21 +20,21 @@ import { useRef, useCallback } from 'react'
  *   const backdrop = useDialogBackdrop(onClose, () => !isWorking)
  */
 export function useDialogBackdrop(
-  onClose: () => void,
-  enabled?: () => boolean,
+	onClose: () => void,
+	enabled?: () => boolean,
 ) {
-  const mouseDownOnBackdrop = useRef(false)
+	const mouseDownOnBackdrop = useRef(false)
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    mouseDownOnBackdrop.current = e.target === e.currentTarget
-  }, [])
+	const onMouseDown = useCallback((e: React.MouseEvent) => {
+		mouseDownOnBackdrop.current = e.target === e.currentTarget
+	}, [])
 
-  const onClick = useCallback((e: React.MouseEvent) => {
-    if (enabled && !enabled()) return
-    if (mouseDownOnBackdrop.current && e.target === e.currentTarget) {
-      onClose()
-    }
-  }, [onClose, enabled])
+	const onClick = useCallback((e: React.MouseEvent) => {
+		if (enabled && !enabled()) return
+		if (mouseDownOnBackdrop.current && e.target === e.currentTarget) {
+			onClose()
+		}
+	}, [onClose, enabled])
 
-  return { onMouseDown, onClick }
+	return {onMouseDown, onClick}
 }

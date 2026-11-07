@@ -8,38 +8,38 @@
  */
 
 export interface EnrichedInvalidateThrottler {
-  /** 一次触发; invalidate 由节流器决定立即或延迟调用 */
-  fire: (invalidate: () => void) => void
-  /** 取消挂起的 trailing 定时器 (卸载/断流时调用) */
-  cancel: () => void
+	/** 一次触发; invalidate 由节流器决定立即或延迟调用 */
+	fire: (invalidate: () => void) => void
+	/** 取消挂起的 trailing 定时器 (卸载/断流时调用) */
+	cancel: () => void
 }
 
 export function createEnrichedThrottler(
-  intervalMs = 5000,
-  now: () => number = Date.now,
+	intervalMs = 5000,
+	now: () => number = Date.now,
 ): EnrichedInvalidateThrottler {
-  let last = 0
-  let timer: ReturnType<typeof setTimeout> | null = null
-  return {
-    fire(invalidate) {
-      const t = now()
-      if (t - last >= intervalMs) {
-        last = t
-        invalidate()
-        return
-      }
-      if (timer != null) return
-      timer = setTimeout(() => {
-        timer = null
-        last = now()
-        invalidate()
-      }, Math.max(0, intervalMs - (t - last)))
-    },
-    cancel() {
-      if (timer != null) {
-        clearTimeout(timer)
-        timer = null
-      }
-    },
-  }
+	let last = 0
+	let timer: ReturnType<typeof setTimeout> | null = null
+	return {
+		fire(invalidate) {
+			const t = now()
+			if (t - last >= intervalMs) {
+				last = t
+				invalidate()
+				return
+			}
+			if (timer != null) return
+			timer = setTimeout(() => {
+				timer = null
+				last = now()
+				invalidate()
+			}, Math.max(0, intervalMs - (t - last)))
+		},
+		cancel() {
+			if (timer != null) {
+				clearTimeout(timer)
+				timer = null
+			}
+		},
+	}
 }
