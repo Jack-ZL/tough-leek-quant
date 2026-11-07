@@ -20,6 +20,7 @@ from app.services.market_phase import (
     PHASE_REPAIR,
     classify_phase_series,
     finalize_ladder_row,
+    finalize_sentiment_row,
     with_prev_consecutive,
 )
 from app.services.regime_builder import _aggregate_daily, refresh_phase_labels, regime_path
@@ -96,6 +97,71 @@ class TestLadderMetrics:
         # height=5, 只有 2板和5板 → rungs {2,5} → 2/4
         row = {"max_consecutive": 5, "rungs_filled": 2, "promo_pool": 0, "promo_ok": 0}
         assert finalize_ladder_row(row)["ladder_completeness"] == 0.5
+
+
+class TestSentimentDetail:
+    """P1-19 情绪细粒度统计: 分档晋级率 / 涨停溢价(赚钱效应) / 炸板池(亏钱效应)。"""
+
+    def test_tiered_promo_premium_broken(self):
+        d1, d2 = _days(2)
+        df = _frame([
+            # d1: A/B 首板, C 4板, D 炸板(未封住)
+            {"symbol": "A", "date": d1, "consecutive_limit_ups": 1, "change_pct": 0.10},
+            {"symbol": "B", "date": d1, "consecutive_limit_ups": 1, "change_pct": 0.10},
+            {"symbol": "C", "date": d1, "consecutive_limit_ups": 4, "change_pct": 0.10},
+            {"symbol": "D", "date": d1, "consecutive_limit_ups": 0, "change_pct": 0.05,
+             "signal_limit_up": False, "signal_broken_limit_up": True},
+            # d2: A 晋级2板(+8%), B 断板(-3%), C 晋级5板(+20%), D 续跌(-6%)
+            {"symbol": "A", "date": d2, "consecutive_limit_ups": 2, "change_pct": 0.08},
+            {"symbol": "B", "date": d2, "consecutive_limit_ups": 0, "change_pct": -0.03,
+             "signal_limit_up": False},
+            {"symbol": "C", "date": d2, "consecutive_limit_ups": 5, "change_pct": 0.20},
+            {"symbol": "D", "date": d2, "consecutive_limit_ups": 0, "change_pct": -0.06,
+             "signal_limit_up": False},
+        ])
+        by_date = {r["date"]: r for r in _aggregate_daily(df).iter_rows(named=True)}
+        r2 = by_date[d2]
+        # 分档晋级: 首板池 2(A,B) 晋 1(A); 4板+池 1(C) 晋 1
+        assert r2["promo_t1_pool"] == 2 and r2["promo_t1_ok"] == 1
+        assert r2["promo_t2_pool"] == 0 and r2["promo_t3_pool"] == 0
+        assert r2["promo_t4p_pool"] == 1 and r2["promo_t4p_ok"] == 1
+        # 赚钱效应: 昨日连板池 3(A,B,C) 今日 avg=(0.08-0.03+0.20)/3, median=0.08
+        assert r2["premium_pool"] == 3
+        assert r2["premium_avg_pct"] == round(0.25 / 3, 4)
+        assert r2["premium_median_pct"] == 0.08
+        # 亏钱效应: 昨日炸板 1(D) 今日 -6%
+        assert r2["broken_pool"] == 1 and r2["broken_avg_pct"] == -0.06
+        # d1 无前日: 池全 0, 比率 None (finalize 兜底 schema 稳定)
+        r1 = by_date[d1]
+        assert r1["promo_t1_pool"] == 0 and r1["premium_pool"] == 0 and r1["broken_pool"] == 0
+        assert r1["premium_avg_pct"] is None and r1["broken_avg_pct"] is None
+
+    def test_promoted_requires_exact_increment(self):
+        """consec 从 1 跳到 3(数据异常/复牌)不算晋级 — 晋级定义 consec == prev+1。"""
+        d1, d2 = _days(2)
+        df = _frame([
+            {"symbol": "A", "date": d1, "consecutive_limit_ups": 1},
+            {"symbol": "A", "date": d2, "consecutive_limit_ups": 3},
+        ])
+        r2 = {r["date"]: r for r in _aggregate_daily(df).iter_rows(named=True)}[d2]
+        assert r2["promo_t1_pool"] == 1 and r2["promo_t1_ok"] == 0
+
+    def test_finalize_sentiment_row_defaults_and_rounding(self):
+        row = finalize_sentiment_row({})
+        for key in ("t1", "t2", "t3", "t4p"):
+            assert row[f"promo_{key}_pool"] == 0 and row[f"promo_{key}_ok"] == 0
+        assert row["premium_pool"] == 0 and row["broken_pool"] == 0
+        assert row["premium_avg_pct"] is None
+        assert row["premium_median_pct"] is None
+        assert row["broken_avg_pct"] is None
+        rounded = finalize_sentiment_row({
+            "promo_t1_pool": 12, "promo_t1_ok": 5,
+            "premium_pool": 12, "premium_avg_pct": 0.0833333,
+            "premium_median_pct": 0.0511111, "broken_pool": 3, "broken_avg_pct": -0.0244444,
+        })
+        assert rounded["premium_avg_pct"] == 0.0833
+        assert rounded["premium_median_pct"] == 0.0511
+        assert rounded["broken_avg_pct"] == -0.0244
 
 
 def _series(specs: list[dict]) -> pl.DataFrame:

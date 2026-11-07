@@ -759,7 +759,15 @@ export interface OverviewMarket {
 		fake_up?: number;
 		fake_down?: number
 	}
-	distribution: { label: string; count: number; pct: number }[]
+	distribution: { label: string; side?: string; count: number; pct: number }[]
+	/** P1-19: 当日涨停股行业(二级)集中度 — top5 占比 + 四档标签; 行业映射为扩展数据当前快照口径 */
+	limit_industry?: {
+	  total: number
+	  mapped_total: number
+	  top5: { name: string; count: number; pct: number }[]
+	  top5_share: number | null
+	  label: string | null
+	}
 	trend: {
 		above_ma5: number;
 		above_ma20: number;
@@ -842,6 +850,20 @@ export interface RegimeRow {
 	ladder_completeness?: number | null
 	promo_rate?: number | null
 	promo_pool?: number | null
+	// P1-19 情绪细粒度统计: 分档晋级率(存池/晋级家数, 比率展示层算) + 涨停溢价(赚钱效应) + 炸板池(亏钱效应)
+	promo_t1_pool?: number | null
+	promo_t1_ok?: number | null
+	promo_t2_pool?: number | null
+	promo_t2_ok?: number | null
+	promo_t3_pool?: number | null
+	promo_t3_ok?: number | null
+	promo_t4p_pool?: number | null
+	promo_t4p_ok?: number | null
+	premium_pool?: number | null
+	premium_avg_pct?: number | null
+	premium_median_pct?: number | null
+	broken_pool?: number | null
+	broken_avg_pct?: number | null
 }
 
 export interface RegimeHistory {

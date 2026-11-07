@@ -274,9 +274,16 @@ def _leader_sort_key(row: dict) -> float:
     return value if value is not None else float("-inf")
 
 
-def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
+def _dimension_groups(
+    rows: list[dict], repo, kind: str, level: int | None = None
+) -> tuple[dict[str, dict[str, dict]], dict[str, str]]:
+    """按扩展数据把行情行分组到 概念/行业 维度。
+
+    返回 (组名 → {symbol: 行情行}, 组名 → 首个命中的扩展字段 "configId.field")。
+    供 _dimension_rank(全市场排名) 与 _limit_up_industry(涨停子集集中度) 共用。
+    """
     if not rows:
-        return {"leading": [], "lagging": []}
+        return {}, {}
 
     quote_map: dict[str, dict] = {}
     for row in rows:
@@ -310,6 +317,14 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
                     value = parts[level - 1] if level <= len(parts) else parts[-1]
                 groups.setdefault(value, {})[symbol] = quote
                 group_source.setdefault(value, source_field)
+    return groups, group_source
+
+
+def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
+    if not rows:
+        return {"leading": [], "lagging": []}
+
+    groups, group_source = _dimension_groups(rows, repo, kind, level)
 
     items = []
     for name, by_symbol in groups.items():
@@ -360,30 +375,101 @@ def _top_rows(rows: list[dict], key: str, descending: bool, limit: int = 8) -> l
     ]
 
 
-def _pct_band_rows(values: list[float]) -> list[dict]:
-    bands = [
-        ("<-5%", None, -0.05),
-        ("-5~-3%", -0.05, -0.03),
-        ("-3~-1%", -0.03, -0.01),
-        ("-1~0%", -0.01, 0),
-        ("0~1%", 0, 0.01),
-        ("1~3%", 0.01, 0.03),
-        ("3~5%", 0.03, 0.05),
-        (">5%", 0.05, None),
+# 涨跌分布分桶 (P1-19: 8 档 → 15 档, 借鉴 Vibe-Research 细粒度分布, 兼顾卡片宽度收敛为 15):
+# - 涨停/跌停按信号列判定 — 各板涨跌幅限制不同(主板10%/创业科创20%/北交30%/ST 5%),
+#   不能用统一 pct 阈值划档; 口径与 breadth 的 limit_up 相同(未经五档假涨停修正)。
+# - 其余按 change_pct(小数) 对称分档; [low, high) 区间, None 为无界。
+# - side 供前端着色: up/down/flat/limit_up/limit_down。
+_BAND_SPECS: list[tuple[str, str, float | None, float | None]] = [
+    ("跌停", "limit_down", None, None),
+    ("< -7%", "down", None, -0.07),
+    ("-7~-5%", "down", -0.07, -0.05),
+    ("-5~-3%", "down", -0.05, -0.03),
+    ("-3~-2%", "down", -0.03, -0.02),
+    ("-2~-1%", "down", -0.02, -0.01),
+    ("-1~0%", "down", -0.01, 0.0),
+    ("平盘", "flat", None, None),
+    ("0~1%", "up", 0.0, 0.01),
+    ("1~2%", "up", 0.01, 0.02),
+    ("2~3%", "up", 0.02, 0.03),
+    ("3~5%", "up", 0.03, 0.05),
+    ("5~7%", "up", 0.05, 0.07),
+    ("> 7%", "up", 0.07, None),
+    ("涨停", "limit_up", None, None),
+]
+
+
+def _pct_band_rows(rows: list[dict]) -> list[dict]:
+    """涨跌分布 15 档: 涨停/跌停信号优先, 其余按 change_pct 对称分桶。
+
+    change_pct 缺失且无涨跌停信号的行不入桶(与旧实现剔除 None 一致);
+    pct 以入桶总数为分母, 各档占比合计 100%。
+    """
+    counts = {label: 0 for label, _, _, _ in _BAND_SPECS}
+    for r in rows:
+        if bool(r.get("signal_limit_up")) or (_finite(r.get("consecutive_limit_ups")) or 0) > 0:
+            counts["涨停"] += 1
+            continue
+        if bool(r.get("signal_limit_down")):
+            counts["跌停"] += 1
+            continue
+        v = _finite(r.get("change_pct"))
+        if v is None:
+            continue
+        if v == 0:
+            counts["平盘"] += 1
+            continue
+        for label, side, low, high in _BAND_SPECS:
+            if side not in ("up", "down"):
+                continue
+            if (low is None or v >= low) and (high is None or v < high):
+                counts[label] += 1
+                break
+    total = sum(counts.values()) or 1
+    return [
+        {"label": label, "side": side, "count": counts[label], "pct": counts[label] / total * 100}
+        for label, side, _, _ in _BAND_SPECS
     ]
-    total = len(values) or 1
-    out = []
-    for label, low, high in bands:
-        count = 0
-        for v in values:
-            if low is None and v < high:
-                count += 1
-            elif high is None and v >= low:
-                count += 1
-            elif low is not None and high is not None and low <= v < high:
-                count += 1
-        out.append({"label": label, "count": count, "pct": count / total * 100})
-    return out
+
+
+# 涨停行业集中度四档 (P1-19, 借鉴 Vibe): top5 行业占已映射涨停股比例的分档标签。
+# 阈值为启发式(无历史回标): A股常态日涨停 40~80 家, top5 行业通常占四成上下。
+_CONC_LABELS = ((0.50, "极集中"), (0.35, "集中"), (0.20, "较分散"))
+_CONC_FALLBACK = "极分散"
+
+
+def _limit_up_industry(rows: list[dict], repo) -> dict:
+    """当日涨停股按行业(二级)分组的集中度。
+
+    行业映射来自扩展数据当前快照(与 industry_rank 同口径, 回看历史有归属漂移);
+    无行业映射的涨停股不入分母 — mapped_total 可能小于涨停总数 total。
+    """
+    empty = {"total": 0, "mapped_total": 0, "top5": [], "top5_share": None, "label": None}
+    limit_rows = [
+        r for r in rows
+        if bool(r.get("signal_limit_up")) or (_finite(r.get("consecutive_limit_ups")) or 0) > 0
+    ]
+    if not limit_rows:
+        return empty
+    empty["total"] = len(limit_rows)
+    groups, _ = _dimension_groups(limit_rows, repo, "industry", level=2)
+    counts = sorted(((name, len(by_sym)) for name, by_sym in groups.items()), key=lambda x: (-x[1], x[0]))
+    mapped_total = sum(c for _, c in counts)
+    if not mapped_total:
+        return empty
+    top5 = [
+        {"name": n, "count": c, "pct": round(c / mapped_total * 100, 1)}
+        for n, c in counts[:5]
+    ]
+    share = sum(c for _, c in counts[:5]) / mapped_total
+    label = next((lb for th, lb in _CONC_LABELS if share >= th), _CONC_FALLBACK)
+    return {
+        "total": len(limit_rows),
+        "mapped_total": mapped_total,
+        "top5": top5,
+        "top5_share": round(share, 4),
+        "label": label,
+    }
 
 
 # ================================================================
@@ -422,6 +508,7 @@ def build_market_overview(
             "boards": [],
             "limit": {"limit_up": 0, "broken": 0, "failed": 0, "limit_down": 0, "max_boards": 0, "tiers": []},
             "distribution": [],
+            "limit_industry": {"total": 0, "mapped_total": 0, "top5": [], "top5_share": None, "label": None},
             "trend": {"above_ma5": 0, "above_ma20": 0, "above_ma60": 0, "above_ma5_pct": 0, "above_ma20_pct": 0, "above_ma60_pct": 0, "new_high": 0, "new_low": 0},
             "activity": {"avg_turnover": 0, "high_turnover": 0, "high_vol_ratio": 0, "vol_ratio": 1},
             "radar": [],
@@ -610,7 +697,8 @@ def build_market_overview(
         "amount": {"total": total_amount, "avg": avg_amount},
         "boards": boards,
         "limit": {"limit_up": limit_up, "broken": broken, "failed": 0, "limit_down": limit_down, "max_boards": max_boards, "seal_rate": seal_rate, "tiers": tiers, "sealed_ready": sealed_ready, "fake_up": fake_up, "fake_down": fake_down},
-        "distribution": _pct_band_rows(pct_values),
+        "distribution": _pct_band_rows(rows),
+        "limit_industry": _limit_up_industry(rows, repo),
         "trend": {
             "above_ma5": above_ma5,
             "above_ma20": above_ma20,

@@ -21,7 +21,7 @@
 | 消费方 | 回测环境过滤、挖掘、策略页 | 市场环境页分析与主线识别 |
 | 持续性 | 日频打分，切换频繁（历史 76.6% 天数发生切换，平均段长 1.1-1.5 天） | EMA 平滑 + 2 日确认，平均段长 9.7 天 |
 
-`state`/`score` 列原样保留，新列（`phase`、`first_board`、`ge2_count`、`ge3_count`、`ge5_count`、`ladder_completeness`、`promo_rate`、`promo_pool`）对既有消费方透明。
+`state`/`score` 列原样保留，新列（`phase`、`first_board`、`ge2_count`、`ge3_count`、`ge5_count`、`ladder_completeness`、`promo_rate`、`promo_pool`，以及情绪细粒度统计的 `promo_t1/t2/t3/t4p_pool`、`promo_t1/t2/t3/t4p_ok`、`premium_pool`、`premium_avg_pct`、`premium_median_pct`、`broken_pool`、`broken_avg_pct`）对既有消费方透明。
 
 ## 每日梯队指标
 
@@ -32,6 +32,23 @@
 - `promo_rate` 晋级率：昨日连板池今日继续封板的比例。昨日连板数用 `consec.shift(1).over("symbol")` 按个股前一日连接（跨批次边界也正确，`_compute_batch` 在 warmup 截断前计算）；池不足 10 家记 `null`（小样本噪声），不填 0。
 - `ladder_completeness` 梯队完整度：2..height 档位中非空档位占比；height < 3 时为 `null`。
 - 高度（`max_consecutive`）与封板率（`seal_rate`）沿用 regime 已有列。
+
+## 情绪细粒度统计（P1-19，借鉴 Vibe-Research）
+
+回答"今天这行情赚不赚钱、资金在往哪里集中"。分两部分落地：
+
+**regime 日表新列**（`market_phase.py` 聚合，随每日重算全历史可回算）：
+
+- 分档晋级率：`promo_{t1,t2,t3,t4p}_{pool,ok}` — 首板→2板 / 2板→3板 / 3板→4板 / 4板+→次日 四档，各存昨日档位池家数与今日晋级家数（晋级定义 `consec == prev+1`，跳档不算）。**只存整数不存比率**：3板+ 的池常年个位数，存比率会制造"1/1=100%"式噪声；比率由展示层现算并对池 <10 的档标注"小样本"。与总晋级率 `promo_rate`（池 <10 记 null）口径互补。
+- 赚钱效应（涨停溢价）：`premium_pool/premium_avg_pct/premium_median_pct` — 昨日连板池（含首板，`prev_consec ≥ 1`）今日涨跌幅的家数/均值/中位数（小数，0.03=3%）。
+- 亏钱效应：`broken_pool/broken_avg_pct` — 昨日炸板池（`signal_broken_limit_up` 前移一日）今日涨跌幅家数/均值。
+
+**当日总览（overview）**：
+
+- 涨跌分布 8 档 → **15 档**：跌停 | <-7 | -7~-5 | -5~-3 | -3~-2 | -2~-1 | -1~0 | 平盘 | 0~1 | 1~2 | 2~3 | 3~5 | 5~7 | >7 | 涨停，带 `side` 字段供前端着色。涨停/跌停**按信号列判定优先入桶**——各板涨跌幅限制不同（主板10%/创业科创20%/北交30%/ST 5%），不能用统一 pct 阈值划档；口径与 breadth 的 limit_up 相同（未经五档假涨停修正）。`change_pct` 缺失且无信号的行不入桶，占比以入桶总数为分母。
+- 涨停行业集中度 `limit_industry`：当日涨停股按行业（二级，`level=2` 拆分）分组，top5 占**已映射**涨停的比例 + 四档标签（≥50% 极集中 / ≥35% 集中 / ≥20% 较分散 / 其余极分散）。阈值为启发式、未经历史回标。行业映射来自扩展数据**当前快照**（与 industry_rank/主线同口径），回看历史有归属漂移，因此只随当日总览提供、不入 regime 日表；无行业映射的涨停股不入分母（`mapped_total` 可能小于 `total`）。
+
+**消费方**：市场环境页情绪周期 tab 的「情绪细粒度统计」卡（选中日优先，否则最新交易日；集中度仅最新交易日可查）；AI 复盘提示词的「## 情绪细粒度统计」节（`market_recap._load_regime_row` 读 regime 日表当复盘日的行，缺表/缺日/被禁用时 fail-open 跳过对应段，行业集中度段来自 overview）。数字经提示词成品自动进数字闸门白名单。
 
 ## 阶段规则
 
@@ -91,5 +108,7 @@
 
 ## 测试
 
-- `backend/tests/test_market_phase.py`：梯队聚合、晋级率（池不足记 null）、梯队完整度、阶段序列规则、弱档否决、持续性（噪声下不出现 1 日翻转）、refresh 往返。
+- `backend/tests/test_market_phase.py`：梯队聚合、晋级率（池不足记 null）、梯队完整度、阶段序列规则、弱档否决、持续性（噪声下不出现 1 日翻转）、refresh 往返；分档晋级率/涨停溢价/炸板池聚合与 finalize 兜底（P1-19）。
+- `backend/tests/test_overview_distribution.py`：涨跌分布 15 档（信号优先、半开区间边界、None 跳过、占比合计 100）与涨停行业集中度（四档标签、未映射不入分母、空数据兜底）。
+- `backend/tests/test_market_recap_sentiment.py`：复盘提示词情绪细粒度统计块（完整/缺 regime 行 fail-open/旧数据缺列）、用户提示词集成、regime 行读取。
 - `backend/tests/test_market_mainline.py`：概念/行业聚合、宽基过滤、黑名单、最少涨停家数、同日 upsert 替换、增量补齐、偏好读写与夹取。
