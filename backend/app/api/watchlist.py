@@ -20,6 +20,7 @@ from app.price_limits import (
     polars_price_limit_pct,
 )
 from app.services import watchlist
+from app.services.watchlist_blk import import_watchlist_blk
 from app.services.watchlist_csv import import_watchlist_codes, import_watchlist_csv
 from app.services.watchlist_ocr import import_watchlist_image
 from app.services.watchlist_ocr.provider import get_ocr_provider
@@ -46,6 +47,10 @@ _IMPORT_CSV_TYPES = {
     "text/plain",
     "application/csv",
 }
+# 通达信板块文件：.blk 没有注册 MIME 类型（浏览器一律给 application/octet-stream），
+# 所以只按扩展名门禁，不看 content_type。内容是纯代码文本，沿用 CSV 的 5MB 上限。
+_IMPORT_BLK_EXTS = (".blk", ".ebk")
+_BLK_FILE = File(...)  # 模块级单例，与 strategy._BUNDLE_FILE 同模式（避开 B008）
 # 上传分块读取粒度 (与 ext_data 上传一致)
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -306,19 +311,61 @@ async def import_from_csv(request: Request, file: UploadFile = File(...)):
     )
 
 
+@router.post("/import-blk")
+async def import_from_blk(request: Request, file: UploadFile = _BLK_FILE):
+    """从通达信板块文件（``.blk`` / ``.ebk``）导入自选候选列表（不自动写入自选）。
+
+    ``.blk`` 每行是「市场标识 + 六位代码」（``1600000`` = 沪 600000），``.ebk`` 多为
+    裸六位码，两种形态按行分别判定，绝不统一砍首字符（那会把裸码错译成另一只证券）。
+    板块中文名存在 ``blocknew.cfg`` 里、单文件拿不到，故响应给 ``suggested_group_name``
+    （文件名主干）供前端预填，用户可改。
+    """
+    filename = (file.filename or "").lower()
+    if not filename.endswith(_IMPORT_BLK_EXTS):
+        raise HTTPException(400, "仅支持通达信板块文件（.blk / .ebk）")
+
+    data = await _read_upload_capped(file, _MAX_IMPORT_CSV_BYTES, "文件过大（上限 5MB）")
+    if not data:
+        raise HTTPException(400, "空文件")
+
+    data_dir = request.app.state.repo.store.data_dir
+    # 解码与 instruments parquet 读取为同步 CPU/IO，挪线程池避免卡事件循环
+    return await anyio.to_thread.run_sync(
+        lambda: _run_candidate_import(
+            lambda: import_watchlist_blk(
+                data,
+                data_dir,
+                existing_symbols={r["symbol"] for r in watchlist.list_symbols()},
+                filename=file.filename,
+            ),
+            "文件中未识别到证券代码",
+        )
+    )
+
+
 @router.post("/import-codes")
 def import_from_codes(req: ImportCodesRequest, request: Request):
-    """从粘贴的证券代码导入自选候选列表（不自动写入自选）。"""
+    """从粘贴的证券代码导入自选候选列表（不自动写入自选）。
+
+    粘贴的也可能整段是通达信板块内容（每行 7 位市场前缀码），裸码抽取对这种文本
+    一个都抽不到，所以**仅在什么都没抽到时**回退按 ``.blk`` 口径再解析一次；
+    既有成功路径的行为完全不变。
+    """
     text = req.text.strip()
     if not text:
         raise HTTPException(400, "请输入要导入的股票代码")
 
     existing = {r["symbol"] for r in watchlist.list_symbols()}
     data_dir = request.app.state.repo.store.data_dir
-    return _run_candidate_import(
-        lambda: import_watchlist_codes(text, data_dir, existing_symbols=existing),
-        "未识别到股票代码",
-    )
+
+    def parse() -> dict:
+        result = import_watchlist_codes(text, data_dir, existing_symbols=existing)
+        if result["candidates"]:
+            return result
+        # 粘贴没有文件名，分组名交给前端/用户，不猜
+        return import_watchlist_blk(text, data_dir, existing_symbols=existing)
+
+    return _run_candidate_import(parse, "未识别到股票代码")
 
 
 @router.post("/{symbol}/top")
