@@ -1,6 +1,6 @@
 """企业微信智能机器人消息解析 / 回复组装 / 处理路径测试。
 
-覆盖不依赖真实 LLM 的纯逻辑: 消息解析、按字节截断、报告组装、标的解析,
+覆盖不依赖真实 LLM 的纯逻辑: 消息解析、超长分段发送、报告组装、标的解析,
 以及 @机器人 消息处理的 help / 去重 / 未找到 / 非文本分支。
 """
 import asyncio
@@ -25,16 +25,30 @@ def test_parse_stock_name_empty():
     assert w._parse_stock_analysis_msg("   ") is None
 
 
-# ===== 按字节截断 =====
+# ===== 超长分段发送 =====
 
-def test_truncate_reply_short_passthrough():
-    assert w._truncate_reply_by_bytes("短文本") == "短文本"
+def test_reply_markdown_short_single_send():
+    svc = w.WecomBotService()
+    ws = _WS()
+    asyncio.run(svc._reply_markdown(ws, _text_frame("m0", "x"), "短文本"))
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["body"]["markdown"]["content"] == "短文本"
 
 
-def test_truncate_reply_by_bytes():
-    out = w._truncate_reply_by_bytes("汉" * 20000)
-    assert len(out.encode("utf-8")) <= w._REPLY_MAX_BYTES
-    assert w._REPLY_TRUNCATE_SUFFIX in out
+def test_reply_markdown_splits_long_content():
+    """超过 20480 字节上限时分段发送, 每段不超限且内容不丢 (不截断)。"""
+    svc = w.WecomBotService()
+    ws = _WS()
+    body = "\n\n".join(f"## 第{i}节\n\n" + "汉" * 2000 for i in range(15))
+    asyncio.run(svc._reply_markdown(ws, _text_frame("m9", "x"), body))
+    assert len(ws.sent) > 1
+    for frame in ws.sent:
+        content = frame["body"]["markdown"]["content"]
+        assert len(content.encode("utf-8")) <= w._REPLY_MAX_BYTES
+    joined = "".join(f["body"]["markdown"]["content"] for f in ws.sent)
+    for i in range(15):
+        assert f"第{i}节" in joined  # 尾部内容未被丢弃
+    assert f"(1/{len(ws.sent)})" in ws.sent[0]["body"]["markdown"]["content"]
 
 
 # ===== 报告组装 =====

@@ -31,11 +31,8 @@ _MAX_LEN = 500
 _CARD_MAX_LEN = 28000
 
 # 企业微信群推送 Webhook markdown 消息上限 4096 字节 (非字符; 中文每字 3 字节),
-# 留余量给标题、格式符及截断提示行。
+# 留余量给标题与格式符; 超长按段分多条发送 (message_chunker), 不截断丢尾。
 _WECOM_MD_MAX_BYTES = 4000
-
-# 截断提示行: 正文超长被截断时追加, 引导用户回应用内查看完整内容。
-_WECOM_TRUNCATED_HINT = "\n\n…内容较长已截断，更多详情请回到 TickFlow 应用内查看。"
 
 # 飞书自定义机器人 Webhook 前缀 (用于 URL 合法性校验)
 FEISHU_HOOK_PREFIX = "https://open.feishu.cn/open-apis/bot/v2/hook/"
@@ -70,26 +67,6 @@ def _truncate_card(text: str) -> str:
     """截断卡片正文 (留余量给标题与卡片结构)。"""
     text = (text or "").strip()
     return text[:_CARD_MAX_LEN] + ("…" if len(text) > _CARD_MAX_LEN else "")
-
-
-def _truncate_to_bytes(text: str, max_bytes: int, suffix: str = "…") -> str:
-    """按 UTF-8 字节数安全截断 (不截断在多字节字符中间, 末尾补 suffix)。
-
-    企业微信 markdown 按**字节**计长 (上限 4096), 中文每字 3 字节,
-    不能用字符数截断 (len(str) 算的是字符数, 会超字节上限)。
-
-    Args:
-        max_bytes: 含 suffix 在内的总字节上限。
-        suffix:    被截断时追加的结尾 (如省略号或提示行)。
-    """
-    text = (text or "").strip()
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    suffix_bytes = suffix.encode("utf-8")
-    # 为 suffix 留出字节, 再用 errors='ignore' 丢弃被截断的尾字节, 避免半个字符
-    cut = encoded[:max_bytes - len(suffix_bytes)]
-    return cut.decode("utf-8", errors="ignore") + suffix
 
 
 _FEISHU_MAX_ATTEMPTS = 3
@@ -346,7 +323,8 @@ def send_wecom_markdown(webhook_url: str, title: str, body_md: str) -> bool:
     """推送一条 Markdown 消息到企业微信群推送 Webhook —— 承载完整复盘报告。
 
     企业微信群推送 Webhook 原生支持 markdown 类型 (比飞书 interactive 卡片简单),
-    支持 # ## **粗体** >引用 - 列表 等基础语法, 单条上限 4096 字节。
+    支持 # ## **粗体** >引用 - 列表 等基础语法, 单条上限 4096 字节;
+    超长按段分多条发送 (不截断丢尾)。
 
     Args:
         webhook_url: 企业微信群推送 Webhook 地址 (或纯 key)
@@ -356,19 +334,24 @@ def send_wecom_markdown(webhook_url: str, title: str, body_md: str) -> bool:
     Returns:
         True=成功送达, False=失败或 URL 非法。
     """
+    from app.services.message_chunker import split_by_bytes
+
     webhook_url = normalize_wecom_url(webhook_url)
     if not is_valid_wecom_url(webhook_url):
         return False
 
-    # 企业微信 markdown 上限 4096 字节 (含标题), 用按字节截断避免超限被拒。
-    # 超长时追加提示行, 引导用户回应用内查看完整报告。
+    # 企业微信 markdown 上限 4096 字节 (含标题): 超长按段分多条发送, 不截断丢尾。
+    # 标题随首段发出, 续段靠 (i/N) 标记衔接。
     raw = f"## {title}\n\n{body_md}".strip()
-    content = _truncate_to_bytes(raw, _WECOM_MD_MAX_BYTES, suffix=_WECOM_TRUNCATED_HINT)
-    if not content.strip():
+    if not raw:
         return False
-
-    payload: dict = {"msgtype": "markdown", "markdown": {"content": content}}
-    return _post_wecom(webhook_url, payload)
+    parts = split_by_bytes(raw, _WECOM_MD_MAX_BYTES)
+    for idx, part in enumerate(parts, 1):
+        payload: dict = {"msgtype": "markdown", "markdown": {"content": part}}
+        if not _post_wecom(webhook_url, payload):
+            logger.warning("企业微信 Markdown 推送第 %d/%d 段失败, 停止后续分段", idx, len(parts))
+            return False
+    return True
 
 
 # ================================================================
@@ -504,7 +487,7 @@ def send_dingtalk_markdown(webhook_url: str, title: str, body_md: str, secret: s
     """推送一条 Markdown 消息到钉钉群推送 Webhook —— 承载完整复盘报告。
 
     钉钉群推送 Webhook 原生支持 markdown 类型, 支持 # ## **粗体** >引用 - 列表 等
-    基础语法, 单条上限 20000 字符 (按字符计, 非字节)。
+    基础语法, 单条上限 20000 字符 (按字符计, 非字节); 超长按段分多条发送 (不截断丢尾)。
 
     Args:
         webhook_url: 钉钉自定义机器人 Webhook 地址 (或纯 access_token)
@@ -515,17 +498,23 @@ def send_dingtalk_markdown(webhook_url: str, title: str, body_md: str, secret: s
     Returns:
         True=成功送达, False=失败或 URL 非法。
     """
+    from app.services.message_chunker import split_by_chars
+
     webhook_url = normalize_dingtalk_url(webhook_url)
     if not is_valid_dingtalk_url(webhook_url):
         return False
 
+    # 标题随首段发出, 续段靠 (i/N) 标记衔接
     raw = f"# {title}\n\n{body_md}".strip()
-    content = raw[:_DINGTALK_MD_MAX_CHARS] + ("…" if len(raw) > _DINGTALK_MD_MAX_CHARS else "")
-    if not content.strip():
+    if not raw:
         return False
-
-    payload: dict = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
-    return _post_dingtalk(webhook_url, payload, secret)
+    parts = split_by_chars(raw, _DINGTALK_MD_MAX_CHARS)
+    for idx, part in enumerate(parts, 1):
+        payload: dict = {"msgtype": "markdown", "markdown": {"title": title, "text": part}}
+        if not _post_dingtalk(webhook_url, payload, secret):
+            logger.warning("钉钉 Markdown 推送第 %d/%d 段失败, 停止后续分段", idx, len(parts))
+            return False
+    return True
 
 
 # ================================================================

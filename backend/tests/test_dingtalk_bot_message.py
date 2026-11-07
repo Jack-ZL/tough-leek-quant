@@ -1,6 +1,6 @@
 """钉钉智能机器人消息解析 / 回复组装 / 处理路径测试。
 
-覆盖不依赖真实 LLM 与 SDK 网络的纯逻辑: 消息解析、按字符截断、报告组装、
+覆盖不依赖真实 LLM 与 SDK 网络的纯逻辑: 消息解析、超长分段发送、报告组装、
 标的解析、msgId 去重, 以及消息处理的 help / 未找到 / 非文本分支。
 """
 import asyncio
@@ -24,16 +24,32 @@ def test_parse_stock_name_empty():
     assert d._parse_stock_analysis_msg("   ") is None
 
 
-# ===== 按字符截断 =====
+# ===== 超长分段发送 =====
 
-def test_truncate_reply_short_passthrough():
-    assert d._truncate_reply_by_chars("短文本") == "短文本"
+def test_reply_markdown_short_single_send():
+    svc = d.DingtalkBotService()
+    handler = d._ChatbotHandler(svc)
+    sent = []
+    handler.reply_markdown = lambda title, content, _msg: sent.append((title, content))
+    asyncio.run(handler._reply_markdown("提示", "短文本", _incoming()))
+    assert sent == [("提示", "短文本")]
 
 
-def test_truncate_reply_by_chars():
-    out = d._truncate_reply_by_chars("汉" * 10000)
-    assert len(out) <= d._REPLY_MAX_CHARS
-    assert d._REPLY_TRUNCATE_SUFFIX in out
+def test_reply_markdown_splits_long_content():
+    """超过 4000 字符上限时分段发送, 每段不超限且内容不丢 (不截断)。"""
+    svc = d.DingtalkBotService()
+    handler = d._ChatbotHandler(svc)
+    sent = []
+    handler.reply_markdown = lambda title, content, _msg: sent.append((title, content))
+    body = "\n\n".join(f"## 第{i}节\n\n" + "汉" * 400 for i in range(20))
+    asyncio.run(handler._reply_markdown("报告", body, _incoming()))
+    assert len(sent) > 1
+    for _, content in sent:
+        assert len(content) <= d._REPLY_MAX_CHARS
+    joined = "".join(c for _, c in sent)
+    for i in range(20):
+        assert f"第{i}节" in joined  # 尾部内容未被丢弃
+    assert f"(1/{len(sent)})" in sent[0][1]
 
 
 # ===== 报告组装 =====
