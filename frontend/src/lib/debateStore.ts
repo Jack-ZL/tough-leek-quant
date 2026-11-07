@@ -265,10 +265,13 @@ async function saveDebate(
 
 // ===== 历史 =====
 
+/** 拉取历史并只保留当前标的的记录 (后端 /reports 返回全量, 按 symbol 过滤)。 */
 export async function loadHistory() {
+	const sym = state.symbol
 	try {
 		const res = await api.debateReportsList()
-		patch({history: res.reports ?? []})
+		if (state.symbol !== sym) return // 请求期间切换了标的, 丢弃过期响应
+		patch({history: (res.reports ?? []).filter(r => r.symbol === sym)})
 	} catch { /* 静默 */
 	}
 }
@@ -276,7 +279,7 @@ export async function loadHistory() {
 export function toggleHistory() {
 	const next = !state.historyOpen
 	patch({historyOpen: next, viewing: null})
-	if (next && state.history.length === 0) void loadHistory()
+	if (next) void loadHistory() // 每次展开都刷新, 避免跨标的/跨场次的过期缓存
 }
 
 export function viewReport(report: DebateReport) {
