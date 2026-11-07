@@ -7,34 +7,34 @@
  * 文件; 复用的核心能力均为只读 import(MarkdownRenderer、cn、设计令牌)。
  * 自包含 HTTP 客户端见 client.ts 的取舍说明。
  */
-import type { FrontendExtension } from '@/extensions/types'
-import { AssistantLauncher } from './AssistantLauncher'
-import { AssistantHeaderEntry } from './ui/AssistantHeaderEntry'
-import { FabVisibilitySetting } from './ui/FabVisibilitySetting'
+import type {FrontendExtension} from '@/extensions/types'
+import {AssistantLauncher} from './AssistantLauncher'
+import {AssistantHeaderEntry} from './ui/AssistantHeaderEntry'
+import {FabVisibilitySetting} from './ui/FabVisibilitySetting'
 
 const extension: FrontendExtension = {
-  id: 'assistant.chat',
-  apiVersion: 1,
-  slots: [
-    {
-      name: 'layout.navigation.extra',
-      id: 'assistant-entry',
-      order: 10,
-      component: AssistantLauncher,
-    },
-    {
-      name: 'layout.header.quick',
-      id: 'assistant-header-entry',
-      order: 10,
-      component: AssistantHeaderEntry,
-    },
-    {
-      name: 'settings.system.section',
-      id: 'assistant-fab-visibility',
-      order: 10,
-      component: FabVisibilitySetting,
-    },
-  ],
+	id: 'assistant.chat',
+	apiVersion: 1,
+	slots: [
+		{
+			name: 'layout.navigation.extra',
+			id: 'assistant-entry',
+			order: 10,
+			component: AssistantLauncher,
+		},
+		{
+			name: 'layout.header.quick',
+			id: 'assistant-header-entry',
+			order: 10,
+			component: AssistantHeaderEntry,
+		},
+		{
+			name: 'settings.system.section',
+			id: 'assistant-fab-visibility',
+			order: 10,
+			component: FabVisibilitySetting,
+		},
+	],
 }
 
 export default extension
