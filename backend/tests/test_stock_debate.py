@@ -336,10 +336,12 @@ _FAKE_MATERIALS = {
 }
 
 
-def _fake_llm(scripts: dict[str, list[str] | Exception], calls: list[str],
+def _fake_llm(scripts: dict[str, list[str | Exception] | Exception], calls: list[str],
               prompts: list[tuple[str, str]] | None = None):
     """按系统提示词关键字路由的假 stream_ai_text。
 
+    剧本值: 字符串列表逐块产出; Exception 直接抛 (调用前失败);
+    列表内混入 Exception 元素 = 产出到该处再抛 (模拟流式中途截断)。
     prompts 非 None 时记录 (最终剧本键, 用户消息) — 供断言主管/重写方拿到了什么。
     """
     async def _fake(messages, **kwargs):
@@ -364,6 +366,8 @@ def _fake_llm(scripts: dict[str, list[str] | Exception], calls: list[str],
         if isinstance(script, Exception):
             raise script
         for chunk in script:
+            if isinstance(chunk, Exception):  # 流到一半失败 (如长度上限截断)
+                raise chunk
             yield chunk
     return _fake
 
@@ -544,19 +548,60 @@ async def test_debate_ruling_parse_fail_is_honest(debate_env):
     assert [e["type"] for e in events][-1] == "done"  # 不因此中断
 
 
-async def test_debate_role_failure_emits_error(debate_env):
+async def test_debate_role_failure_degrades_and_continues(debate_env):
+    """单方辩手彻底失败: role_error 警告 + 占位论点进主管提示词, 辩论照常出裁决。"""
     calls: list[str] = []
+    prompts: list[tuple[str, str]] = []
     _install_llm(debate_env, {
         "bull": RuntimeError("boom"),
         "bear": ["空方。"], "judge": _JUDGE_PASS,
+    }, calls, prompts)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH"))
+    types = [e["type"] for e in events]
+    role_err = next(e for e in events if e["type"] == "role_error")
+    assert role_err["role"] == "bull" and "多方辩手调用失败" in role_err["message"]
+    assert "error" not in types  # 单方失败不是致命错误
+    assert "judge" in calls  # 主管照常裁决
+    judge_user = next(u for k, u in prompts if k == "judge")
+    assert "本方辩手本轮调用失败" in judge_user and "boom" in judge_user
+    assert types[-1] == "done"
+
+
+async def test_debate_role_failure_keeps_partial_text(debate_env):
+    """辩手流到一半被截断 (如免费额度服务端输出上限): 已流出内容保留并送主管。"""
+    calls: list[str] = []
+    prompts: list[tuple[str, str]] = []
+    _install_llm(debate_env, {
+        "bull": ["多方论点前半。", RuntimeError("AI 输出达到长度上限")],
+        "bear": ["空方。"], "judge": _JUDGE_PASS,
+    }, calls, prompts)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH"))
+    role_err = next(e for e in events if e["type"] == "role_error")
+    assert "已用截断前内容继续辩论" in role_err["message"]
+    bull_done = next(e for e in events
+                     if e["type"] == "role_done" and e["role"] == "bull")
+    assert bull_done["content"] == "多方论点前半。"
+    judge_user = next(u for k, u in prompts if k == "judge")
+    assert "多方论点前半。" in judge_user and "被截断" in judge_user
+    assert [e["type"] for e in events][-1] == "done"
+
+
+async def test_debate_both_roles_fail_aborts(debate_env):
+    """多空双方都失败才终止: 发致命 error, 不调主管、不发 done。"""
+    calls: list[str] = []
+    _install_llm(debate_env, {
+        "bull": RuntimeError("boom1"), "bear": RuntimeError("boom2"),
+        "judge": _JUDGE_PASS,
     }, calls)
     events = await _collect(stock_debate.debate_stream(
         repo=None, data_dir=None, symbol="600519.SH"))
     types = [e["type"] for e in events]
-    assert "error" in types
-    assert "多方辩手调用失败" in next(e for e in events if e["type"] == "error")["message"]
-    assert types[-1] != "done"  # 失败不发 done
-    assert "judge" not in calls  # 主管没被调
+    err = next(e for e in events if e["type"] == "error")
+    assert "多空双方辩手均调用失败" in err["message"]
+    assert "judge" not in calls
+    assert "done" not in types
 
 
 async def test_debate_judge_failure_emits_error(debate_env):
@@ -569,6 +614,27 @@ async def test_debate_judge_failure_emits_error(debate_env):
         repo=None, data_dir=None, symbol="600519.SH"))
     err = next(e for e in events if e["type"] == "error")
     assert "风控主管调用失败" in err["message"]
+
+
+async def test_debate_judge_dangling_heading_stripped(debate_env):
+    """机读块标记被剥离后标题行悬尾 → role_done 全文裁掉, 主管栏不留空标题。"""
+    calls: list[str] = []
+    _install_llm(debate_env, {
+        "bull": ["多方。"], "bear": ["空方。"],
+        "judge": ["点评。\n\n", "三、机读裁决块\n", _marker({
+            "decision": "pass", "rewrite_role": "", "rewrite_reason": "",
+            "direction": "偏空", "reason": "空方更扎实"})],
+    }, calls)
+    events = await _collect(stock_debate.debate_stream(
+        repo=None, data_dir=None, symbol="600519.SH"))
+    judge_done = next(e for e in events
+                      if e["type"] == "role_done" and e["role"] == "judge")
+    assert "机读裁决块" not in judge_done["content"]
+    assert judge_done["content"].rstrip() == "点评。"
+    # 流式增量里标题短暂出现过 (行缓冲纪律), 收尾覆盖即净
+    deltas = "".join(e["content"] for e in events
+                     if e["type"] == "role_delta" and e["role"] == "judge")
+    assert "三、机读裁决块" in deltas
 
 
 async def test_debate_no_materials(debate_env, monkeypatch):

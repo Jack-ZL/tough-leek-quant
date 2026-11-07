@@ -1214,7 +1214,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 														{/* P1-15: 能力表登记提示 — 只有命中登记的模型才展示 (未登记不打扰) */}
 														{modelCaps?.registered && (
 															<p className="mt-1.5 flex items-start gap-1 text-[11px] leading-snug text-muted"
-																title={`能力表登记 (P1-15):\n· 联网搜索参数: ${modelCaps.supports_web_search ? '支持' : '不支持'}\n· 默认思考模式: ${modelCaps.default_thinking ? '是' : '否'}\n· 思考占用输出预算: ${modelCaps.thinking_shares_max_tokens ? '是' : '否'}`}>
+																title={`能力表登记 (P1-15):\n· 联网搜索参数: ${modelCaps.supports_web_search ? '支持' : '不支持'}\n· 温度参数: ${modelCaps.supports_temperature ? '支持' : '不支持'}\n· 默认思考模式: ${modelCaps.default_thinking ? '是' : '否'}\n· 思考占用输出预算: ${modelCaps.thinking_shares_max_tokens ? '是' : '否'}`}>
 																<AlertCircle className="mt-px h-3 w-3 shrink-0 text-amber-500/80" />
 																<span>{modelCaps.known_issues.join('；') || '该模型已登记能力怪癖, 悬停查看'}</span>
 															</p>

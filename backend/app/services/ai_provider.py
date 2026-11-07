@@ -832,6 +832,8 @@ async def _run_openai_message_once(
     kwargs = _openai_kwargs(
         temperature=temperature,
         max_tokens=max_tokens,
+        model=model,
+        base_url=base_url,
         tools=tools,
         web_search=web_search_supported(),
     )
@@ -1159,12 +1161,16 @@ def _openai_kwargs(
 
     max_tokens=None 时不传 — 由服务端默认上限管理(推理模型的思考 token 也
     计入该参数预算, 限制会挤占正文, 见 stream_ai_text 文档)。
+    temperature 按能力表下发: 固定温度的模型 (kimi thinking 系) 不传。
     web_search=True 时附带 enable_search (千问/百炼系联网搜索开关)。
     """
     kwargs: dict = {}
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    if temperature is not None:
+    caps = ai_capabilities.lookup(model, base_url)
+    # P1-15: temperature 固定的模型 (kimi thinking 系等) 不传该参数 —
+    # 否则首发 400, 只能靠 _openai_retry_kwargs 事后移除重试, 白耗一次往返。
+    if temperature is not None and caps.supports_temperature:
         kwargs["temperature"] = temperature
     if current_ai_provider() == OPENAI_PROVIDER:
         reasoning_effort = current_openai_reasoning_effort()
@@ -1174,7 +1180,6 @@ def _openai_kwargs(
     # P1-15: 原 _DEEPSEEK_V4_MODELS + hostname 特判收编进能力表 —
     # "默认开思考 + 思考挤占 max_tokens" 的模型 (DeepSeek V4 官方 API),
     # 报告类任务显式禁用思考, 防止推理吃光预算后正文 0 字。
-    caps = ai_capabilities.lookup(model, base_url)
     if prefer_final_answer and caps.default_thinking and caps.thinking_shares_max_tokens:
         extra_body["thinking"] = {"type": "disabled"}
     if web_search:
