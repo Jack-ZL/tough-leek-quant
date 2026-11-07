@@ -285,8 +285,9 @@ class AiSettingsIn(BaseModel):
     context_window: int | None = None  # 输入上下文窗口上限 (约 token)
     round_checkpoint: int | None = None  # 助手工具轮次检查点; 0=不检查
     web_search: bool | None = None  # 联网搜索开关 (enable_search); None=保持原值
-    profile_id: str = ""  # 同步更新的模型档案 id; 空=当前激活档案
+    profile_id: str = ""  # 同步更新的模型档案 id; 空=当前激活档案 (new_profile 为真时=新建)
     profile_name: str = ""  # 档案显示名 (仅档案库展示用)
+    new_profile: bool = False  # 新建档案: 追加一条而非写回激活档案 (设置页「新建」按钮)
 
 
 class AiProfileIn(BaseModel):
@@ -592,7 +593,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if updates:
         secrets_store.save(updates)
 
-    # 档案库同步: 扁平键已是最新生效配置, 把它写回对应档案 (缺省=当前激活档案),
+    # 档案库同步: 扁平键已是最新生效配置, 把它写回对应档案,
     # 保证设置页/侧边栏展示的档案与实际运行配置一致。
     if req.api_key == "":
         updates["ai_api_key"] = ""  # 显式清 Key 也要反映到档案
@@ -602,9 +603,10 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     if req.profile_name.strip():
         prof_fields["name"] = req.profile_name.strip()
     if prof_fields:
-        pid = (
-            (req.profile_id or "").strip() or secrets_store.get_active_ai_profile_id() or "default"
-        )
+        pid = (req.profile_id or "").strip()
+        if not pid and not req.new_profile:
+            # 未带档案上下文 (旧客户端/首启) 才回退激活档案; 「新建」必须追加, 不能覆盖在用的
+            pid = secrets_store.get_active_ai_profile_id() or "default"
         _, pid = secrets_store.upsert_ai_profile(pid, prof_fields)
         secrets_store.save({"ai_active_profile": pid})
 
