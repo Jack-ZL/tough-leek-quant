@@ -1,9 +1,9 @@
-import {useState, useRef, useEffect, useCallback} from 'react'
-import {motion, AnimatePresence} from 'framer-motion'
-import {Loader2, Check, AlertCircle} from 'lucide-react'
-import {useActiveTasks, restoreDialog} from '@/lib/aiReportStore'
-import {getPageScale} from '@/lib/pageZoom'
-import type {ActiveTask} from '@/lib/aiReportStore'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Loader2, Check, AlertCircle } from 'lucide-react'
+import { useActiveTasks, restoreDialog } from '@/lib/aiReportStore'
+import { getPageScale } from '@/lib/pageZoom'
+import type { ActiveTask } from '@/lib/aiReportStore'
 
 /**
  * AI 分析任务全局气泡容器 —— 玻璃拟态卡片,挂在网页右侧。
@@ -32,7 +32,7 @@ export function AiReportBubble() {
 
 	// ===== 拖拽(纯 DOM 操作,60fps) =====
 	const draggingRef = useRef(false)
-	const dragData = useRef({mx: 0, my: 0, ox: 0, oy: 0})  // 鼠标起点 + 元素起点
+	const dragData = useRef({ mx: 0, my: 0, ox: 0, oy: 0 })  // 鼠标起点 + 元素起点
 	const movedRef = useRef(false)                             // 本次是否真的移动了(区分点击)
 	// 记录 pointerdown 时命中的卡片回调(松手时若未拖动则触发它 = 点击)
 	const clickTargetRef = useRef<(() => void) | null>(null)
@@ -56,10 +56,10 @@ export function AiReportBubble() {
 	const onPointerDown = useCallback((e: React.PointerEvent) => {
 		draggingRef.current = true
 		movedRef.current = false
-		dragData.current = {mx: e.clientX, my: e.clientY, ox: pos.x, oy: pos.y}
+		dragData.current = { mx: e.clientX, my: e.clientY, ox: pos.x, oy: pos.y }
 		const el = containerRef.current
 		if (el) el.classList.add('dragging')
-		;
+			;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
 	}, [pos.x, pos.y])
 
@@ -86,7 +86,7 @@ export function AiReportBubble() {
 			setPos(prev => {
 				const transform = el?.style.transform ?? ''
 				const m = transform.match(/translate3d\(([-\d.]+)px,\s*([-\d.]+)px/)
-				const finalPos = m ? {x: parseFloat(m[1]), y: parseFloat(m[2])} : prev
+				const finalPos = m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : prev
 				savePos(finalPos)
 				return finalPos
 			})
@@ -137,29 +137,29 @@ export function AiReportBubble() {
 			onPointerUp={onPointerUp}
 			onPointerCancel={onPointerUp}
 		>
-      <AnimatePresence mode="popLayout">
-        {activeTasks.map((task, i) => (
-	        <BubbleItem
-		        key={task.id}
-		        task={task}
-		        isLast={i === activeTasks.length - 1}
-		        onPointerDown={() => {
-			        clickTargetRef.current = () => restoreDialog(task.id)
-		        }}
-	        />
-        ))}
-      </AnimatePresence>
+			<AnimatePresence mode="popLayout">
+				{activeTasks.map((task, i) => (
+					<BubbleItem
+						key={task.id}
+						task={task}
+						isLast={i === activeTasks.length - 1}
+						onPointerDown={() => {
+							clickTargetRef.current = () => restoreDialog(task.id)
+						}}
+					/>
+				))}
+			</AnimatePresence>
 
 			{/* 内联样式:拖动时禁用过渡,确保 1:1 跟手 */}
 			<style>{`
         .ai-bubble-root.dragging { transition: none !important; }
       `}</style>
-    </div>
+		</div>
 	)
 }
 
 // ===== 单个胶囊卡片(紧凑玻璃拟态) =====
-function BubbleItem({task, isLast, onPointerDown}: {
+function BubbleItem({ task, isLast, onPointerDown }: {
 	task: ActiveTask
 	isLast: boolean
 	onPointerDown: () => void
@@ -176,53 +176,53 @@ function BubbleItem({task, isLast, onPointerDown}: {
 
 	return (
 		<motion.div
-			initial={{opacity: 0, scale: 0.9, y: -8}}
-			animate={{opacity: 1, scale: 1, y: 0}}
-			exit={{opacity: 0, scale: 0.9, y: -8}}
-			transition={{type: 'spring', damping: 22, stiffness: 300}}
+			initial={{ opacity: 0, scale: 0.9, y: -8 }}
+			animate={{ opacity: 1, scale: 1, y: 0 }}
+			exit={{ opacity: 0, scale: 0.9, y: -8 }}
+			transition={{ type: 'spring', damping: 22, stiffness: 300 }}
 			className={isLast ? '' : 'mb-1.5'}
 		>
-      <div
-	      onPointerDown={onPointerDown}
-	      role="button"
-	      tabIndex={0}
-	      title={isWorking ? '生成中,点击恢复对话框' : isError ? '分析失败,点击重试' : '点击查看报告'}
-	      className={`group relative flex w-full cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border bg-gradient-to-br px-2 py-1.5 backdrop-blur-xl transition-all duration-200 hover:scale-[1.02] active:scale-[0.99] ${accent}`}
-      >
-        {/* 生成中:顶部进度流光 */}
-	      {isWorking && (
-		      <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
-            <div className="h-full w-1/2 bg-gradient-to-r from-transparent via-purple-200 to-transparent animate-bubble-progress"/>
-          </div>
-	      )}
+			<div
+				onPointerDown={onPointerDown}
+				role="button"
+				tabIndex={0}
+				title={isWorking ? '生成中,点击恢复对话框' : isError ? '分析失败,点击重试' : '点击查看报告'}
+				className={`group relative flex w-full cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border bg-gradient-to-br px-2 py-1.5 backdrop-blur-xl transition-all duration-200 hover:scale-[1.02] active:scale-[0.99] ${accent}`}
+			>
+				{/* 生成中:顶部进度流光 */}
+				{isWorking && (
+					<div className="absolute inset-x-0 top-0 h-px overflow-hidden">
+						<div className="h-full w-1/2 bg-gradient-to-r from-transparent via-purple-200 to-transparent animate-bubble-progress" />
+					</div>
+				)}
 
-	      {/* 状态图标 */}
-	      <span className="flex h-4 w-4 items-center justify-center shrink-0">
-          {isWorking ? (
-	          <Loader2 className="h-3 w-3 animate-spin"/>
-          ) : isError ? (
-	          <AlertCircle className="h-3 w-3"/>
-          ) : (
-	          <Check className="h-3 w-3"/>
-          )}
-        </span>
+				{/* 状态图标 */}
+				<span className="flex h-4 w-4 items-center justify-center shrink-0">
+					{isWorking ? (
+						<Loader2 className="h-3 w-3 animate-spin" />
+					) : isError ? (
+						<AlertCircle className="h-3 w-3" />
+					) : (
+						<Check className="h-3 w-3" />
+					)}
+				</span>
 
-	      {/* 标的名(单行) */}
-	      <span className="flex-1 min-w-0 text-[11px] font-medium text-foreground leading-none truncate">
-          {task.name || task.symbol}
-        </span>
+				{/* 标的名(单行) */}
+				<span className="flex-1 min-w-0 text-[11px] font-medium text-foreground leading-none truncate">
+					{task.name || task.symbol}
+				</span>
 
-	      {/* 状态后缀 */}
-	      <span className="shrink-0 text-[9px] leading-none">
-          {isWorking ? (
-	          <span className="text-purple-300/80">分析中</span>
-          ) : isError ? (
-	          <span className="text-red-300/80">失败</span>
-          ) : (
-	          <span className="text-emerald-300/80">点击查看</span>
-          )}
-        </span>
-      </div>
+				{/* 状态后缀 */}
+				<span className="shrink-0 text-[9px] leading-none">
+					{isWorking ? (
+						<span className="text-purple-300/80">分析中</span>
+					) : isError ? (
+						<span className="text-red-300/80">失败</span>
+					) : (
+						<span className="text-emerald-300/80">点击查看</span>
+					)}
+				</span>
+			</div>
 
 			{/* 内联关键帧:进度条流动 */}
 			<style>{`
@@ -232,7 +232,7 @@ function BubbleItem({task, isLast, onPointerDown}: {
         }
         .animate-bubble-progress { animation: bubble-progress 1.6s ease-in-out infinite; }
       `}</style>
-    </motion.div>
+		</motion.div>
 	)
 }
 
@@ -259,7 +259,7 @@ function loadPos(): { x: number; y: number } {
 		}
 	} catch { /* ignore */
 	}
-	return {x: defaultX, y: defaultY}
+	return { x: defaultX, y: defaultY }
 }
 
 function savePos(p: { x: number; y: number }) {
