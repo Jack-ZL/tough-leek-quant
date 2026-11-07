@@ -3,7 +3,7 @@
 与「群推送 Webhook」(webhook_adapter, 单向 POST) 并存的第二条钉钉通道:
 智能机器人开「Stream 模式」后, 通过 dingtalk-stream SDK 双向通信, 支持 @机器人
 交互、个股分析回复。消息处理复用 stock_analyzer.analyze_stock_text 的完整
-分析流程(与前端个股分析一致), 并按钉钉回复字符上限截断。
+分析流程(与前端个股分析一致), 超过单条上限时分段发送(不截断丢尾)。
 
 架构(对齐 wecom_bot_service):
   - daemon 线程内跑 SDK 的 start_forever() (内部自建事件循环 + 自动重连)
@@ -11,8 +11,8 @@
   - 失败静默降级: 凭证错误/连接失败只记 WARNING, 不阻断应用启动
 
 凭证来源: preferences.dingtalk_bot_id / dingtalk_bot_secret (ClientId / ClientSecret)
-回复方式: SDK ChatbotHandler.reply_markdown (POST 到消息会话 Webhook), 按钉钉
-        智能机器人回复上限 4000 字符截断(按字符, 非字节)。
+回复方式: SDK ChatbotHandler.reply_markdown (POST 到消息会话 Webhook), 超过
+        钉钉智能机器人单条上限 4000 字符(按字符, 非字节)时分段发送。
 限制: SDK 的 start_forever 无对外 close 接口, 配置变更需 stop 后起新线程重建。
 """
 from __future__ import annotations
@@ -30,9 +30,8 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
-# 钉钉智能机器人回复上限: 最长 4000 字符 (按字符截断, 非字节)
+# 钉钉智能机器人回复上限: 最长 4000 字符 (按字符计, 非字节); 超长按段分多条发送
 _REPLY_MAX_CHARS = 4000
-_REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
 # AI 正文字数预算: 报告头 + 免责也占字符, 给正文留 3500 字预算。
 _AI_BODY_CHAR_BUDGET = 3500
 _LENGTH_HINT = (
@@ -60,13 +59,6 @@ _HELP_TEXT = (
 
 # 服务端超时未收到响应可能按同一 msgId 重推消息, 按 msgId 去重的 TTL
 _MSG_DEDUP_TTL = 600.0
-
-
-def _truncate_reply_by_chars(content: str, max_chars: int = _REPLY_MAX_CHARS) -> str:
-    """按字符数安全截断回复正文, 为后缀预留字符。"""
-    if len(content) <= max_chars:
-        return content
-    return content[: max_chars - len(_REPLY_TRUNCATE_SUFFIX)] + _REPLY_TRUNCATE_SUFFIX
 
 
 def _parse_stock_analysis_msg(content: str) -> str | None:
@@ -265,14 +257,20 @@ class _ChatbotHandler(dingtalk_stream.ChatbotHandler):
         )
 
     async def _reply_markdown(self, title: str, content: str, incoming_message) -> None:
-        """通过 SDK 回复 Markdown 消息 (POST 到消息会话 Webhook)。"""
-        content = _truncate_reply_by_chars(content)
+        """通过 SDK 回复 Markdown 消息 (POST 到消息会话 Webhook)。
+
+        超过单条上限时分段发送 (message_chunker), 每段带 (i/N) 续接标记, 不截断丢尾。
+        """
+        from app.services.message_chunker import split_by_chars
+
+        parts = split_by_chars(content, _REPLY_MAX_CHARS)
 
         # SDK 的 reply_markdown 是同步 requests.post, 移出事件循环避免阻塞收帧/心跳
-        await asyncio.to_thread(self.reply_markdown, title, content, incoming_message)
+        for part in parts:
+            await asyncio.to_thread(self.reply_markdown, title, part, incoming_message)
         logger.info(
-            "钉钉智能机器人已回复 Markdown 消息 (msgId=%s, 长度=%d)",
-            incoming_message.message_id, len(content),
+            "钉钉智能机器人已回复 Markdown 消息 (msgId=%s, 段数=%d, 总长=%d)",
+            incoming_message.message_id, len(parts), len(content),
         )
 
 

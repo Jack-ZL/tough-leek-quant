@@ -3,7 +3,7 @@
 与「群推送 Webhook」(webhook_adapter, 单向 POST) 并存的第二条企业微信通道:
 智能机器人开「API 模式 / 长连接」后, 通过 WebSocket 双向通信, 支持 @机器人
 交互、个股分析回复。消息处理复用 stock_analyzer.analyze_stock_text 的完整
-分析流程(与前端个股分析一致), 并按企业微信回复字节上限截断。
+分析流程(与前端个股分析一致), 超过单条上限时分段发送(不截断丢尾)。
 
 架构(对齐 depth_service):
   - daemon 线程内跑 asyncio 事件循环, 用已安装的 websockets(v16) 库
@@ -44,9 +44,9 @@ _RECONNECT_MAX_ATTEMPTS = 10  # 连续失败到此次数后仍继续重连, 仅�
 # 服务端超时未收到响应可能按同一 msgid 重推消息, 按 msgid 去重的 TTL
 _MSG_DEDUP_TTL = 600.0
 
-# 企业微信智能机器人回复上限: 最长 20480 字节 (UTF-8, 中文约 3 字节/字), 不能按字符数截取
+# 企业微信智能机器人回复上限: 最长 20480 字节 (UTF-8, 中文约 3 字节/字), 不能按字符数计;
+# 超长按段分多条发送
 _REPLY_MAX_BYTES = 20480
-_REPLY_TRUNCATE_SUFFIX = "\n\n... (内容过长已截断)"
 # AI 正文字数预算: 与群推送不同, 智能机器人单条上限更大, 但报告头+免责也占字节,
 # 给正文留 6000 字预算 (全中文约 18000 字节), 为头部与混合编码留余量。
 _AI_BODY_CHAR_BUDGET = 6000
@@ -72,16 +72,6 @@ _HELP_TEXT = (
 	"模型名称可选: 支持档案名/模型名, 也支持厂商简称 (如 千问/qwen、deepseek、kimi、智谱/glm, "
 	"不区分大小写); 命中已配置的模型档案时本次分析改用该模型, 未命中则使用当前生效模型。"
 )
-
-
-def _truncate_reply_by_bytes(content: str, max_bytes: int = _REPLY_MAX_BYTES) -> str:
-	"""按 UTF-8 字节数安全截断回复正文, 不切断多字节字符, 为后缀预留字节。"""
-	encoded = content.encode("utf-8")
-	if len(encoded) <= max_bytes:
-		return content
-	suffix_bytes = len(_REPLY_TRUNCATE_SUFFIX.encode("utf-8"))
-	cut = encoded[: max_bytes - suffix_bytes]
-	return cut.decode("utf-8", errors="ignore") + _REPLY_TRUNCATE_SUFFIX
 
 
 def _parse_stock_analysis_msg(content: str) -> str | None:
@@ -530,26 +520,35 @@ class WecomBotService:
 		)
 	
 	async def _reply_markdown(self, ws, frame, content: str) -> None:
-		"""通过 WebSocket 回复 Markdown 消息 (aibot_respond_msg 帧)。"""
+		"""通过 WebSocket 回复 Markdown 消息 (aibot_respond_msg 帧)。
+
+		超过单条上限时分段发送 (message_chunker), 每段带 (i/N) 续接标记, 不截断丢尾。
+		"""
+		from app.services.message_chunker import split_by_bytes
+
 		req_id = frame.get("headers", {}).get("req_id", str(uuid.uuid4()))
 		body = frame.get("body", {})
 		msgid = body.get("msgid", "")
-		
-		content = _truncate_reply_by_bytes(content)
-		
-		respond_frame = {
-			"cmd":     "aibot_respond_msg",
-			"headers": {"req_id": req_id},
-			"body":    {
-				"msgid":    msgid,
-				"msgtype":  "markdown",
-				"markdown": {
-					"content": content,
+
+		parts = split_by_bytes(content, _REPLY_MAX_BYTES)
+
+		for part in parts:
+			respond_frame = {
+				"cmd":     "aibot_respond_msg",
+				"headers": {"req_id": req_id},
+				"body":    {
+					"msgid":    msgid,
+					"msgtype":  "markdown",
+					"markdown": {
+						"content": part,
+					},
 				},
-			},
-		}
-		await ws.send(json.dumps(respond_frame, ensure_ascii=False))
-		logger.info("智能机器人已回复 Markdown 消息 (msgid=%s, 长度=%d)", msgid, len(content))
+			}
+			await ws.send(json.dumps(respond_frame, ensure_ascii=False))
+		logger.info(
+			"智能机器人已回复 Markdown 消息 (msgid=%s, 段数=%d, 总长=%d)",
+			msgid, len(parts), len(content),
+		)
 	
 	async def _sleep_interruptible(self, seconds: float) -> None:
 		"""可被 stop() 中断的 sleep(通过检查 _running)。"""
