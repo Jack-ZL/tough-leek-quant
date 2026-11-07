@@ -38,6 +38,21 @@ const MARKET_PHASE_GUIDE: Record<MarketPhase, { meaning: string; action: string 
 	repair: { meaning: '多空拉锯, 无明确方向', action: '轻仓试错 · 控回撤' },
 }
 
+// P1-19 情绪细粒度统计: 分档晋级率档位 (与后端 market_phase.TIER_KEYS/TIER_LABELS 同源)
+const PROMO_TIERS: { key: 't1' | 't2' | 't3' | 't4p'; label: string }[] = [
+	{ key: 't1', label: '首板→2板' },
+	{ key: 't2', label: '2板→3板' },
+	{ key: 't3', label: '3板→4板' },
+	{ key: 't4p', label: '4板+→次日' },
+]
+// 分档池小于该值时比率仅供参考(3板+池常年个位数), 展示层弱化
+const PROMO_SMALL_POOL = 10
+
+function fmtSignedPct(v?: number | null): string {
+	if (v == null) return '—'
+	return `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`
+}
+
 // ── 时间范围 ──────────────────────────────────────────────
 // 1年=250 交易日, 2年=500 交易日; 自定义 1~1000; 全部走 start/end 日期范围。
 type RangePreset = '1y' | '2y' | 'all' | { custom: number }
@@ -214,6 +229,14 @@ export function Regime() {
 		staleTime: 5 * 60 * 1000,
 		enabled: rows.length > 0,
 	})
+	// P1-19: 涨停行业集中度只在当日总览(最新交易日)有 — 行业映射为扩展数据当前快照,
+	// 无法回看历史; 仅情绪周期 tab 激活时拉取
+	const overview = useQuery({
+		queryKey: QK.overviewMarket(),
+		queryFn: () => api.overviewMarket(),
+		staleTime: 5 * 60 * 1000,
+		enabled: view === 'phase',
+	})
 	const [recomputing, setRecomputing] = useState(false)
 
 	const latest = rows.length > 0 ? rows[rows.length - 1] : null
@@ -248,6 +271,8 @@ export function Regime() {
 		if (!selDate) return []
 		return (mainline.data?.rows ?? []).filter(r => r.date === selDate && r.rank <= 3)
 	}, [mainline.data, selDate])
+	// 情绪细粒度统计卡的目标行: 选中日优先, 否则最新交易日
+	const detailRow = selRow ?? latest
 	// 选中日处于其阶段段的第几天 (自段首数起, 与"当前阶段第 N 天"同口径)
 	const selStreak = useMemo(() => {
 		if (!selRow?.phase) return null
@@ -1125,6 +1150,87 @@ export function Regime() {
 						</div>
 					</div>
 				)}
+
+				{/* ── 情绪细粒度统计 (P1-19): 分档晋级率 / 赚钱·亏钱效应 / 涨停行业集中度 ── */}
+				{detailRow && (() => {
+					const d = detailRow
+					const isLatest = !selDate
+					const limitInd = overview.data?.limit_industry
+					return (
+						<div className={cardCls}>
+							<SectionTitle icon={Gauge} title="情绪细粒度统计"
+								hint={`${d.date}${selDate ? ' (回看)' : ' (最新)'} · 分档晋级率/溢价为重算后新列, 旧数据可能缺`} />
+							<div className="grid gap-4 md:grid-cols-3">
+								{/* 分档晋级率 */}
+								<div>
+									<div className="mb-1.5 text-[12px] font-medium text-secondary">分档晋级率</div>
+									<div className="flex flex-col gap-1 text-[12px]">
+										{PROMO_TIERS.map(t => {
+											const pool = d[`promo_${t.key}_pool` as const] ?? null
+											const ok = d[`promo_${t.key}_ok` as const] ?? null
+											if (pool == null || pool === 0) {
+												return <div key={t.key} className="flex justify-between text-muted"><span>{t.label}</span><span>—</span></div>
+											}
+											const rate = (ok ?? 0) / pool * 100
+											return (
+												<div key={t.key} className={`flex justify-between ${pool < PROMO_SMALL_POOL ? 'text-muted' : ''}`}
+													title={pool < PROMO_SMALL_POOL ? `样本仅 ${pool} 家, 比率仅供参考` : undefined}>
+													<span>{t.label}{pool < PROMO_SMALL_POOL && <span className="ml-1 text-[10px]">(小样本)</span>}</span>
+													<span className="font-mono">{ok ?? 0}/{pool} <b className="text-foreground">{rate.toFixed(0)}%</b></span>
+												</div>
+											)
+										})}
+									</div>
+								</div>
+								{/* 赚钱/亏钱效应 */}
+								<div>
+									<div className="mb-1.5 text-[12px] font-medium text-secondary">赚钱 · 亏钱效应</div>
+									<div className="flex flex-col gap-1.5 text-[12px]">
+										<div className="flex justify-between">
+											<span className="text-muted">昨日连板池 {d.premium_pool ?? '—'} 家</span>
+										</div>
+										<div className="flex justify-between">
+											<span>涨停溢价 平均</span>
+											<span className={`font-mono font-semibold ${(d.premium_avg_pct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtSignedPct(d.premium_avg_pct)}</span>
+										</div>
+										<div className="flex justify-between">
+											<span>涨停溢价 中位</span>
+											<span className={`font-mono ${(d.premium_median_pct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtSignedPct(d.premium_median_pct)}</span>
+										</div>
+										<div className="mt-1 flex justify-between border-t border-border/50 pt-1.5">
+											<span className="text-muted">昨日炸板 {d.broken_pool ?? '—'} 家</span>
+											<span className={`font-mono ${(d.broken_avg_pct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}`}>今日均 {fmtSignedPct(d.broken_avg_pct)}</span>
+										</div>
+									</div>
+								</div>
+								{/* 涨停行业集中度 (仅最新交易日) */}
+								<div>
+									<div className="mb-1.5 text-[12px] font-medium text-secondary">涨停行业集中度</div>
+									{!isLatest ? (
+										<div className="text-[12px] text-muted">行业映射为当前快照, 仅最新交易日可查 — 点「回到今日」查看</div>
+									) : !limitInd || limitInd.top5.length === 0 || limitInd.top5_share == null ? (
+										<div className="text-[12px] text-muted">暂无数据 (无涨停股或缺行业扩展数据)</div>
+									) : (
+										<div className="flex flex-col gap-1.5 text-[12px]">
+											<div className="flex items-center justify-between">
+												<span className="regime-history-tag">{limitInd.label}</span>
+												<span className="font-mono">top5 占 <b className="text-foreground">{(limitInd.top5_share * 100).toFixed(0)}%</b>
+													<span className="text-muted"> · 已映射 {limitInd.mapped_total}/{limitInd.total}</span></span>
+											</div>
+											<div className="flex flex-wrap gap-1">
+												{limitInd.top5.map(t => (
+													<span key={t.name} className="regime-history-tag" title={`占已映射涨停 ${t.pct}%`}>
+														{t.name} ×{t.count}
+													</span>
+												))}
+											</div>
+										</div>
+									)}
+								</div>
+							</div>
+						</div>
+					)
+				})()}
 
 				{/* ── 阶段 × 主线 (什么阶段走什么主升) ── */}
 				{segments.length > 0 && (

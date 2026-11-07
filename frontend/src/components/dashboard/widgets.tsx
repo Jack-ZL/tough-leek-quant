@@ -81,17 +81,28 @@ export function BreadthBar({ data }: { data: OverviewMarket['breadth'] }) {
 }
 
 // ===== 涨跌分布直方 =====
+// P1-19: 档位由后端 distribution 决定(8→15 档), 列数动态; 着色优先用 side 字段
+// (up/down/flat/limit_up/limit_down), 旧数据无 side 时回退按下标对半分。
 export function DistributionBars({ rows }: { rows: OverviewMarket['distribution'] }) {
 	const maxCount = Math.max(...rows.map(r => r.count), 1)
 	return (
-		<div className="grid h-24 grid-cols-8 items-end gap-1 pt-1">
+		<div
+			className="grid h-24 items-end gap-1 pt-1"
+			style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(0, 1fr))` }}
+		>
 			{rows.map((r, i) => {
-				const positive = i >= 4
+				const side = r.side ?? (i >= rows.length / 2 ? 'up' : 'down')
+				const barCls =
+					side === 'flat'
+						? 'bg-gradient-to-t from-muted/40 to-muted/80'
+						: side === 'up' || side === 'limit_up'
+							? 'bg-gradient-to-t from-bull/45 to-bull/90'
+							: 'bg-gradient-to-t from-bear/45 to-bear/90'
 				return (
 					<div key={r.label} className="flex h-full min-w-0 flex-col items-center justify-end gap-0.5">
 						<div className="font-mono text-[9px] text-muted">{r.count || ''}</div>
 						<div
-							className={`w-2 rounded-full ${positive ? 'bg-gradient-to-t from-bull/45 to-bull/90' : 'bg-gradient-to-t from-bear/45 to-bear/90'}`}
+							className={`w-2 rounded-full ${barCls}`}
 							style={{ height: `${Math.max(4, r.count / maxCount * 86)}%` }}
 							title={`${r.label}: ${r.count}只`}
 						/>

@@ -20,6 +20,7 @@ from datetime import date
 from typing import AsyncIterator
 
 from app.services.market_overview_builder import build_market_overview
+from app.services.market_phase import TIER_KEYS, TIER_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,10 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的市场�
 ### 4. 🔥 板块主线
 - 领涨板块:背后的逻辑(消息/业绩/资金/技术)、持续性判断
 - 领跌板块:客观风险信号、是否扩散
-- 连板梯队与投机情绪:最高连板、封板率、炸板率反映的资金活跃程度
+- 连板梯队与投机情绪:最高连板、封板率、炸板率反映的资金活跃程度;若提供了「情绪细粒度统计」,结合分档晋级率、涨停溢价(赚钱效应)与昨日炸板池今日表现(亏钱效应)判断情绪的强度与持续性
 
 ### 5. 💰 资金与情绪
-成交额结构(增量/存量)、市场宽度(上涨占比、站上均线占比)、量能指标(量比)解读;风险偏好是修复还是转弱。
+成交额结构(增量/存量)、市场宽度(上涨占比、站上均线占比)、量能指标(量比)解读;风险偏好是修复还是转弱;若提供了涨停行业集中度,客观描述涨停资金在行业上是集中还是分散。
 
 ### 6. 📰 消息催化
 结合提供的近期新闻,客观提炼可能影响后续盘面的催化或扰动,明确区分"已兑现"与"待发酵"。**若无新闻数据,则直接从量价异动客观推断可能的催化逻辑并给出结论,不要标注"[推断]"之类的过程标签,更不要编造具体消息。**
@@ -195,9 +196,69 @@ def _build_emotion_block(overview: dict) -> str:
     return "\n".join(lines)
 
 
+def _load_regime_row(data_dir, as_of_str: str) -> dict | None:
+    """读 regime 日表中复盘日的行(情绪细粒度统计来源); 缺表/缺日 → None。"""
+    import polars as pl
+
+    from app.services import regime_builder
+
+    df = regime_builder.load_regime_history(data_dir)
+    if df.is_empty():
+        return None
+    try:
+        target = date.fromisoformat(str(as_of_str))
+    except ValueError:
+        return None
+    row = df.filter(pl.col("date") == target)
+    if row.is_empty():
+        return None
+    return row.sort("date").tail(1).to_dicts()[0]
+
+
+def _build_sentiment_detail_block(overview: dict, regime_row: dict | None) -> str:
+    """情绪细粒度统计块 (P1-19): 分档晋级率 / 涨停溢价 / 炸板亏钱效应 / 涨停行业集中度。
+
+    regime_row 为 regime 日表当复盘日的行 — 缺行(未重算/被禁用/旧数据缺列)时
+    晋级与溢价段整体跳过, 不阻塞复盘(fail-open); 行业集中度段来自 overview
+    (行业映射为当前快照口径)。两段都无数据时返回空串, 提示词整节不出现。
+    """
+    lines: list[str] = []
+    if regime_row:
+        tiers = []
+        for key in TIER_KEYS:
+            pool = regime_row.get(f"promo_{key}_pool") or 0
+            ok = regime_row.get(f"promo_{key}_ok") or 0
+            if pool:
+                tiers.append(f"{TIER_LABELS[key]} {ok}/{pool}({ok / pool * 100:.0f}%)")
+        if tiers:
+            lines.append("- 分档晋级率: " + "、".join(tiers))
+        pool = regime_row.get("premium_pool") or 0
+        avg = regime_row.get("premium_avg_pct")
+        med = regime_row.get("premium_median_pct")
+        if pool and avg is not None:
+            med_s = f"{med * 100:+.2f}%" if med is not None else "—"
+            lines.append(
+                f"- 赚钱效应(涨停溢价): 昨日连板池 {pool} 家今日平均 {avg * 100:+.2f}% / 中位 {med_s}"
+            )
+        bpool = regime_row.get("broken_pool") or 0
+        bavg = regime_row.get("broken_avg_pct")
+        if bpool and bavg is not None:
+            lines.append(f"- 亏钱效应: 昨日炸板 {bpool} 家今日平均 {bavg * 100:+.2f}%")
+    ind = overview.get("limit_industry") or {}
+    top5 = ind.get("top5") or []
+    share = ind.get("top5_share")
+    if top5 and share is not None:
+        items = "、".join(f"{t.get('name')}×{t.get('count')}" for t in top5)
+        lines.append(
+            f"- 涨停行业集中度: {ind.get('label')}(top5 行业占 {share * 100:.0f}%,"
+            f"已映射 {ind.get('mapped_total')}/{ind.get('total')} 家): {items}"
+        )
+    return "\n".join(lines)
+
+
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
                        bench_context: str = "", scorecard_context: str = "",
-                       quality_context: str = "") -> str:
+                       quality_context: str = "", regime_row: dict | None = None) -> str:
     """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。
 
     scorecard_context (P0-7): AI 历史战绩块, 由 ai_scorecard.prompt_line() 生成,
@@ -205,6 +266,8 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
     用户自定义快照, 注入会被覆盖; 数字闸门白名单从 prompt 成品采集, 数字天然放行。
     quality_context (P1-11): 全市场数据体检块, 由 ai_data_quality.market_block()
     生成, 体检干净时空串不注入; 放用户提示词的原因同上。
+    regime_row (P1-19): regime 日表当复盘日的行, 供情绪细粒度统计块(分档晋级率/
+    涨停溢价/亏钱效应); None 时该块只保留来自 overview 的行业集中度段。
     """
     as_of = overview.get("as_of") or "今日"
 
@@ -219,13 +282,20 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         "",
         "## 市场情绪",
         _build_emotion_block(overview),
+    ]
+
+    sentiment_detail = _build_sentiment_detail_block(overview, regime_row)
+    if sentiment_detail:
+        parts.extend(["", "## 情绪细粒度统计", sentiment_detail])
+
+    parts.extend([
         "",
         "## 概念板块排名",
         _build_sector_block(overview.get("concept_rank"), "概念"),
         "",
         "## 行业板块排名",
         _build_sector_block(overview.get("industry_rank"), "行业"),
-    ]
+    ])
 
     # 龙虎榜资金动向 (fuyao 数据源, 摘要自带数据日期; 无数据源/失败时为空不占段)
     if lhb_context:
@@ -374,9 +444,17 @@ async def recap_market_stream(
             quality_ctx = ai_data_quality.market_block(repo.store.data_dir)
         except Exception:  # noqa: BLE001
             quality_ctx = ""
+        # P1-19 情绪细粒度统计: 读 regime 日表当复盘日的行(分档晋级/溢价/亏钱效应),
+        # 缺表/缺日/异常 → None, 对应提示词段整体跳过(fail-open 不阻塞复盘)
+        try:
+            regime_row = _load_regime_row(repo.store.data_dir, as_of_str)
+        except Exception:  # noqa: BLE001
+            logger.warning("market recap: load regime row failed (soft)", exc_info=True)
+            regime_row = None
         user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx,
                                          scorecard_context=scorecard_ctx,
-                                         quality_context=quality_ctx)
+                                         quality_context=quality_ctx,
+                                         regime_row=regime_row)
 
         # 数字忠实度闸门 (docs/ai-number-fidelity-plan.md): 白名单 = 结构化数据
         # (overview/news, 形态族双口径) + prompt 成品文本 (含龙虎榜/风向标上下文)。

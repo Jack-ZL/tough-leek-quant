@@ -164,9 +164,13 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
     (需要完整日序做平滑), 由 refresh_phase_labels 在 upsert 后统一重标。
     """
     from app.services.market_phase import (
+        broken_pool_aggs,
         finalize_ladder_row,
+        finalize_sentiment_row,
         ladder_daily_aggs,
         ladder_promo_aggs,
+        premium_aggs,
+        tiered_promo_aggs,
         with_prev_consecutive,
     )
 
@@ -247,6 +251,20 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             ladder_promo_aggs()
             if "consecutive_limit_ups" in avail and "_prev_consec" in df.columns else []
         ),
+        # 情绪细粒度统计(P1-19): 分档晋级率 / 涨停溢价(赚钱效应) / 炸板亏钱效应
+        *(
+            tiered_promo_aggs()
+            if "consecutive_limit_ups" in avail and "_prev_consec" in df.columns else []
+        ),
+        *(
+            premium_aggs()
+            if "consecutive_limit_ups" in avail and "_prev_consec" in df.columns
+            and "change_pct" in avail else []
+        ),
+        *(
+            broken_pool_aggs()
+            if "_prev_broken" in df.columns and "change_pct" in avail else []
+        ),
     ).sort("date")
 
     # 转成 dict 列表做分类(规则引擎需逐日算, 但只扫 grouped 行数=天数, 不再回扫全表)
@@ -322,6 +340,8 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             "trend_score": round(sub["trend"]),
             # 梯队指标(阶段判定所需); phase 由 refresh_phase_labels 统一重标
             **finalize_ladder_row(r),
+            # 情绪细粒度统计(P1-19): 分档晋级/涨停溢价/炸板亏钱效应
+            **finalize_sentiment_row(r),
         })
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 

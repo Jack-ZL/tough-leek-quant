@@ -143,6 +143,30 @@ def test_aggregate_daily_ma20_above():
     assert r1["above_ma20_pct"] == 0.5
 
 
+def test_aggregate_daily_sentiment_detail_columns():
+    """P1-19 情绪细粒度列: day2 A(1→2板)晋级、溢价 0.08; day1 无前日全空池。"""
+    df = _enriched_df()
+    result = regime_builder._aggregate_daily(df)
+    r1 = result.filter(pl.col("date") == date(2026, 1, 2)).row(0, named=True)
+    r2 = result.filter(pl.col("date") == date(2026, 1, 3)).row(0, named=True)
+    # day2: 首板池=1(A) 全晋; 2板/3板/4板+池=0; 溢价池=1 avg=median=0.08; 无炸板
+    assert r2["promo_t1_pool"] == 1 and r2["promo_t1_ok"] == 1
+    assert r2["promo_t2_pool"] == 0 and r2["promo_t3_pool"] == 0 and r2["promo_t4p_pool"] == 0
+    assert r2["premium_pool"] == 1
+    assert r2["premium_avg_pct"] == pytest.approx(0.08)
+    assert r2["premium_median_pct"] == pytest.approx(0.08)
+    assert r2["broken_pool"] == 0 and r2["broken_avg_pct"] is None
+    # day1 无前日 → 池 0 / 比率 None (finalize_sentiment_row 兜底, schema 稳定)
+    assert r1["promo_t1_pool"] == 0 and r1["premium_pool"] == 0 and r1["broken_pool"] == 0
+    assert r1["premium_avg_pct"] is None
+    # 13 个新列全部存在
+    for col in ("promo_t1_pool", "promo_t1_ok", "promo_t2_pool", "promo_t2_ok",
+                "promo_t3_pool", "promo_t3_ok", "promo_t4p_pool", "promo_t4p_ok",
+                "premium_pool", "premium_avg_pct", "premium_median_pct",
+                "broken_pool", "broken_avg_pct"):
+        assert col in result.columns
+
+
 def test_aggregate_empty_returns_empty():
     assert regime_builder._aggregate_daily(pl.DataFrame()).is_empty()
 

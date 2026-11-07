@@ -91,15 +91,18 @@ def with_prev_consecutive(df: pl.DataFrame) -> pl.DataFrame:
 
     df 需含 symbol/date/consecutive_limit_ups; 输入应覆盖前一交易日
     (调用方保证 warmup 或直接传全量), 每个符号首行 _prev_consec 为 null。
+    含 signal_broken_limit_up 时一并追加昨日炸板标记 _prev_broken (供亏钱效应)。
     """
     if "_prev_consec" in df.columns:
         return df
-    return (
-        df.sort(["symbol", "date"])
-        .with_columns(
-            pl.col("consecutive_limit_ups").shift(1).over("symbol").alias("_prev_consec")
+    exprs = [
+        pl.col("consecutive_limit_ups").shift(1).over("symbol").alias("_prev_consec"),
+    ]
+    if "signal_broken_limit_up" in df.columns and "_prev_broken" not in df.columns:
+        exprs.append(
+            pl.col("signal_broken_limit_up").cast(pl.Boolean).shift(1).over("symbol").alias("_prev_broken")
         )
-    )
+    return df.sort(["symbol", "date"]).with_columns(exprs)
 
 
 def ladder_daily_aggs() -> list[pl.Expr]:
@@ -126,6 +129,73 @@ def ladder_promo_aggs() -> list[pl.Expr]:
         prev.ge(1).sum().alias("promo_pool"),
         (prev.ge(1) & consec.eq(prev + 1)).sum().alias("promo_ok"),
     ]
+
+
+# ───────────────────────── 情绪细粒度统计 (P1-19) ─────────────────────────
+# 分档晋级率档位: 首板→2板 / 2板→3板 / 3板→4板 / 4板及以上→次日(任意高度续板)。
+# 聚合只存 池家数/晋级家数 两个整数, 比率由展示层现算 — 小样本档位(3板以上池
+# 常年 <10 家)不适合像聚合晋级率那样设最小池门槛记 null, 展示层按池家数自行弱化。
+TIER_KEYS = ("t1", "t2", "t3", "t4p")
+TIER_LABELS = {"t1": "首板→2板", "t2": "2板→3板", "t3": "3板→4板", "t4p": "4板+→次日"}
+
+
+def tiered_promo_aggs() -> list[pl.Expr]:
+    """分档晋级聚合(各档池/晋级家数); 要求 df 已含 _prev_consec 列。"""
+    prev = pl.col("_prev_consec")
+    consec = pl.col("consecutive_limit_ups")
+    promoted = consec.eq(prev + 1)
+    exprs = []
+    for key, cond in (
+        ("t1", prev.eq(1)),
+        ("t2", prev.eq(2)),
+        ("t3", prev.eq(3)),
+        ("t4p", prev.ge(4)),
+    ):
+        exprs.append(cond.sum().alias(f"promo_{key}_pool"))
+        exprs.append((cond & promoted).sum().alias(f"promo_{key}_ok"))
+    return exprs
+
+
+def premium_aggs() -> list[pl.Expr]:
+    """赚钱效应聚合: 昨日连板池(含首板)今日涨跌幅 池家数/均值/中位数。
+
+    要求 df 已含 _prev_consec 与 change_pct 列。change_pct 为小数(0.03=3%)。
+    """
+    prev = pl.col("_prev_consec")
+    pct = pl.col("change_pct")
+    return [
+        prev.ge(1).sum().alias("premium_pool"),
+        pct.filter(prev.ge(1)).mean().alias("premium_avg_pct"),
+        pct.filter(prev.ge(1)).median().alias("premium_median_pct"),
+    ]
+
+
+def broken_pool_aggs() -> list[pl.Expr]:
+    """亏钱效应聚合: 昨日炸板池今日涨跌幅 池家数/均值; 要求 df 已含 _prev_broken。"""
+    prev_broken = pl.col("_prev_broken")
+    pct = pl.col("change_pct")
+    return [
+        prev_broken.sum().alias("broken_pool"),
+        pct.filter(prev_broken).mean().alias("broken_avg_pct"),
+    ]
+
+
+def finalize_sentiment_row(r: dict) -> dict:
+    """把情绪细粒度聚合值整理为持久化字段; 聚合列缺失时补 0/None 保持 schema 稳定。"""
+    out: dict = {}
+    for key in TIER_KEYS:
+        out[f"promo_{key}_pool"] = int(r.get(f"promo_{key}_pool") or 0)
+        out[f"promo_{key}_ok"] = int(r.get(f"promo_{key}_ok") or 0)
+
+    def _round4(v):
+        return round(v, 4) if v is not None else None
+
+    out["premium_pool"] = int(r.get("premium_pool") or 0)
+    out["premium_avg_pct"] = _round4(r.get("premium_avg_pct"))
+    out["premium_median_pct"] = _round4(r.get("premium_median_pct"))
+    out["broken_pool"] = int(r.get("broken_pool") or 0)
+    out["broken_avg_pct"] = _round4(r.get("broken_avg_pct"))
+    return out
 
 
 def finalize_ladder_row(r: dict) -> dict:
