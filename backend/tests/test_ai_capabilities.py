@@ -50,6 +50,16 @@ class TestLookup:
     def test_match_is_case_and_space_insensitive(self):
         assert lookup("  DeepSeek-V4-Flash ", "https://API.DeepSeek.COM/v1").default_thinking is True
 
+    def test_kimi_thinking_family_fixed_temperature(self):
+        # 官方模型参数参考: k2.6 (思考 1.0/非思考 0.6)、k2.7-code、k3 温度固定,
+        # 传其他值报 400 → 登记后请求不传 temperature
+        for m in ("kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k3"):
+            caps = lookup(m)
+            assert caps.supports_temperature is False
+            assert caps.registered is True
+        # 非 thinking 系 kimi 未登记 → 保守默认 (行为与建表前一致)
+        assert lookup("moonshot-v1-auto").supports_temperature is True
+
 
 class TestDescribe:
     def test_registered_shape(self):
@@ -65,6 +75,7 @@ class TestDescribe:
             "model": "qwen-plus",
             "registered": False,
             "supports_web_search": True,
+            "supports_temperature": True,
             "default_thinking": False,
             "thinking_shares_max_tokens": False,
             "known_issues": [],
@@ -114,3 +125,16 @@ class TestProviderIntegration:
             prefer_final_answer=True,
         )
         assert "extra_body" not in gw
+
+    def test_openai_kwargs_drops_temperature_for_fixed_temp_models(self):
+        from app.services import ai_provider
+
+        # 能力表命中 → 首发就不带 temperature (不再白耗一次 400 往返)
+        kw = ai_provider._openai_kwargs(temperature=0.3, max_tokens=None, model="kimi-k3")
+        assert "temperature" not in kw
+        # 未登记模型照旧下发
+        assert ai_provider._openai_kwargs(
+            temperature=0.3, max_tokens=None, model="qwen3-max")["temperature"] == 0.3
+        # temperature=None 仍不传 (与建表前一致)
+        assert "temperature" not in ai_provider._openai_kwargs(
+            temperature=None, max_tokens=None, model="qwen3-max")

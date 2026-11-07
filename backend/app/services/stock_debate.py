@@ -31,9 +31,16 @@
   {"type":"claims","role":"bull|bear","claims":["..."]}  主张账本 (解析失败不发, 流程不断)
   {"type":"role_done","role":"...","content":"该角色全文(干净)","rewritten":bool}
   {"type":"rewrite","role":"...","reason":"主管打回理由"}
+  {"type":"role_error","role":"bull|bear","message":"..."}  单方辩手失败 (非致命, 降级继续)
   {"type":"ruling","ok":true,"decision":"pass|rewrite","verdict":{"direction","reason"},"final":bool}
   {"type":"ruling","ok":false}          裁决块解析失败 (fail-honest, 不猜)
   {"type":"error","message":"..."} / {"type":"done"}
+
+## 单方失败降级 (2026-11)
+
+  一方辩手调用失败不再阻断整场: 已流出的部分论点保留 (role_done 收尾 + 主管
+  提示词注明截断), 完全无输出的一方以缺席占位进入主管裁决; role_error 事件
+  供前端挂警示横幅 (非致命)。仅当双方都无可用论点时才 error 终止。
 
 ## fail-honest 纪律 (与 ai_verdict 一致)
 
@@ -128,6 +135,11 @@ RULING_RE = re.compile(r"<!--\s*DEBATE_RULING:\s*(\{.*?\})\s*-->", re.DOTALL)
 
 # 辩手主张清单标记 (主张账本): JSON 字符串数组, 解析纪律同裁决块 — fail-honest
 CLAIMS_RE = re.compile(r"<!--\s*CLAIMS:\s*(\[.*?\])\s*-->", re.DOTALL)
+
+# 机读裁决块的标题行是普通正文 (标记行本身已被剥离), 剥完后主管栏末尾会
+# 悬一空标题 → 展示/落库前裁掉这类行尾标题 (容忍尾部空行)。
+_DANGLING_RULING_HEADING_RE = re.compile(
+    r"\n*[一二三四五六七八九十0-9]+、[^\n]*机读裁决块[^\n]*\s*$")
 
 _REASON_MAX = 60          # 研判理由展示截断 (同 ai_verdict)
 _REWRITE_REASON_MAX = 120  # 打回理由截断 (要转给重写方, 放宽些)
@@ -235,18 +247,29 @@ async def _strip_marker_deltas(chunks: AsyncIterator[str], captured: list[str],
             captured.append(m.group(1))
         return pattern.sub("", segment)
 
-    async for chunk in chunks:
-        buf += chunk
-        # 只发完整行, 残行留在 buf
-        while (nl := buf.find("\n")) >= 0:
-            line = buf[: nl + 1]
-            buf = buf[nl + 1 :]
-            had_marker = bool(pattern.search(line))
-            line = _strip(line)
-            if had_marker and not line.strip():
-                continue  # 标记独占一行 → 整行丢弃, 不留尾部空行
-            if line:
-                yield line
+    try:
+        async for chunk in chunks:
+            buf += chunk
+            # 只发完整行, 残行留在 buf
+            while (nl := buf.find("\n")) >= 0:
+                line = buf[: nl + 1]
+                buf = buf[nl + 1 :]
+                had_marker = bool(pattern.search(line))
+                line = _strip(line)
+                if had_marker and not line.strip():
+                    continue  # 标记独占一行 → 整行丢弃, 不留尾部空行
+                if line:
+                    yield line
+    except (GeneratorExit, asyncio.CancelledError):
+        raise  # 关闭/取消路径不得再产出
+    except BaseException:
+        # 中途异常 (如输出长度上限截断): 先冲刷余量再抛 —
+        # 编排器降级要靠这段残文续辩, 正文尾巴不能吞
+        if buf:
+            out = _strip(buf)
+            if out:
+                yield out
+        raise
     # 流结束: 冲刷余量 (标记缺失时正文尾巴不能吞)
     if buf:
         out = _strip(buf)
@@ -442,12 +465,13 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
     剥离层在闸门内侧 — 先剥标记再过闸门, 否则闸门会把清单 JSON 里的数字
     包进〖〗破坏 JSON (同 _judge_phase 裁决块纪律)。
     正常结束推 ("done", role, 干净全文, claims|None);
-    异常推 ("error", role, message), 由编排器统一收敛。
+    异常推 ("error", role, message, 已流出部分论点), 由编排器降级收敛 (单方失败不阻断)。
     """
     from app.services.ai_number_gate import gate_ndjson_stream
     from app.services.ai_provider import profile_override, stream_ai_text
 
     captured: list[str] = []
+    full = ""  # 先绑定: except 分支要带部分论点, 任何位置抛异常都不能 NameError
 
     async def _ndjson_deltas() -> AsyncIterator[str]:
         async for clean in _strip_marker_deltas(
@@ -455,6 +479,9 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
                 [{"role": "system", "content": system_prompt},
                  {"role": "user", "content": user_prompt}],
                 temperature=temperature,
+                # 不限制输出: 字数上限提高后 3000 token 钳制不够 (推理模型思考
+                # token 也计入预算); 服务端自有上限的模型(如免费额度)由降级兜底。
+                max_tokens=None,
             ),
             captured, CLAIMS_RE,
         ):
@@ -463,7 +490,6 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
 
     try:
         with profile_override(profile):
-            full = ""
             async for line in gate_ndjson_stream(_ndjson_deltas(), pool):
                 try:
                     ev = json.loads(line)
@@ -478,7 +504,8 @@ async def _run_role_llm(role: str, system_prompt: str, user_prompt: str,
         await out_q.put(("done", role, full, claims))
     except Exception as exc:  # noqa: BLE001 — 单角色失败交给编排器收敛
         logger.warning("[debate] 角色 %s 调用失败: %s", role, exc)
-        await out_q.put(("error", role, str(exc)))
+        # 带上已流出的部分论点 (可能为空): 编排器据此降级续辩而非整场阻断
+        await out_q.put(("error", role, str(exc), full))
 
 
 async def _judge_phase(role_profiles: dict, pool, materials_text: str,
@@ -509,6 +536,8 @@ async def _judge_phase(role_profiles: dict, pool, materials_text: str,
                 [{"role": "system", "content": _JUDGE_SYSTEM},
                  {"role": "user", "content": user_prompt}],
                 temperature=0.3,  # 裁判要稳, 不要发挥
+                # 同辩手: 主管要引用双方全文, 输出预算不钳制 (服务端上限兜底)
+                max_tokens=None,
             ),
             captured, RULING_RE,
         ):
@@ -528,6 +557,10 @@ async def _judge_phase(role_profiles: dict, pool, materials_text: str,
                     full += content
                     await out_q.put(("ev", {"type": "role_delta", "role": ROLE_JUDGE,
                                             "content": content}))
+
+        # 机读块标记已剥离, 标题行悬在末尾 → 裁掉 (流式增量已发的部分由
+        # 前端 role_done 全文覆盖收尾; 落库报告同享干净文本)
+        full = _DANGLING_RULING_HEADING_RE.sub("", full)
 
         # 解析裁决: 标记原文 (captured) 优先, 全文兜底 (剥离层已捕获, 双保险)
         ruling = None
@@ -612,7 +645,7 @@ async def debate_stream(
     ]
     arg_texts: dict[str, str] = {}
     ledger: dict[str, list[str]] = {}  # 主张账本: role → 机读主张清单 (解析失败方缺席)
-    failed = False
+    role_errors: dict[str, str] = {}
     done_count = 0
     while done_count < 2:
         msg = await q.get()
@@ -629,16 +662,32 @@ async def debate_stream(
             done_count += 1
             yield json.dumps({"type": "role_done", "role": role, "content": msg[2],
                               "rewritten": False}, ensure_ascii=False)
-        else:  # error
-            failed = True
-            yield json.dumps({"type": "error",
-                              "message": f"{'多方' if role == ROLE_BULL else '空方'}辩手调用失败: {msg[2]}"},
+        else:  # error: 单方失败降级续辩 (role_error 非致命), 不再整场阻断
+            done_count += 1
+            role_errors[role] = msg[2]
+            partial = msg[3] if len(msg) > 3 else ""
+            label = "多方" if role == ROLE_BULL else "空方"
+            if partial:
+                # 已流出的内容不浪费: role_done 收尾卡片, 主管提示词注明截断
+                arg_texts[role] = partial + "\n\n(上方论点因调用异常被截断, 内容可能不完整。)"
+                yield json.dumps({"type": "role_done", "role": role, "content": partial,
+                                  "rewritten": False}, ensure_ascii=False)
+                note = f"{label}辩手输出异常: {msg[2]}; 已用截断前内容继续辩论"
+            else:
+                note = f"{label}辩手调用失败: {msg[2]}; 该方论点缺席, 辩论降级继续"
+            yield json.dumps({"type": "role_error", "role": role, "message": note},
                              ensure_ascii=False)
-            break
     for t in tasks:
         t.cancel()
-    if failed:
+    missing = [r for r in (ROLE_BULL, ROLE_BEAR) if r not in arg_texts]
+    if len(missing) == 2:  # 双方都无可用论点才终止
+        yield json.dumps({"type": "error", "message": "多空双方辩手均调用失败: " +
+                          "; ".join(f"{r}: {role_errors.get(r)}" for r in missing)},
+                         ensure_ascii=False)
         return
+    for r in missing:
+        arg_texts[r] = (f"(本方辩手本轮调用失败: {role_errors.get(r, '未知错误')}; "
+                        "未提出论点。请主管基于单方论点与材料裁决, 并在点评中说明缺席情况。)")
 
     # ---- ③ 风控主管初审 (队列模式: 增量实时转发, 前端能看到主管边想边写) ----
     ruling = None

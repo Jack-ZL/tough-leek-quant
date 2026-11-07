@@ -378,7 +378,7 @@ export type DebateRole = 'bull' | 'bear' | 'judge'
 
 /** 辩论流事件 (NDJSON, 与后端 stock_debate.debate_stream 协议一一对应) */
 export interface DebateStreamEvent {
-	type: 'meta' | 'role_delta' | 'role_done' | 'rewrite' | 'ruling' | 'error' | 'done' | 'ping'
+	type: 'meta' | 'role_delta' | 'role_done' | 'rewrite' | 'ruling' | 'error' | 'role_error' | 'done' | 'ping'
 	/** role_delta / role_done / rewrite 事件带角色 */
 	role?: DebateRole
 	symbol?: string
@@ -2426,6 +2426,7 @@ export interface AiModelCapabilities {
 	model: string
 	registered: boolean
 	supports_web_search: boolean
+	supports_temperature: boolean
 	default_thinking: boolean
 	thinking_shares_max_tokens: boolean
 	known_issues: string[]

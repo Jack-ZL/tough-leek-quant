@@ -291,6 +291,12 @@ export function DebateDialog() {
 									主管认为{s.rewriteReason ? `: ${s.rewriteReason}` : '有一方论证不合格, 已打回重写 (至多一轮)'}
 								</div>
 							)}
+							{/* 单方辩手降级警告 (role_error): 非致命, 辩论继续 */}
+							{s.warning && s.phase !== 'error' && (
+								<div className="flex items-start gap-2 text-[11px] text-amber-300/90 bg-amber-500/[0.06] border border-amber-400/20 rounded-lg px-3 py-2 whitespace-pre-line">
+									<AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />{s.warning}
+								</div>
+							)}
 							{s.phase === 'error' && (
 								<div className="flex items-center gap-2 text-xs text-rose-300 bg-rose-500/[0.06] border border-rose-400/20 rounded-lg px-3 py-2">
 									<AlertTriangle className="h-3.5 w-3.5 shrink-0" />{s.error}

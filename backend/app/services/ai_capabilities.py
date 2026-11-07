@@ -28,6 +28,9 @@ class ModelCapabilities:
     # 是否支持 enable_search 请求参数 (OpenAI 兼容协议联网搜索开关)。
     # False 时请求不传该参数, 提示词也退回无联网变体 (web_search_supported)。
     supports_web_search: bool = True
+    # 是否支持 temperature 请求参数。thinking 系模型 (kimi-k2.6/k2.7/k3 等)
+    # 温度固定 (官方文档), 传其他值报 400, 建议不显式传 → False 时请求不带。
+    supports_temperature: bool = True
     # 模型是否默认开启思考模式 (如 DeepSeek V4 官方 API)。
     default_thinking: bool = False
     # 思考 token 是否计入 max_tokens 预算 — 计入时显式限长会挤占正文
@@ -93,6 +96,29 @@ _TABLE: tuple[_Rule, ...] = (
             known_issues=("默认思考模式; 报告类任务会显式禁用思考防止挤占正文预算",),
         ),
     ),
+    # Kimi thinking 系 temperature 固定 (官方模型参数参考): k2.6 思考 1.0 /
+    # 非思考 0.6, k2.7-code 与 k3 固定 1.0, 传其他值报错, 建议不显式传入 → 不传。
+    _Rule(
+        "kimi-k2.6",
+        caps=ModelCapabilities(
+            supports_temperature=False,
+            known_issues=("temperature 固定 (思考 1.0 / 非思考 0.6), 请求不传该参数",),
+        ),
+    ),
+    _Rule(
+        "kimi-k2.7",
+        caps=ModelCapabilities(
+            supports_temperature=False,
+            known_issues=("temperature 固定 1.0, 请求不传该参数",),
+        ),
+    ),
+    _Rule(
+        "kimi-k3",
+        caps=ModelCapabilities(
+            supports_temperature=False,
+            known_issues=("temperature 固定 1.0, 请求不传该参数",),
+        ),
+    ),
 )
 
 
@@ -118,6 +144,7 @@ def lookup(model: str, base_url: str = "") -> ModelCapabilities:
         merged = replace(
             merged,
             supports_web_search=rule.caps.supports_web_search,
+            supports_temperature=rule.caps.supports_temperature,
             default_thinking=rule.caps.default_thinking,
             thinking_shares_max_tokens=rule.caps.thinking_shares_max_tokens,
             registered=True,
@@ -133,6 +160,7 @@ def describe(model: str, base_url: str = "") -> dict:
         "model": (model or "").strip(),
         "registered": caps.registered,
         "supports_web_search": caps.supports_web_search,
+        "supports_temperature": caps.supports_temperature,
         "default_thinking": caps.default_thinking,
         "thinking_shares_max_tokens": caps.thinking_shares_max_tokens,
         "known_issues": list(caps.known_issues),

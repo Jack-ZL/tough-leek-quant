@@ -47,6 +47,8 @@ export interface DebateState {
 	/** 生效裁决: 终审 ruling 优先, 无重写时取初审 ruling */
 	ruling: { ok: boolean; decision?: 'pass' | 'rewrite'; verdict?: AiVerdict | null; final?: boolean } | null
 	error: string
+	/** 单方辩手降级警告 (role_error 事件): 非致命, 辩论继续; 双方都失败才走 error */
+	warning: string
 	/** 非 null = 正在查看历史记录 (覆盖实时视图) */
 	viewing: DebateReport | null
 	history: DebateReport[]
@@ -60,7 +62,7 @@ const INITIAL: DebateState = {
 	streaming: {bull: false, bear: false, judge: false},
 	rewritten: {bull: false, bear: false, judge: false},
 	rewriteReason: '',
-	roles: {}, meta: null, ruling: null, error: '',
+	roles: {}, meta: null, ruling: null, error: '', warning: '',
 	viewing: null, history: [], historyOpen: false,
 }
 
@@ -118,7 +120,7 @@ export function startDebate() {
 		texts: {bull: '', bear: '', judge: ''},
 		streaming: {bull: true, bear: true, judge: false},
 		rewritten: {bull: false, bear: false, judge: false},
-		rewriteReason: '', roles: {}, meta: null, ruling: null, error: '',
+		rewriteReason: '', roles: {}, meta: null, ruling: null, error: '', warning: '',
 		savedReportId: undefined,
 	})
 	void runDebate(state.symbol, state.name)
@@ -189,7 +191,15 @@ async function runDebate(symbol: string, name: string) {
 					ruling = {ok: ev.ok ?? false, decision: ev.decision, verdict: ev.verdict ?? null, final: ev.final}
 					patch({ruling})
 					break
-				case 'error':
+				case 'role_error':
+				// 单方辩手失败降级: 只挂警告横幅, phase 保持 streaming 让辩论继续
+				patch({
+					warning: state.warning
+						? `${state.warning}\n${friendlyStreamError(ev.message)}`
+						: friendlyStreamError(ev.message),
+				})
+				break
+			case 'error':
 					patch({
 						phase: 'error',
 						error: friendlyStreamError(ev.message),
