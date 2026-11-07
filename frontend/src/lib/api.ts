@@ -563,6 +563,9 @@ export interface WatchlistImportCandidate {
 	name: string | null
 	matched: boolean
 	already_in_watchlist: boolean
+	/** 未匹配的具体原因（通达信板块导入会给出，如「市场标识 .SZ 与主数据 600519.SH 不符」）；
+	 *  为空时前端回退到通用文案。 */
+	reason?: string | null
 }
 
 export interface WatchlistImportResult {
@@ -571,6 +574,8 @@ export interface WatchlistImportResult {
 	candidates: WatchlistImportCandidate[]
 	matched_count: number
 	unmatched_count: number
+	/** 建议的分组名（通达信板块导入取文件名主干）；为空表示无建议。 */
+	suggested_group_name?: string
 }
 
 export interface Quote {
@@ -4321,6 +4326,17 @@ export const api = {
     const fd = new FormData()
     fd.append('file', file)
     return request<WatchlistImportResult>('/api/watchlist/import-csv', {
+      method: 'POST',
+      body: fd,
+      signal,
+      quiet,
+    })
+  },
+  /** 通达信板块文件（.blk/.ebk）导入：只解析不写库，返回候选清单 + 建议分组名（取文件名主干）。 */
+  watchlistImportBlk: (file: File, signal?: AbortSignal, quiet = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<WatchlistImportResult>('/api/watchlist/import-blk', {
       method: 'POST',
       body: fd,
       signal,

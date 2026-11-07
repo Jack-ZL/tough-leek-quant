@@ -25,6 +25,9 @@ class ImportCandidate:
     name: str | None
     matched: bool
     already_in_watchlist: bool = False
+    # 未匹配时的具体原因（通达信板块导入用：市场标识冲突 / 行形态不认）。
+    # 只加不改语义，其余导入路径留空即可。
+    reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

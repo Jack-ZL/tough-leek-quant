@@ -26,7 +26,7 @@ const MAX_IMPORT_IMAGES = 10
 const NO_MATCH_MSG = '未能匹配证券主数据，已跳过'
 const DROP_ACCEPT =
   'image/jpeg,image/png,image/webp,image/bmp,image/gif,text/csv,text/plain,' +
-  '.csv,.txt,.jpg,.jpeg,.png,.webp,.bmp,.gif'
+  '.csv,.txt,.jpg,.jpeg,.png,.webp,.bmp,.gif,.blk,.ebk'
 
 interface RowState {
   eligible: boolean
@@ -59,6 +59,12 @@ function isImageFile(file: File): boolean {
 
 function isCsvFile(file: File): boolean {
   return /\.(csv|txt)$/i.test(file.name)
+}
+
+/** 通达信板块文件。`.blk` 没有注册 MIME 类型（浏览器一律给 application/octet-stream），
+ *  所以只能按扩展名判定，与后端 `_IMPORT_BLK_EXTS` 保持一致。 */
+function isBlkFile(file: File): boolean {
+  return /\.(blk|ebk)$/i.test(file.name)
 }
 
 /** 多来源候选（多图 / 截图+文件混搭）按 code 合并，保留已匹配项。 */
@@ -131,7 +137,7 @@ function Dropzone({
         ) : (
           <ImagePlus className="h-6 w-6 text-accent" />
         )}
-        <span className="text-xs">{busy ? label : '点击选择或拖拽券商自选截图 / CSV / TXT'}</span>
+        <span className="text-xs">{busy ? label : '点击选择或拖拽券商自选截图 / CSV / TXT / 通达信板块(.blk)'}</span>
       </button>
     </>
   )
@@ -262,11 +268,13 @@ export function WatchlistImportDialog({
       setCandidates(res.candidates)
       setSelected(defaultSelection(res.candidates))
       if (res.candidates.length > 0 && res.matched_count === 0) toast(NO_MATCH_MSG, 'error')
+      return res
     } catch {
       /* 请求错误已由 request 封装弹出 */
     } finally {
       if (gen === genRef.current) setBusy(false)
     }
+    return null
   }
 
   const runRecognizeQueue = async (files: File[]) => {
@@ -331,6 +339,20 @@ export function WatchlistImportDialog({
     await stage(signal => api.watchlistImportCsv(file, signal))
   }
 
+  /** 通达信板块文件：解析后把文件名主干预填成「新建分组」名——板块中文名存在用户本机的
+   *  blocknew.cfg 里（没上传），文件名是唯一可用线索，且仅作建议，用户可改可不建。 */
+  const runBlkImport = async (file: File) => {
+    setSourceFile(file.name)
+    setPreviewUrls(prev => { revokePreviews(prev); return [] })
+    setShowSkipped(false)
+    const res = await stage(signal => api.watchlistImportBlk(file, signal))
+    const suggested = res?.suggested_group_name?.trim()
+    if (suggested && targetGroupIds.length === 0 && !newGroupName.trim()) {
+      setNewGroupName(suggested)
+      setNewGroupOpen(true)
+    }
+  }
+
   const runCodesParse = async () => {
     setSourceFile('')
     setShowSkipped(false)
@@ -341,7 +363,16 @@ export function WatchlistImportDialog({
     if (!list || list.length === 0) return
     const files = Array.from(list)
     const images = files.filter(isImageFile)
+    const blks = files.filter(isBlkFile)
     const csvs = files.filter(isCsvFile)
+    if (blks.length > 0) {
+      if (blks.length > 1 || images.length > 0 || csvs.length > 0) {
+        toast('通达信板块文件请单独导入，一次一个', 'error')
+        return
+      }
+      await runBlkImport(blks[0])
+      return
+    }
     if (csvs.length > 0) {
       if (csvs.length > 1 || images.length > 0) {
         toast('截图与 CSV 请分别导入', 'error')
@@ -355,7 +386,7 @@ export function WatchlistImportDialog({
       await runRecognizeQueue(images)
       return
     }
-    toast('请选择券商自选截图或 CSV / TXT 文件', 'error')
+    toast('请选择券商自选截图、CSV / TXT 或通达信板块文件', 'error')
   }
 
   const runCodes = async () => {
@@ -461,7 +492,9 @@ export function WatchlistImportDialog({
     const checked = !!sym && selected.has(sym)
     let status: ReactNode = null
     if (!c.matched || !sym) {
-      status = <span className="text-[10px] text-warning/90">{NO_MATCH_MSG}</span>
+      // 后端给了具体原因（如市场标识与主数据不符 / 指数代码不支持）就展示它，
+      // 比笼统的「未能匹配」更能让用户判断该改文件还是该忽略。
+      status = <span className="text-[10px] text-warning/90">{c.reason || NO_MATCH_MSG}</span>
     } else if (state.inAllSelected) {
       status = <span className="text-[10px] text-muted">已在所选分组</span>
     } else if (state.inWatchlist) {
@@ -514,7 +547,7 @@ export function WatchlistImportDialog({
             批量导入自选
           </h2>
           <p className="text-[11px] text-muted mt-0.5">
-            截图 / CSV / TXT / 粘贴代码均支持，解析后按证券主数据匹配，可多选分组导入
+            截图 / CSV / TXT / 通达信板块(.blk/.ebk) / 粘贴代码均支持，解析后按证券主数据匹配，可多选分组导入
           </p>
         </div>
         <button
