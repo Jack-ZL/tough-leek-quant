@@ -7,6 +7,8 @@ import { cn } from '@/lib/cn'
 import { copyText } from '@/lib/clipboard'
 import { toast } from '@/components/Toast'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { ReportExportMenu } from '@/components/ReportExportMenu'
+import { downloadReportMarkdown, type ReportExportInput } from '@/lib/reportExport'
 import {
 	type ActiveTask, type HistoryReport,
 	minimizeDialog, closeDialog, startAnalysis,
@@ -95,6 +97,16 @@ export function AiAnalysisDialog({ task, mode, minimized }: Props) {
 	//    主线程忙(历史报告整篇正文首帧渲染 / 行情推送触发的重渲染)也不掉帧;
 	//  - 去掉卡片 backdrop-blur-xl — 卡片本就 95% 不透明, 模糊几乎不可见, 却让动画每帧
 	//    在图表 canvas 上重算模糊、首帧还要新建合成层, 真实 GPU 环境下易闪/卡。
+	// P1-21 导出入参 (含 Markdown 源文件在内四种格式共用同一口径)
+	const exportInput: ReportExportInput | null = content && !isWorking && task ? {
+		title: `AI 财务分析 · ${task.name}${task.symbol}`,
+		meta: [
+			`${task.name} ${task.symbol}`,
+			isHistory && 'created_at' in task ? `生成时间: ${task.created_at}` : '',
+		],
+		markdown: content,
+		filename: `财务分析_${task.symbol}_${new Date().toISOString().slice(0, 10)}`,
+	} : null
 	return (
 		<div
 			className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -142,6 +154,9 @@ export function AiAnalysisDialog({ task, mode, minimized }: Props) {
 									className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-foreground transition-colors">
 									{copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
 								</button>
+							)}
+							{exportInput && (
+								<ReportExportMenu input={exportInput} onMarkdown={() => downloadReportMarkdown(exportInput)} />
 							)}
 							{/* 生成中:仅最小化(后台继续生成),无关闭按钮 */}
 							{!isHistory && isWorking && (

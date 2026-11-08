@@ -15,7 +15,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
 	BookOpenCheck, RefreshCw, Sparkles, Trash2, History, ChevronRight, AlertTriangle,
-	Database, Wand2, Copy, Download, Clock, X, Check, Trophy, ChevronDown, ChevronUp,
+	Database, Wand2, Copy, Clock, X, Check, Trophy, ChevronDown, ChevronUp,
 } from 'lucide-react'
 
 import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem } from '@/lib/api'
@@ -27,6 +27,8 @@ import { boardTag } from '@/components/stock-table/primitives'
 import { fmtBigNum } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
+import { ReportExportMenu } from '@/components/ReportExportMenu'
+import type { ReportExportInput } from '@/lib/reportExport'
 import { toast } from '@/components/Toast'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { useReviewState } from '@/lib/useReviewStore'
@@ -276,6 +278,19 @@ export function ReviewPage() {
 		URL.revokeObjectURL(url)
 	}, [content, viewing, meta, asOf])
 
+	// P1-21 一键导出 (HTML/PDF/PNG): 与下载 .md 同口径 (viewing 优先)
+	const exportInput: ReportExportInput | null = (() => {
+		const text = viewing?.content ?? content
+		if (!text) return null
+		const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
+		return {
+			title: `AI 大盘复盘 · ${reportDate}`,
+			meta: [`复盘日期: ${reportDate}`],
+			markdown: text,
+			filename: `大盘复盘_${reportDate}`,
+		}
+	})()
+
 	// 查看历史报告(不中断后台生成:仅临时把 viewing 覆盖到主区域,
 	// 生成中的流仍在 store 里继续跑,点"生成中"项即可切回)
 	const viewReport = useCallback((r: AiReviewReport) => {
@@ -406,6 +421,7 @@ export function ReviewPage() {
 									viewing={viewing}
 									onCopy={copyContent}
 									onDownload={downloadContent}
+									exportInput={exportInput}
 									onRegenerate={generate}
 									reportEndRef={reportEndRef}
 								/>
@@ -896,7 +912,7 @@ function ScorecardBadge() {
 // 报告面板(流式 + 错误 + 历史/完成态)
 // ================================================================
 function ReportPanel({
-	phase, content, error, isGenerating, viewing, onCopy, onDownload, onRegenerate, reportEndRef,
+	phase, content, error, isGenerating, viewing, onCopy, onDownload, exportInput, onRegenerate, reportEndRef,
 }: {
 	phase: ReviewPhase
 	content: string
@@ -905,6 +921,7 @@ function ReportPanel({
 	viewing: AiReviewReport | null
 	onCopy: () => void
 	onDownload: () => void
+	exportInput: ReportExportInput | null
 	onRegenerate: () => void
 	reportEndRef: React.RefObject<HTMLDivElement>
 }) {
@@ -995,9 +1012,7 @@ function ReportPanel({
 						<button onClick={onCopy} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="复制全文">
 							<Copy className="h-3 w-3" />复制
 						</button>
-						<button onClick={onDownload} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="下载为 Markdown">
-							<Download className="h-3 w-3" />下载
-						</button>
+						{exportInput && <ReportExportMenu input={exportInput} variant="text" onMarkdown={onDownload} />}
 					</div>
 				)}
 			</div>
