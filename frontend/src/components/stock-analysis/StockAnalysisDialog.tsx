@@ -8,6 +8,8 @@ import { copyText } from '@/lib/clipboard'
 import { api, type AiScorecard } from '@/lib/api'
 import { toast } from '@/components/Toast'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
+import { ReportExportMenu } from '@/components/ReportExportMenu'
+import { downloadReportMarkdown, type ReportExportInput } from '@/lib/reportExport'
 // P1-11 数据体检徽章 (个股分析/多空辩论共用)
 import { QualityBadge } from './QualityBadge'
 import {
@@ -122,6 +124,16 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
 	//    在 ECharts canvas 上重算模糊、首帧还要新建合成层, 真实 GPU 环境下易闪/卡。
 	//  原弹簧动画为主线程 JS 驱动, 上述任一负载都会让它掉帧(无头浏览器逐帧 screencast
 	//  无法复现, 属真实环境合成/主线程问题, 故从机制上消除)。
+	// P1-21 导出入参 (含 Markdown 源文件在内四种格式共用同一口径)
+	const exportInput: ReportExportInput | null = content && !isWorking && task ? {
+		title: `AI 个股分析 · ${task.name}${task.symbol}`,
+		meta: [
+			`${task.name} ${task.symbol}`,
+			isHistory && 'created_at' in task ? `生成时间: ${task.created_at}` : '',
+		],
+		markdown: content,
+		filename: `个股分析_${task.symbol}_${new Date().toISOString().slice(0, 10)}`,
+	} : null
 	return (
 		<div
 			className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
@@ -173,6 +185,9 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
 									className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-foreground transition-colors">
 									{copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
 								</button>
+							)}
+							{exportInput && (
+								<ReportExportMenu input={exportInput} onMarkdown={() => downloadReportMarkdown(exportInput)} />
 							)}
 							{!isHistory && isWorking && (
 								<button onClick={minimizeDialog} title="最小化为气泡,后台继续生成"

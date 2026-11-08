@@ -4,6 +4,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
+import { ReportExportMenu } from '@/components/ReportExportMenu'
+import { downloadReportMarkdown, type ReportExportInput } from '@/lib/reportExport'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import { verdictTone } from '@/lib/stockAnalysisStore'
 // P1-11 数据体检徽章 (与个股分析对话框共用)
@@ -135,6 +137,19 @@ function RoleColumn({
 function HistoryPanel() {
 	const { history, viewing } = useDebateState()
 	if (viewing) {
+		// P1-21 导出入参: 三方发言合并为一份 Markdown, 四种格式共用同一口径
+		const exportInput: ReportExportInput = {
+			title: `多空辩论 · ${viewing.name}${viewing.symbol}`,
+			meta: [
+				`${viewing.name} ${viewing.symbol}`,
+				`生成时间: ${viewing.created_at}`,
+				viewing.verdict?.direction
+					? `终审裁决: ${viewing.verdict.direction}${viewing.verdict.reason ? ` · ${viewing.verdict.reason}` : ''}`
+					: '',
+			],
+			markdown: `## 多方辩手\n\n${viewing.bull_text || '—'}\n\n## 空方辩手\n\n${viewing.bear_text || '—'}\n\n## 风控主管\n\n${viewing.judge_text || '—'}`,
+			filename: `多空辩论_${viewing.symbol}_${(viewing.created_at ?? '').slice(0, 10)}`,
+		}
 		return (
 			<div className="flex flex-col gap-3 min-h-0">
 				<div className="flex items-center gap-2 shrink-0">
@@ -146,6 +161,9 @@ function HistoryPanel() {
 						<span className="font-mono text-[10px] text-muted">{viewing.symbol}</span></span>
 					<span className="text-[10px] text-muted">{fmtRelative(viewing.created_at)}</span>
 					<VerdictBadge verdict={viewing.verdict} ok={viewing.verdict ? true : undefined} final />
+					<div className="ml-auto">
+						<ReportExportMenu input={exportInput} onMarkdown={() => downloadReportMarkdown(exportInput)} />
+					</div>
 				</div>
 				<div className="flex gap-3 min-h-0 flex-1">
 					<RoleColumn role="bull" text={viewing.bull_text} streaming={false} model={viewing.roles?.bull} />
