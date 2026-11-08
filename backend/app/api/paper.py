@@ -96,6 +96,12 @@ def list_accounts(request: Request):
     return {"accounts": paper.list_accounts(_data_dir(request))}
 
 
+@router.get("/kill-switch")
+def get_kill_switch(request: Request):
+    """全局急停状态 (P1-14): active 时下单被拒、结算跳过撮合。解除 = 删除数据目录下的急停文件。"""
+    return paper.kill_switch_state(_data_dir(request))
+
+
 @router.get("/account")
 def get_account(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
     acc = paper.get_account(_data_dir(request), _acc(request, account))

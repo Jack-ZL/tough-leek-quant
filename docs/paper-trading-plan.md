@@ -123,6 +123,9 @@ data/paper/
 - **冻结**: 账户 frozen 后拒绝新订单, 持仓只读; 保留数据可重建
 - **数据缺失**: 缺行情/缺因子一律留痕 warning + 顺延, 绝不臆造成交价(金融数据错误原则)
 - **回滚**: 停用功能 = 冻结账户 + 隐藏菜单; 数据目录独立(`data/paper/`), 删除即卸载
+- **全局急停 (P1-14)**: 数据目录放置 `paper_kill_switch` 文件即停止一切交易 — 下单被拒(含自动跟单/策略执行, 均走 `create_order` 单一入口)、盘后结算跳过撮合(挂单原样保留不计顺延); 除权调整与净值记账照常(记账不是交易)。fail-safe: 开关状态不可读时按急停处理; 解除 = 删除文件, 不提供 API 代删。状态经 `GET /api/paper/kill-switch` 暴露, 模拟盘页顶部红条提示
+- **已了结订单压缩归档 (P1-14)**: 了结超过 180 天(`ARCHIVE_RETAIN_DAYS`)的 filled/expired/cancelled 订单在每日结算时移入 `accounts/{id}/archive/orders_YYYY-MM.jsonl.gz`(按月分包追加), `load_orders` 合并读回, 历史与统计口径不变; `fills.jsonl` 是唯一事实源, 不归档
+- **除权后对账 (P1-14)**: 每日结算后 `reconcile_account` 自动核对 — ① 台账重放 vs `positions.json`/账户现金快照, 不一致即由台账自愈重建(重放是唯一权威); ② corp_action 台账链(qty_before/cost_before 须等于当时重放状态, 新行附 qty_after/cost_after 供因子核算), 链问题只记录不修(append-only 不改写历史)。异常经 alert_store 留痕进监控中心(type=reconcile, severity=warning)
 
 ## 10. 测试矩阵(per CONTRIBUTING)
 

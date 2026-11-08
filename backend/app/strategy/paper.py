@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import re
@@ -35,6 +36,7 @@ import uuid
 from datetime import date as _date
 from datetime import datetime
 from datetime import time as _time
+from datetime import timedelta
 from pathlib import Path
 
 import polars as pl
@@ -145,6 +147,26 @@ def _order_sort_key(order: dict) -> tuple:
 
 
 # ── 账户 ────────────────────────────────────────────────
+# ── P1-14 全局急停开关 ─────────────────────────────────
+KILL_SWITCH_FILENAME = "paper_kill_switch"
+
+
+def kill_switch_state(data_dir: Path) -> dict:
+    """全局急停: 数据目录放置同名文件即停止一切交易 (P1-14)。
+
+    fail-safe: 检查本身出错 (连目录都读不了) 也视为急停 — 宁可停不可带病跑。
+    解除 = 删除文件; 不提供 API 代删 (接口坏了开关也必须有效)。
+    """
+    p = Path(data_dir) / KILL_SWITCH_FILENAME
+    try:
+        if p.exists():
+            return {"active": True,
+                    "reason": f"急停文件 {KILL_SWITCH_FILENAME} 存在, 全部交易已停止直至删除该文件"}
+        return {"active": False, "reason": ""}
+    except OSError as e:
+        return {"active": True, "reason": f"急停文件状态不可读 ({e}), 按 fail-safe 停止交易"}
+
+
 def get_account(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict | None:
     p = _root(data_dir, account_id) / "account.json"
     if not p.exists():
@@ -341,18 +363,86 @@ def qty_from_amount(amount: float, ref_price: float) -> int:
 
 # ── 订单 ────────────────────────────────────────────────
 def load_orders(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> list[dict]:
+    """活跃订单 + gz 压缩归档 (P1-14) 合并读取, 按下单时间排序。"""
     out: list[dict] = []
     for f in sorted(_orders_dir(data_dir, account_id).glob("order_*.json")):
         try:
             out.append(json.loads(f.read_text(encoding="utf-8")))
         except Exception as e:
             logger.warning("paper order load failed %s: %s", f.name, e)
+    for gz in sorted(_archive_dir(data_dir, account_id).glob("orders_*.jsonl.gz")):
+        try:
+            with gzip.open(gz, "rt", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
+        except Exception as e:
+            logger.warning("paper order archive load failed %s: %s", gz.name, e)
+    out.sort(key=_order_sort_key)
     return out
 
 
 def save_order(data_dir: Path, order: dict, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
     p = _orders_dir(data_dir, account_id) / f"{order['id']}.json"
     atomic_write_text(p, json.dumps(order, ensure_ascii=False, indent=2))
+
+
+# ── P1-14 已了结订单压缩归档 ────────────────────────────
+ARCHIVE_RETAIN_DAYS = 180       # 已了结订单活跃保留天数, 更早的压缩进归档
+_TERMINAL_ORDER_STATUSES = ("filled", "expired", "cancelled")
+
+
+def _archive_dir(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> Path:
+    return _root(data_dir, account_id) / "archive"
+
+
+def _order_closed_date(order: dict) -> str:
+    """已了结订单的了结日期 (归档截断用); 缺失时退回下单时间。"""
+    for key in ("filled_at", "closed_at", "updated_at", "created_at"):
+        v = str(order.get(key) or "")[:10]
+        if v:
+            return v
+    return ""
+
+
+def archive_closed_orders(
+    data_dir: Path,
+    account_id: str = DEFAULT_ACCOUNT_ID,
+    retain_days: int = ARCHIVE_RETAIN_DAYS,
+    today: _date | None = None,
+) -> int:
+    """把 retain_days 之前的已了结订单压缩归档到按月分包, 返回归档条数。
+
+    移入 archive/orders_YYYY-MM.jsonl.gz (追加进已有月包); load_orders
+    会合并读回, 历史与统计不受影响。fills.jsonl 是唯一事实源, 不归档。
+    """
+    cutoff = ((today or cn_today()) - timedelta(days=retain_days)).isoformat()
+    buckets: dict[str, list[str]] = {}
+    for f in sorted(_orders_dir(data_dir, account_id).glob("order_*.json")):
+        try:
+            order = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if order.get("status") not in _TERMINAL_ORDER_STATUSES:
+            continue
+        closed = _order_closed_date(order)
+        if not closed or closed > cutoff:
+            continue
+        buckets.setdefault(closed[:7], []).append(json.dumps(order, ensure_ascii=False))
+        f.unlink()
+    for month, lines in sorted(buckets.items()):
+        dest = _archive_dir(data_dir, account_id) / f"orders_{month}.jsonl.gz"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        old = ""
+        if dest.exists():
+            with gzip.open(dest, "rt", encoding="utf-8") as fh:
+                old = fh.read()
+        with gzip.open(dest, "wt", encoding="utf-8") as fh:
+            if old:
+                fh.write(old if old.endswith("\n") else old + "\n")
+            fh.write("\n".join(lines) + "\n")
+    return sum(len(v) for v in buckets.values())
 
 
 def get_order(data_dir: Path, order_id: str, account_id: str = DEFAULT_ACCOUNT_ID) -> dict | None:
@@ -390,6 +480,9 @@ def create_order(
             raise ValueError("尚未创建模拟账户")
         if acc.get("status") != "active":
             return None, "账户已冻结, 拒绝新订单"
+        ks = kill_switch_state(data_dir)
+        if ks["active"]:
+            return None, f"全局急停: {ks['reason']}"
         if side not in ("buy", "sell"):
             return None, f"side 非法: {side!r}"
         if order_type not in ("market", "next_open", "close"):
@@ -623,22 +716,108 @@ def _materialize(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
     )
 
 
+def _rebuild_unlocked(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict[str, dict]:
+    """由台账重建物化持仓/现金 (调用方需已持有 PAPER_LOCK)。"""
+    positions, cash = replay_positions(data_dir, account_id=account_id)
+    acc = get_account(data_dir, account_id)
+    if acc is not None:
+        acc["cash"] = cash
+        save_account(data_dir, acc, account_id)
+    today = cn_today().isoformat()
+    for pos in positions.values():
+        pos["available_qty"] = _available_of(pos, today)
+    atomic_write_text(
+        _root(data_dir, account_id) / "positions.json",
+        json.dumps({"updated_at": _now_iso(), "positions": positions}, ensure_ascii=False, indent=2),
+    )
+    return positions
+
+
 def rebuild_positions(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict[str, dict]:
     """修复兜底: 强制由台账重建物化持仓。"""
     with PAPER_LOCK:
-        positions, cash = replay_positions(data_dir, account_id=account_id)
-        acc = get_account(data_dir, account_id)
-        if acc is not None:
-            acc["cash"] = cash
-            save_account(data_dir, acc, account_id)
-        today = cn_today().isoformat()
-        for pos in positions.values():
-            pos["available_qty"] = _available_of(pos, today)
-        atomic_write_text(
-            _root(data_dir, account_id) / "positions.json",
-            json.dumps({"updated_at": _now_iso(), "positions": positions}, ensure_ascii=False, indent=2),
-        )
-        return positions
+        return _rebuild_unlocked(data_dir, account_id)
+
+
+def reconcile_account(data_dir: Path, account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
+    """P1-14 对账: 台账重放 vs 物化快照 + corp_action 链核对。
+
+    返回 {ok, fixed, issues}:
+    - 快照对账: replay_positions (唯一权威重放) vs positions.json / 账户现金,
+      容差 1e-6 (数量/成本) / 0.01 (现金); 不一致即 _rebuild_unlocked 自愈
+      (fills 是唯一事实源)。调用方需已持有 PAPER_LOCK 或确保无并发写;
+    - 链核对: 每条 corp_action 行的 qty_before/cost_before 必须等于当时重放
+      状态, qty_after/cost_after (新行写入) 必须等于因子计算值; 链问题只
+      记录不修 — append-only 台账不改写历史。
+    """
+    issues: list[str] = []
+    fills = load_fills(data_dir, account_id)
+    positions, cash = replay_positions(data_dir, fills=fills, account_id=account_id)
+
+    # 链核对: 镜像 replay 的 qty/avg_cost 演化 (口径与 replay_positions 一致:
+    # 买入成本含费, 卖出不动成本, corp_action 乘因子 round 6)
+    chain: dict[str, dict] = {}
+    for f in fills:
+        symbol = f["symbol"]
+        if f.get("kind") == "corp_action":
+            pos = chain.get(symbol)
+            factor = float(f.get("factor") or 0.0)
+            if pos is None:
+                continue  # 与 replay 同口径: 未持仓标的的 corp_action 是 no-op
+            if f.get("qty_before") is not None and abs(float(f["qty_before"]) - pos["qty"]) > 1e-6:
+                issues.append(f"corp_action 链 {symbol}: qty_before={f['qty_before']} != 重放 {pos['qty']}")
+            if f.get("cost_before") is not None and abs(float(f["cost_before"]) - pos["avg_cost"]) > 1e-6:
+                issues.append(f"corp_action 链 {symbol}: cost_before={f['cost_before']} != 重放 {pos['avg_cost']}")
+            if f.get("qty_after") is not None and abs(float(f["qty_after"]) - round(pos["qty"] * factor, 6)) > 1e-6:
+                issues.append(f"corp_action 链 {symbol}: qty_after={f['qty_after']} != 因子计算")
+            if f.get("cost_after") is not None and abs(float(f["cost_after"]) - round(pos["avg_cost"] / factor, 6)) > 1e-6:
+                issues.append(f"corp_action 链 {symbol}: cost_after={f['cost_after']} != 因子计算")
+            pos["qty"] = round(pos["qty"] * factor, 6)
+            pos["avg_cost"] = round(pos["avg_cost"] / factor, 6) if factor else 0.0
+            continue
+        qty, price, fee = int(f["qty"]), float(f["price"]), float(f.get("fee", 0))
+        pos = chain.setdefault(symbol, {"qty": 0, "avg_cost": 0.0})
+        if f["side"] == "buy":
+            total = pos["avg_cost"] * pos["qty"] + qty * price + fee
+            pos["qty"] += qty
+            pos["avg_cost"] = round(total / pos["qty"], 6) if pos["qty"] else 0.0
+        else:
+            pos["qty"] = max(0, pos["qty"] - qty)
+            if pos["qty"] == 0:
+                pos["avg_cost"] = 0.0
+
+    # 快照对账: positions.json 缺失时 load_positions 会自动回放兜底, 这里
+    # 直接读文件区分 "无快照" 与 "快照错"
+    p = _root(data_dir, account_id) / "positions.json"
+    stored: dict | None = None
+    if p.exists():
+        try:
+            stored = json.loads(p.read_text(encoding="utf-8")).get("positions", {})
+        except Exception:
+            stored = {}
+    snapshot_bad = False
+    if stored is not None:
+        if set(stored) != set(positions):
+            issues.append(f"持仓快照 symbol 集不一致: 快照 {sorted(stored)} vs 重放 {sorted(positions)}")
+            snapshot_bad = True
+        else:
+            for sym, pos in positions.items():
+                sp = stored.get(sym, {})
+                if (abs(float(sp.get("qty", 0)) - pos["qty"]) > 1e-6
+                        or abs(float(sp.get("avg_cost", 0)) - pos["avg_cost"]) > 1e-6):
+                    issues.append(
+                        f"持仓快照 {sym}: qty/cost 不一致 (快照 {sp.get('qty')}/{sp.get('avg_cost')}"
+                        f" vs 重放 {pos['qty']}/{pos['avg_cost']})")
+                    snapshot_bad = True
+    acc = get_account(data_dir, account_id)
+    if acc is not None and abs(float(acc.get("cash", 0)) - cash) > 0.01:
+        issues.append(f"现金快照不一致: 账户 {acc.get('cash')} vs 重放 {cash:.2f}")
+        snapshot_bad = True
+    fixed = False
+    if snapshot_bad:
+        _rebuild_unlocked(data_dir, account_id)
+        fixed = True
+    return {"ok": not issues, "fixed": fixed, "issues": issues}
 
 
 # ── 撮合 ────────────────────────────────────────────────
@@ -955,16 +1134,20 @@ def settle_day(data_dir: Path, day: str, account_id: str = DEFAULT_ACCOUNT_ID) -
     当日开盘后才下 / 排队的 next_open 单, 以及收盘后才下的 close / market 单,
     当日不成交也不计顺延, 留到下一交易日 (见 _placed_after_price_time)。
     """
-    summary = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "account": account_id}
+    summary = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "account": account_id,
+               "kill_switch": False, "archived": 0, "reconcile": None}
     with PAPER_LOCK:
         acc = get_account(data_dir, account_id)
         if acc is None:
             return summary
+        ks = kill_switch_state(data_dir)
+        summary["kill_switch"] = ks["active"]
         pending_orders = sorted(
             (o for o in load_orders(data_dir, account_id) if o["status"] == "pending"),
             key=_order_sort_key,
         )
-        for order in pending_orders:
+        # 急停: 跳过撮合, 挂单原样保留 (不计 postponed); corp_action/NAV 是记账, 照常
+        for order in ([] if ks["active"] else pending_orders):
             bar = read_daily_bar(data_dir, order["symbol"], order.get("asset_type", "stock"), day)
             if bar is None:
                 order["postponed"] = int(order.get("postponed", 0)) + 1
@@ -1012,10 +1195,18 @@ def settle_day(data_dir: Path, day: str, account_id: str = DEFAULT_ACCOUNT_ID) -
                 "factor": factor,
                 "qty_before": before_qty,
                 "cost_before": before_cost,
+                "qty_after": round(before_qty * factor, 6),
+                "cost_after": round(before_cost / factor, 6) if factor else 0.0,
             }, account_id)
             summary["corp_actions"] += 1
         if summary["corp_actions"]:
             _materialize(data_dir, account_id)
+
+        # 已了结订单压缩归档 (软失败: 归档失败不影响结算)
+        try:
+            summary["archived"] = archive_closed_orders(data_dir, account_id)
+        except Exception as e:
+            logger.warning("paper archive failed (soft): %s", e)
 
         # 定版净值 (幂等: 重写当日行); 顺带记录沪深300 收盘作基准对比
         nav = daily_nav(data_dir, day, account_id=account_id)
@@ -1025,6 +1216,15 @@ def settle_day(data_dir: Path, day: str, account_id: str = DEFAULT_ACCOUNT_ID) -
                 nav["benchmark_close"] = benchmark
             _write_nav_line(data_dir, day, nav, account_id)
             summary["nav"] = nav
+    # 除权后对账 (锁外执行: reconcile 内部自愈会重建物化, 避免重入死锁)
+    try:
+        rec = reconcile_account(data_dir, account_id)
+        summary["reconcile"] = rec
+        if not rec["ok"]:
+            logger.warning("paper reconcile %s: %s", account_id, rec["issues"])
+    except Exception as e:
+        logger.warning("paper reconcile failed (soft): %s", e)
+        summary["reconcile"] = {"ok": False, "fixed": False, "issues": [f"对账异常: {e}"]}
     return summary
 
 

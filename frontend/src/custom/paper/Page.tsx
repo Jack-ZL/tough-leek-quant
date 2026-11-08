@@ -1658,6 +1658,13 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
 		refetchInterval: () => (quoteStatus?.is_trading_hours === false ? 300_000 : 60_000),
 		placeholderData: (prev: any) => prev,
 	})
+	// 全局急停状态 (P1-14): 60s 轮询, 生效时页顶红条提示
+	const ksQ = useQuery({
+		queryKey: QK.paperKillSwitch,
+		queryFn: api.paperKillSwitch,
+		refetchInterval: 60_000,
+		staleTime: 30_000,
+	})
 
 	const rows = cmpQ.data?.accounts ?? []
 	const executionQ = useQuery({
@@ -1733,6 +1740,15 @@ function CompareView({ onCreateSingle }: { onCreateSingle: () => void }) {
 					</div>
 				}
 			/>
+			{ksQ.data?.active && (
+				<div className="mx-5 mt-3 flex items-start gap-2 rounded-card border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+					<ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+					<span>
+						全局急停生效：{ksQ.data.reason}。下单将被拒绝，盘后结算跳过撮合（挂单原样保留，除权/净值记账照常）。
+						解除方式：删除服务器数据目录下的 <code className="rounded bg-danger/20 px-1 font-mono">paper_kill_switch</code> 文件。
+					</span>
+				</div>
+			)}
 			<div className="min-h-0 flex-1 overflow-y-auto p-5">
 				{cmpQ.isLoading ? (
 					<div className="py-16 text-center text-sm text-muted">加载中…</div>
