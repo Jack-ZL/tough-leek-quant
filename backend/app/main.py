@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app import __version__
 from app.api import (
     abnormal,
+    ai_audit,
     alerts,
     analysis,
     backtest,
@@ -750,6 +751,7 @@ app.include_router(stock_analysis.router)
 app.include_router(stock_debate.router)
 app.include_router(stock_profile.router)  # P1-13: 个股资料(解禁/质押/回购/股东户数)
 app.include_router(market_recap.router)
+app.include_router(ai_audit.router)  # P2-23: AI 分析不可篡改账本(倒查/校验)
 app.include_router(settings_api.router)
 app.include_router(upgrade_guard_api.router)
 app.include_router(strategy.router)

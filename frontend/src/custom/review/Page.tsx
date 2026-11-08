@@ -221,6 +221,8 @@ export function ReviewPage() {
 		model?: string;
 		provider?: string;
 		profile_id?: string
+		// P2-23 账本 run id
+		audit_id?: string
 	} | null) => {
 		const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
 		try {
@@ -235,6 +237,8 @@ export function ReviewPage() {
 				model: doneMeta?.model ?? '',
 				provider: doneMeta?.provider ?? '',
 				profile_id: doneMeta?.profile_id ?? '',
+				// P2-23: 账本 run id 带回, 后端追加 link 条目绑定 report_id
+				audit_id: doneMeta?.audit_id ?? '',
 			})
 			qc.invalidateQueries({ queryKey: QK.reviewReports })
 		} catch { /* 静默 */

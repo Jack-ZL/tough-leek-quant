@@ -23,6 +23,8 @@ export interface ReviewMeta {
 	model?: string
 	provider?: string
 	profile_id?: string
+	/** P2-23 账本 run id: meta 事件下发, 归档复盘时带回绑定 */
+	audit_id?: string
 }
 
 export interface ReviewState {

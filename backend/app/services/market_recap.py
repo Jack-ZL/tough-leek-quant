@@ -406,15 +406,27 @@ async def recap_market_stream(
 
     emo = overview.get("emotion") or {}
 
+    # P2-23 不可篡改账本: 登记复盘装配的市场总览/新闻等输入 (指纹+快照)
+    from app.services import ai_audit
+    audit_id = ai_audit.begin_run(repo.store.data_dir, "market_recap", as_of_str)
+    audit_inputs = [ai_audit.add_input(repo.store.data_dir, audit_id, "overview", overview,
+                                       as_of=as_of_str)]
+    if news:
+        audit_inputs.append(ai_audit.add_input(repo.store.data_dir, audit_id, "news", news,
+                                               as_of=as_of_str))
+
     # 2. meta 事件(前端据此先渲染信号灯/看板; P1-15: 带归属快照随报告落盘)
     from app.services import ai_provider as _ai_prov
+    attr = _ai_prov.current_attribution()
     yield json.dumps({
         "type": "meta",
         "as_of": as_of_str,
         "emotion_score": emo.get("score", 50),
         "emotion_label": emo.get("label", "—"),
         "summary": _recap_summary(overview),
-        **_ai_prov.current_attribution(),
+        **attr,
+        # P2-23: 账本 run id (前端/定时任务保存报告时带回绑定 report_id)
+        "audit_id": audit_id,
     }, ensure_ascii=False)
 
     # 3+4. 构建 prompt + 流式调用 LLM(整体 try-except,任何异常 yield error,避免前端卡死)
@@ -425,11 +437,17 @@ async def recap_market_stream(
         from app.services import dragon_tiger as dragon_tiger_svc
 
         lhb_ctx = dragon_tiger_svc.build_recap_context(repo.store.data_dir)
+        if lhb_ctx:
+            audit_inputs.append(ai_audit.add_input(repo.store.data_dir, audit_id, "lhb", lhb_ctx,
+                                                   as_of=as_of_str))
 
         # 盘前风向标摘要 (fuyao 专有): 失败/未配置 → 空串
         from app.services import auction_benchmark as auction_benchmark_svc
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
+        if bench_ctx:
+            audit_inputs.append(ai_audit.add_input(repo.store.data_dir, audit_id, "auction_bench",
+                                                   bench_ctx, as_of=as_of_str))
 
         # P0-7 AI 历史战绩: 纯读台账不触发结算 (结算在 scorecard API / save_report 惰性做),
         # 失败给空串 — 战绩注入不了不影响复盘主流程
@@ -451,6 +469,9 @@ async def recap_market_stream(
         except Exception:  # noqa: BLE001
             logger.warning("market recap: load regime row failed (soft)", exc_info=True)
             regime_row = None
+        if regime_row:
+            audit_inputs.append(ai_audit.add_input(repo.store.data_dir, audit_id, "regime",
+                                                   regime_row, as_of=as_of_str))
         user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx,
                                          scorecard_context=scorecard_ctx,
                                          quality_context=quality_ctx,
@@ -482,7 +503,14 @@ async def recap_market_stream(
                 yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
         got_content = False
+        out_parts: list[str] = []
         async for line in gate_ndjson_stream(_delta_lines(), pool):
+            try:
+                _ev = json.loads(line)
+                if _ev.get("type") == "delta":
+                    out_parts.append(_ev.get("content", ""))
+            except (json.JSONDecodeError, TypeError):
+                pass
             got_content = True
             yield line
 
@@ -495,6 +523,14 @@ async def recap_market_stream(
         logger.warning("AI market recap ended with empty content for %s", as_of_str)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+    # P2-23: 产出哈希由后端在流结束算 (前端/定时任务所见正文 = delta 拼接)
+    ai_audit.finish_run(
+        repo.store.data_dir, audit_id=audit_id, kind="market_recap", symbol=as_of_str,
+        inputs=audit_inputs, prompt_text=system_prompt + "\n\n" + user_prompt,
+        output_text="".join(out_parts),
+        model=attr.get("model", ""), provider=attr.get("provider", ""),
+        profile_id=attr.get("profile_id", ""),
+    )
     yield json.dumps({"type": "done"}, ensure_ascii=False)
 
 

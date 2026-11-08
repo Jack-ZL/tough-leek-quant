@@ -394,6 +394,8 @@ export interface DebateStreamEvent {
 	model?: string
 	provider?: string
 	profile_id?: string
+	/** P2-23: meta 事件带账本 run id, 保存辩论记录时带回绑定 */
+	audit_id?: string
 	/** role_delta: 增量文本; role_done: 该角色最终全文 (重写过的为重写版) */
 	content?: string
 	/** role_done: 该角色是否被打回重写过 */
@@ -431,6 +433,8 @@ export interface DebateReport {
 	model?: string
 	provider?: string
 	profile_id?: string
+	/** P2-23 账本 run id: 保存时带回绑定 report_id (旧记录无此字段) */
+	audit_id?: string
 	created_at: string
 }
 
@@ -1022,6 +1026,67 @@ export interface AiReviewReport {
 	provider?: string
 	profile_id?: string
 	created_at: string
+}
+
+// ===== AI 分析不可篡改账本 (P2-23) =====
+/** 账本条目 (run/link/checkpoint 混合; 字段按 type 取用) */
+export interface AiAuditEntry {
+	seq: number
+	ts: string
+	type: 'run' | 'link' | 'checkpoint'
+	audit_id?: string
+	kind?: string
+	symbol?: string
+	model?: string
+	provider?: string
+	profile_id?: string
+	/** link 条目: 绑定的报告 id */
+	report_id?: string
+	/** checkpoint 条目 */
+	day?: string
+	runs_today?: number
+	/** run 条目: 输入指纹清单 */
+	inputs?: AiAuditInputItem[]
+	prompt_sha256?: string
+	output_sha256?: string
+	output_chars?: number
+	hash: string
+	prev_hash: string
+}
+
+export interface AiAuditInputItem {
+	name: string
+	as_of?: string
+	rows?: number | null
+	sha256: string
+	snapshot_ref?: string
+	/** detail 接口回填: ok=快照在 / expired=已过保留期清理 */
+	snapshot_state?: 'ok' | 'expired'
+}
+
+export interface AiAuditDetail extends AiAuditEntry {
+	links: AiAuditEntry[]
+}
+
+export interface AiAuditVerifyResult {
+	ok: boolean
+	checked: number
+	snapshots_checked: number
+	snapshots_missing: number
+	retain_days: number
+	errors: string[]
+}
+
+export interface AiAuditRecompareResult {
+	ok: boolean
+	recomparable?: boolean
+	current_available?: boolean
+	match?: boolean
+	stored_sha256?: string
+	current_sha256?: string
+	stored_as_of?: string
+	note?: string
+	error?: string
 }
 
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
@@ -5381,6 +5446,8 @@ export const api = {
 		periods?: number; summary?: string
 		// P1-15 模型归属: meta 事件下发的快照原样带回落盘
 		model?: string; provider?: string; profile_id?: string
+		// P2-23 账本 run id: 后端据此追加 link 条目绑定 report_id
+		audit_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiFinancialReport }>('/api/financials/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -5411,6 +5478,8 @@ export const api = {
 		model?: string
 		provider?: string
 		profile_id?: string
+		/** P2-23: meta 事件带账本 run id, 保存报告时带回绑定 */
+		audit_id?: string
 	}> {
 		const res = await fetch('/api/financials/analyze', {
 			method: 'POST',
@@ -5479,6 +5548,8 @@ export const api = {
 		quality?: DataQuality | null  // P1-11 数据体检快照随报告落库
 		// P1-15 模型归属: meta 事件下发的快照原样带回落盘 (记分卡按模型分组的数据源头)
 		model?: string; provider?: string; profile_id?: string
+		// P2-23 账本 run id: 后端据此追加 link 条目绑定 report_id
+		audit_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiStockReport }>('/api/stock-analysis/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -5578,6 +5649,8 @@ export const api = {
 		model?: string
 		provider?: string
 		profile_id?: string
+		/** P2-23: meta 事件带账本 run id, 保存报告时带回绑定 */
+		audit_id?: string
 		content?: string
 		message?: string
 		/** verdict 事件: 研判卡 (done 前下发; ok=false 表示 AI 未按格式交卡) */
@@ -5651,6 +5724,8 @@ export const api = {
 		push?: boolean
 		// P1-15 模型归属: meta 事件下发的快照原样带回落盘
 		model?: string; provider?: string; profile_id?: string
+		// P2-23 账本 run id: 后端据此追加 link 条目绑定 report_id
+		audit_id?: string
 	}) =>
 		request<{ ok: boolean; report: AiReviewReport }>('/api/market-recap/reports', {
 			method: 'POST', body: JSON.stringify(r),
@@ -5658,6 +5733,31 @@ export const api = {
 
 	reviewReportDelete: (reportId: string) =>
 		request<{ ok: boolean }>(`/api/market-recap/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+	// ===== AI 分析不可篡改账本 (P2-23) =====
+	aiAuditEntries: (params?: { symbol?: string; kind?: string; limit?: number }) => {
+		const qs = new URLSearchParams()
+		if (params?.symbol) qs.set('symbol', params.symbol)
+		if (params?.kind) qs.set('kind', params.kind)
+		qs.set('limit', String(params?.limit ?? 50))
+		return request<{ entries: AiAuditEntry[] }>(`/api/ai_audit/entries?${qs.toString()}`)
+	},
+
+	aiAuditDetail: (auditId: string) =>
+		request<AiAuditDetail>(`/api/ai_audit/entries/${encodeURIComponent(auditId)}`),
+
+	aiAuditSnapshot: (auditId: string, name: string) =>
+		request<{ audit_id: string; name: string; payload: unknown }>(
+			`/api/ai_audit/entries/${encodeURIComponent(auditId)}/snapshot/${encodeURIComponent(name)}`,
+		),
+
+	aiAuditVerify: () =>
+		request<AiAuditVerifyResult>('/api/ai_audit/verify', { method: 'POST' }),
+
+	aiAuditRecompare: (auditId: string, name: string) =>
+		request<AiAuditRecompareResult>('/api/ai_audit/recompare', {
+			method: 'POST', body: JSON.stringify({ audit_id: auditId, name }),
+		}),
 
 	/**
 	 * AI 大盘复盘 — 流式调用(NDJSON,与个股/财务分析同协议)。
@@ -5675,6 +5775,8 @@ export const api = {
 		model?: string
 		provider?: string
 		profile_id?: string
+		/** P2-23: meta 事件带账本 run id, 保存报告时带回绑定 */
+		audit_id?: string
 	}> {
 		const res = await fetch('/api/market-recap/analyze', {
 			method: 'POST',

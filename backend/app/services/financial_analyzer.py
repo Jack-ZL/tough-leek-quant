@@ -164,12 +164,19 @@ async def analyze_financials_stream(
 
     # 2. meta (P1-15: 带归属快照, 前端保存报告时原样带回落盘)
     from app.services import ai_provider as _ai_prov
+    attr = _ai_prov.current_attribution()
+    # P2-23 不可篡改账本: 登记喂给模型的财务数据 (指纹+快照)
+    from app.services import ai_audit
+    audit_id = ai_audit.begin_run(data_dir, "financial", symbol)
+    audit_inputs = [ai_audit.add_input(data_dir, audit_id, "financials", fins)]
     yield json.dumps({
         "type": "meta",
         "symbol": symbol,
         "summary": _summarize(fins),
         "periods": total_rows,
-        **_ai_prov.current_attribution(),
+        **attr,
+        # P2-23: 账本 run id (前端保存报告时带回绑定 report_id)
+        "audit_id": audit_id,
     }, ensure_ascii=False)
 
     # 3. 调用 LLM 流式
@@ -200,7 +207,14 @@ async def analyze_financials_stream(
                 yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
         got_content = False
+        out_parts: list[str] = []
         async for line in gate_ndjson_stream(_delta_lines(), pool):
+            try:
+                _ev = json.loads(line)
+                if _ev.get("type") == "delta":
+                    out_parts.append(_ev.get("content", ""))
+            except (json.JSONDecodeError, TypeError):
+                pass
             got_content = True
             yield line
 
@@ -213,4 +227,12 @@ async def analyze_financials_stream(
         logger.warning("AI financial analysis ended with empty content for %s", symbol)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+    # P2-23: 产出哈希由后端在流结束算
+    ai_audit.finish_run(
+        data_dir, audit_id=audit_id, kind="financial", symbol=symbol,
+        inputs=audit_inputs, prompt_text=system_prompt + "\n\n" + user_prompt,
+        output_text="".join(out_parts),
+        model=attr.get("model", ""), provider=attr.get("provider", ""),
+        profile_id=attr.get("profile_id", ""),
+    )
     yield json.dumps({"type": "done"}, ensure_ascii=False)

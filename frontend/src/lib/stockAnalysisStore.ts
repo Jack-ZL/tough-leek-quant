@@ -33,6 +33,8 @@ export interface ActiveTask {
 		model?: string
 		provider?: string
 		profile_id?: string
+		/** P2-23 账本 run id: meta 事件下发, 保存报告时带回绑定 */
+		audit_id?: string
 	} | null
 	/** 研判卡 (ai_verdict): done 前由后端 verdict 事件下发; 未收到则为 null */
 	verdict?: AiVerdict | null
@@ -253,7 +255,8 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
 							quality: chunk.quality ?? null,
 							model: chunk.model,
 							provider: chunk.provider,
-							profile_id: chunk.profile_id
+							profile_id: chunk.profile_id,
+							audit_id: chunk.audit_id
 						}
 					})
 					break
@@ -294,6 +297,8 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
 					model: final.meta?.model ?? '',
 					provider: final.meta?.provider ?? '',
 					profile_id: final.meta?.profile_id ?? '',
+					// P2-23: 账本 run id 带回, 后端追加 link 条目绑定 report_id
+					audit_id: final.meta?.audit_id ?? '',
 				})
 				if (res.report) {
 					patchTask(id, {savedReportId: res.report.id})

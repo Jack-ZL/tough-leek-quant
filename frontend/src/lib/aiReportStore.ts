@@ -24,7 +24,8 @@ export interface ActiveTask {
 	content: string             // 累积的 Markdown
 	error: string
 	// P1-15: model/provider/profile_id 归属快照随 meta 下发, 保存时原样带回
-	meta: { summary?: string; periods?: number; model?: string; provider?: string; profile_id?: string } | null
+	// P2-23: audit_id 账本 run id 同路带回绑定
+	meta: { summary?: string; periods?: number; model?: string; provider?: string; profile_id?: string; audit_id?: string } | null
 	createdAt: number           // ms 时间戳
 	savedReportId?: string      // 完成后存到后端的报告 id
 	doneAt?: number             // 进入 done/error 态的时间戳(用于气泡过期清理)
@@ -251,7 +252,8 @@ async function runStream(id: string, symbol: string, focus: string) {
 							periods: chunk.periods,
 							model: chunk.model,
 							provider: chunk.provider,
-							profile_id: chunk.profile_id
+							profile_id: chunk.profile_id,
+							audit_id: chunk.audit_id
 						}
 					})
 					break
@@ -286,6 +288,8 @@ async function runStream(id: string, symbol: string, focus: string) {
 					model: final.meta?.model ?? '',
 					provider: final.meta?.provider ?? '',
 					profile_id: final.meta?.profile_id ?? '',
+					// P2-23: 账本 run id 带回, 后端追加 link 条目绑定 report_id
+					audit_id: final.meta?.audit_id ?? '',
 				})
 				if (res.report) {
 					patchTask(id, {savedReportId: res.report.id})
