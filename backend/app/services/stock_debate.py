@@ -611,9 +611,23 @@ async def debate_stream(
         return
 
     role_profiles = resolve_role_profiles()
+    # P2-23 不可篡改账本: 辩论三方看同一份材料, 登记一次即可 (指纹+快照)
+    from app.services import ai_audit
+    audit_id = ai_audit.begin_run(data_dir, "debate", symbol)
+    kline_rows = materials.get("kline_rows") or []
+    audit_inputs = [ai_audit.add_input(
+        data_dir, audit_id, "kline", kline_rows,
+        as_of=str(kline_rows[-1]["date"]) if kline_rows else "")]
+    fins = materials.get("fins") or {}
+    if any(fins.values()):
+        audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "financials", fins))
+    if materials.get("quality"):
+        audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "quality", materials["quality"]))
+
     # P1-15: roles 已带各角色模型显示名; 顶层再补当前激活配置归属快照,
     # 前端保存辩论记录时随报告落盘 (未配角色档案时角色用的就是这套配置)。
     from app.services.ai_provider import current_attribution
+    attr = current_attribution()
     yield json.dumps({
         "type": "meta", "symbol": symbol, "name": name,
         "summary": summarize_levels(materials["levels"], materials["close"]),
@@ -622,7 +636,9 @@ async def debate_stream(
         "roles": {r: {"model": role_model_display(role_profiles.get(r)),
                       "custom_profile": role_profiles.get(r) is not None}
                   for r in ROLES},
-        **current_attribution(),
+        **attr,
+        # P2-23: 账本 run id (前端保存辩论记录时带回绑定 report_id)
+        "audit_id": audit_id,
     }, ensure_ascii=False)
 
     # 数字闸门白名单: 材料结构化数据 + 全部系统提示词 + 材料成品文本
@@ -692,6 +708,7 @@ async def debate_stream(
     # ---- ③ 风控主管初审 (队列模式: 增量实时转发, 前端能看到主管边想边写) ----
     ruling = None
     judge_failed = False
+    judge_text = ""
     jq: asyncio.Queue = asyncio.Queue()
     jt = asyncio.create_task(_judge_phase(
         role_profiles, pool, materials["text"],
@@ -702,6 +719,7 @@ async def debate_stream(
         if msg[0] == "ev":
             yield json.dumps(msg[1], ensure_ascii=False)
         elif msg[0] == "result":
+            judge_text = msg[1]
             ruling = msg[2]
             break
         else:  # error
@@ -764,6 +782,7 @@ async def debate_stream(
             if msg[0] == "ev":
                 yield json.dumps(msg[1], ensure_ascii=False)
             elif msg[0] == "result":
+                judge_text = msg[1]
                 final_ruling = msg[2]
                 break
             else:  # error
@@ -776,6 +795,17 @@ async def debate_stream(
             return
         yield _ruling_event(final_ruling, final=True)
 
+    # P2-23: 产出哈希 = 三方最终全文 (前端落库口径同源), prompt 哈希含三系统提示+材料
+    ai_audit.finish_run(
+        data_dir, audit_id=audit_id, kind="debate", symbol=symbol,
+        inputs=audit_inputs,
+        prompt_text="\n\n".join([_BULL_SYSTEM, _BEAR_SYSTEM, _JUDGE_SYSTEM,
+                                 materials["text"], focus]),
+        output_text="\n\n".join([arg_texts.get(ROLE_BULL, ""), arg_texts.get(ROLE_BEAR, ""),
+                                 judge_text]),
+        model=attr.get("model", ""), provider=attr.get("provider", ""),
+        profile_id=attr.get("profile_id", ""),
+    )
     yield json.dumps({"type": "done"}, ensure_ascii=False)
 
 

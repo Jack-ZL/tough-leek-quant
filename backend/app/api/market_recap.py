@@ -130,6 +130,8 @@ class SaveReportRequest(BaseModel):
     model: str = ""
     provider: str = ""
     profile_id: str = ""
+    # P2-23 账本 run id (meta 事件下发, 前端原样带回; 空串=旧前端/未记账)
+    audit_id: str = ""
 
 
 @router.get("/reports")
@@ -153,6 +155,11 @@ def save_report(request: Request, req: SaveReportRequest):
         "provider": req.provider,
         "profile_id": req.profile_id,
     })
+    # P2-23: 账本追加 link 条目绑定 report_id (fail-open, 不影响保存)
+    if req.audit_id:
+        from app.services import ai_audit
+        ai_audit.link_report(request.app.state.repo.store.data_dir, req.audit_id,
+                             report.get("id", ""), kind="market_recap")
     # 推送门控: manual 模式需显式 push=True; auto 模式保持归档即推。
     # 内部 try/except 静默降级, 不影响归档返回值。
     if req.push or preferences.get_review_push_mode() == "auto":

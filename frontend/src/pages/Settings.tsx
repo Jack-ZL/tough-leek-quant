@@ -18,10 +18,12 @@ import {
 	PanelLeftOpen,
 	Clock3,
 	Info,
-	PackageOpen
+	PackageOpen,
+	ShieldCheck
 } from 'lucide-react'
 // 面板按 tab 按需加载: 8 个面板源码 270KB+, 同步打包会让设置页 chunk 膨胀
 const SettingsAIPanel = lazy(() => import('./settings/AI').then(m => ({ default: m.SettingsAIPanel })))
+const SettingsAuditLedgerPanel = lazy(() => import('./settings/AuditLedger').then(m => ({ default: m.SettingsAuditLedgerPanel })))
 const SettingsApiTokensPanel = lazy(() => import('./settings/ApiTokens').then(m => ({ default: m.SettingsApiTokensPanel })))
 const SettingsImportCenterPanel = lazy(() => import('./settings/ImportCenter').then(m => ({ default: m.SettingsImportCenterPanel })))
 const SettingsDefinitionsPanel = lazy(() => import('./settings/Definitions').then(m => ({ default: m.SettingsDefinitionsPanel })))
@@ -48,6 +50,7 @@ type TabDef = {
 const TABS: readonly TabDef[] = [
 	{ key: 'data-sources', label: '数据源', icon: Database, panel: SettingsDataSourcesPanel },
 	{ key: 'ai', label: 'AI 设置', icon: Sparkles, panel: SettingsAIPanel },
+	{ key: 'audit', label: 'AI 审计', icon: ShieldCheck, panel: SettingsAuditLedgerPanel },
 	{ key: 'monitoring', label: '实时监控', icon: Radio, panel: SettingsMonitoringPanel },
 	{ key: 'pages', label: '页面管理', icon: LayoutGrid, panel: SettingsPageAdminPanel },
 	{ key: 'timeout', label: '网络设置', icon: Clock3, panel: SettingsTimeoutPanel },

@@ -422,10 +422,23 @@ async def analyze_stock_stream(
         }, ensure_ascii=False)
         return
 
+    # P2-23 不可篡改账本: 登记即将喂给模型的同一份数据 (指纹+gzip 快照),
+    # audit_id 随 meta 下发, 前端保存报告时带回绑定 report_id。fail-open。
+    from app.services import ai_audit
+    audit_id = ai_audit.begin_run(data_dir, "stock_analysis", symbol)
+    kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
+    kline_as_of = str(df.tail(1)["date"][0]) if "date" in df.columns else ""
+    audit_inputs = [ai_audit.add_input(data_dir, audit_id, "kline", kline_tail, as_of=kline_as_of)]
+    if fins:
+        audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "financials", fins))
+    if quality:
+        audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "quality", quality))
+
     # 4. meta
     # P1-15: 归属快照 (model/provider/profile_id) 随 meta 下发 —
     # 前端保存报告时原样带回落盘, 记分卡按模型分组统计的数据源头。
     from app.services import ai_provider as _ai_prov
+    attr = _ai_prov.current_attribution()
     yield json.dumps({
         "type": "meta",
         "symbol": symbol,
@@ -434,7 +447,9 @@ async def analyze_stock_stream(
         "close": close,
         # P1-11: 体检结果随 meta 下发, 前端显示等级徽章并随报告落库
         "quality": quality,
-        **_ai_prov.current_attribution(),
+        **attr,
+        # P2-23: 账本 run id (空串=审计不可用, 前端兼容)
+        "audit_id": audit_id,
     }, ensure_ascii=False)
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)
@@ -455,10 +470,11 @@ async def analyze_stock_stream(
                     paper_positions.append({"account_id": acc_id, **pos})
         except Exception as e:  # noqa: BLE001
             logger.warning("读取模拟盘持仓失败 (跳过注入): %s", e)
+        if paper_positions:
+            audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "paper_positions", paper_positions))
         # 浮盈口径用 raw: 持仓成本不复权, 与前复权 close 混算会在除权后失真
         raw_close = float(df.tail(1)["raw_close"][0]) if "raw_close" in df.columns else None
 
-        kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         system_prompt = _build_system_prompt(search_on)
         # P0-7 AI 历史战绩: 纯读台账不触发结算, 失败给空串 — 注入不了不影响分析主流程
         from app.services import ai_scorecard
@@ -466,6 +482,8 @@ async def analyze_stock_stream(
             scorecard_ctx = ai_scorecard.prompt_line()
         except Exception:  # noqa: BLE001
             scorecard_ctx = ""
+        if scorecard_ctx:
+            audit_inputs.append(ai_audit.add_input(data_dir, audit_id, "scorecard", scorecard_ctx))
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
                                          raw_close=raw_close, web_search=search_on,
@@ -504,14 +522,17 @@ async def analyze_stock_stream(
                 yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
         got_content = False
+        out_parts: list[str] = []
         # 研判卡剥离在闸门内侧 (先剥标记再核对数字): VERDICT JSON 里的数字
         # 若先过闸门会被包进〖〗破坏 JSON; verdict 事件作为非 delta 事件由闸门透传。
         from app.services.ai_verdict import verdict_ndjson_stream
         async for line in gate_ndjson_stream(verdict_ndjson_stream(_delta_lines()), pool):
             # 只有 delta 才算"有正文" — verdict/页脚事件不计, 避免空输出误判成功
             try:
-                if json.loads(line).get("type") == "delta":
+                _ev = json.loads(line)
+                if _ev.get("type") == "delta":
                     got_content = True
+                    out_parts.append(_ev.get("content", ""))
             except (json.JSONDecodeError, TypeError):
                 pass
             yield line
@@ -526,6 +547,14 @@ async def analyze_stock_stream(
         logger.warning("AI stock analysis ended with empty content for %s", symbol)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+    # P2-23: 产出哈希由后端在流结束算 (前端所见正文 = 闸门后 delta 拼接)
+    ai_audit.finish_run(
+        data_dir, audit_id=audit_id, kind="stock_analysis", symbol=symbol,
+        inputs=audit_inputs, prompt_text=system_prompt + "\n\n" + user_content,
+        output_text="".join(out_parts),
+        model=attr.get("model", ""), provider=attr.get("provider", ""),
+        profile_id=attr.get("profile_id", ""),
+    )
     yield json.dumps({"type": "done"}, ensure_ascii=False)
 
 

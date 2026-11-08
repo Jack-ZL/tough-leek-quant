@@ -43,6 +43,8 @@ export interface DebateState {
 		model?: string
 		provider?: string
 		profile_id?: string
+		/** P2-23 账本 run id: meta 事件下发, 保存辩论记录时带回绑定 */
+		audit_id?: string
 	} | null
 	/** 生效裁决: 终审 ruling 优先, 无重写时取初审 ruling */
 	ruling: { ok: boolean; decision?: 'pass' | 'rewrite'; verdict?: AiVerdict | null; final?: boolean } | null
@@ -149,7 +151,8 @@ async function runDebate(symbol: string, name: string) {
 						quality: ev.quality ?? null,
 						model: ev.model,
 						provider: ev.provider,
-						profile_id: ev.profile_id
+						profile_id: ev.profile_id,
+						audit_id: ev.audit_id
 					}
 					patch({roles, meta, name: ev.name || name})
 					break
@@ -256,6 +259,8 @@ async function saveDebate(
 			model: meta?.model ?? '',
 			provider: meta?.provider ?? '',
 			profile_id: meta?.profile_id ?? '',
+			// P2-23: 账本 run id 带回, 后端追加 link 条目绑定 report_id
+			audit_id: meta?.audit_id ?? '',
 		})
 		patch({savedReportId: res.report?.id})
 		if (state.historyOpen) void loadHistory()

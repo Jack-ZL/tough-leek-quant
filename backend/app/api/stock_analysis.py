@@ -202,6 +202,8 @@ class SaveReportRequest(BaseModel):
     model: str = ""
     provider: str = ""
     profile_id: str = ""
+    # P2-23 账本 run id (meta 事件下发, 前端原样带回; 空串=旧前端/未记账)
+    audit_id: str = ""
 
 
 @router.get("/reports")
@@ -228,6 +230,11 @@ def save_report(request: Request, req: SaveReportRequest):
         "provider": req.provider,
         "profile_id": req.profile_id,
     })
+    # P2-23: 账本追加 link 条目绑定 report_id (fail-open, 不影响保存)
+    if req.audit_id:
+        from app.services import ai_audit
+        ai_audit.link_report(request.app.state.repo.store.data_dir, req.audit_id,
+                             report.get("id", ""), kind="stock_analysis")
     # P0-7 惰性结算: 新研判落库时顺手把老的到期条目结算进台账 (本地日 K 查询,
     # 毫秒级)。fail-open — 记分卡坏了绝不能让保存报告失败
     if isinstance(req.verdict, dict) and req.verdict.get("ok"):

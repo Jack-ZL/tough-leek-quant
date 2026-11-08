@@ -920,6 +920,14 @@ def run_now(
         except Exception as e:  # noqa: BLE001
             logger.warning("integrity: post-repair scan failed (soft): %s", e)
 
+    # P2-23: 审计账本每日检查点 + 过期快照清理 (fail-open, 不影响管道终态)
+    try:
+        from app.services import ai_audit
+        ai_audit.append_checkpoint(repo.store.data_dir, today)
+        ai_audit.cleanup_snapshots(repo.store.data_dir, today)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ai_audit checkpoint/cleanup failed (soft): %s", e)
+
     # 有阶段软失败: 进度协议已走完(done/100, 前端进度条正常收尾), 但数据可能陈旧,
     # 抛出让上层 job_store 把终态标记为 failed —— 不再"部分失败却报成功"。
     if stage_errors:
@@ -1209,7 +1217,7 @@ async def _run_scheduled_review(repo) -> None:
             return
 
         # 落盘: 与手动生成完全相同的归档格式
-        market_recap_reports.save_report({
+        report = market_recap_reports.save_report({
             "as_of": meta.get("as_of"),
             "focus": "",
             "content": content,
@@ -1221,6 +1229,11 @@ async def _run_scheduled_review(repo) -> None:
             "provider": meta.get("provider", ""),
             "profile_id": meta.get("profile_id", ""),
         })
+        # P2-23: 账本追加 link 条目绑定 report_id (fail-open, 不影响落盘)
+        if meta.get("audit_id"):
+            from app.services import ai_audit
+            ai_audit.link_report(repo.store.data_dir, meta.get("audit_id", ""),
+                                 report.get("id", ""), kind="market_recap")
         logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
 
         # 通知前端: 生成完成且已归档(archived=true 让前端只刷新列表, 不重复归档)
