@@ -5961,6 +5961,10 @@ export const api = {
 	paperAccounts: () =>
 		request<{ accounts: PaperAccountSummary[] }>('/api/paper/accounts'),
 
+	/** 全局急停状态 (P1-14): active 时下单被拒、结算跳过撮合; 解除 = 删除数据目录急停文件 */
+	paperKillSwitch: () =>
+		request<{ active: boolean; reason: string }>('/api/paper/kill-switch'),
+
 	paperOverview: (account?: string) =>
 		request<PaperOverview>(accUrl('/api/paper/overview', account)),
 

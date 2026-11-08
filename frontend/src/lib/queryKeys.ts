@@ -172,6 +172,7 @@ export const QK = {
 	paperStats: (acc: string) => ['paper', 'stats', acc] as const,
 	paperRounds: (acc: string) => ['paper', 'rounds', acc] as const,
 	paperCompare: ['paper', 'compare'] as const,
+	paperKillSwitch: ['paper', 'kill-switch'] as const,
 	paperAutoRules: (acc: string) => ['paper', 'auto-rules', acc] as const,
 	alerts: (source?: string) => ['alerts', source ?? ''] as const,
 

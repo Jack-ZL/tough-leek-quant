@@ -817,12 +817,16 @@ def run_now(
         emit("paper_settle", 94, "模拟盘结算…")
         from app.strategy import paper as paper_trading
         # 逐账户结算 (账户间订单/台账隔离), 汇总合并供日志与结果展示
-        totals = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "accounts": []}
+        totals = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "accounts": [],
+                  "reconcile_issues": []}
         for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
             s = paper_trading.settle_day(repo.store.data_dir, today.isoformat(), account_id=acc_id)
             totals["filled"] += s.get("filled", 0)
             totals["expired"] += s.get("expired", 0)
             totals["corp_actions"] += s.get("corp_actions", 0)
+            rec = s.get("reconcile")
+            if rec and not rec.get("ok"):
+                totals["reconcile_issues"].extend(f"{acc_id}: {i}" for i in rec.get("issues", []))
             if s.get("nav") is not None:
                 totals["nav"] = s["nav"]
             totals["accounts"].append({"account": acc_id, **{k: s.get(k) for k in ("filled", "expired", "corp_actions")}})
@@ -842,6 +846,23 @@ def run_now(
                     alert_store.append_many(repo.store.data_dir, settle_events)
             except Exception as e:
                 logger.warning("模拟盘结算成交留痕失败: %s", e)
+        # 对账异常留痕 (P1-14): 快照自愈/除权链不一致都要在监控中心可见
+        if totals["reconcile_issues"]:
+            try:
+                from datetime import datetime as _dt
+
+                from app.services import alert_store
+                alert_store.append_many(repo.store.data_dir, [{
+                    "source": "paper",
+                    "type": "reconcile",
+                    "severity": "warning",
+                    "ts": int(_dt.now().timestamp() * 1000),
+                    "symbol": "",
+                    "message": f"模拟盘对账异常 {len(totals['reconcile_issues'])} 条: "
+                               + "; ".join(totals["reconcile_issues"][:5]),
+                }])
+            except Exception as e:
+                logger.warning("模拟盘对账留痕失败: %s", e)
         emit("paper_settle", 94, "模拟盘结算完成")
     except Exception as e:
         logger.warning("paper_settle failed (soft): %s", e)
