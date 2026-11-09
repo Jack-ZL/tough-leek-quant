@@ -102,6 +102,8 @@ export const QK = {
 	miningLock: ['backtest-mining-lock'] as const,
 	guardianOverview: ['backtest-guardian-overview'] as const,
 	guardianRuns: ['backtest-guardian-runs'] as const,
+	evolutionRuns: ['backtest-evolution-runs'] as const,
+	evolutionRun: (id: string) => ['backtest-evolution-run', id] as const,
 	labReport: ['backtest-lab-report'] as const,
 	researchCandidates: ['research-candidates'] as const,
 	strategyLinkOptions: (assetType?: 'stock' | 'etf') => assetType

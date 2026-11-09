@@ -2256,6 +2256,148 @@ export interface MiningScheduleConfig {
 	mining_budget_profile: Exclude<MiningBudgetProfile, 'exploratory'>
 }
 
+// ===== Factor evolution (P2-22a: GP 公式进化) =====
+export type EvolutionRunStatus =
+	| 'queued' | 'running' | 'cancelling' | 'cancelled'
+	| 'succeeded' | 'failed'
+
+export interface EvolutionStartPayload {
+	symbols?: string[] | null
+	asset_type?: 'stock' | 'etf'
+	start?: string | null
+	end?: string | null
+	population_size?: number
+	generations?: number
+	horizon?: number
+	max_symbols?: number
+	max_depth?: number
+	seed?: number | null
+	llm_propose?: boolean
+	llm_count?: number
+	force?: boolean
+}
+
+export interface EvolutionTrainStats {
+	ic_mean: number | null
+	ir: number | null
+	coverage: number | null
+	fitness: number | null
+	n_days: number
+}
+
+export interface EvolutionHoldoutStats {
+	ic_mean: number | null
+	ir: number | null
+	t_nw: number | null
+	p_value: number | null
+	q_value: number | null
+	dsr: number | null
+	coverage: number | null
+	n_days: number
+}
+
+export interface EvolutionSurvivor {
+	key: string
+	formula: string
+	direction: 'high' | 'low' | 'none'
+	train: EvolutionTrainStats
+	holdout: EvolutionHoldoutStats
+}
+
+export interface EvolutionPruned {
+	key: string
+	formula: string
+	reason: string
+}
+
+export interface EvolutionGenerationStat {
+	gen: number
+	evaluated: number
+	best: number | null
+	mean: number | null
+	best_formula: string
+	trials_total: number
+}
+
+export interface EvolutionPanelInfo {
+	universe_total: number
+	n_symbols: number
+	n_rows: number
+	n_days: number
+	train_days: number
+	holdout_days: number
+	train_start: string
+	train_end: string
+	holdout_start: string
+	holdout_end: string
+}
+
+export interface EvolutionLlmProposal {
+	formula: string
+	rationale?: string
+	direction?: string
+	key?: string
+}
+
+export interface EvolutionLlmRejected {
+	formula: string
+	reason: string
+}
+
+export interface EvolutionLlmInfo {
+	requested: number
+	proposed: number
+	accepted: EvolutionLlmProposal[]
+	rejected: EvolutionLlmRejected[]
+	repair_rounds: number
+	attribution?: { model?: string; provider?: string; profile_id?: string } | null
+	error?: string | null
+	elapsed_ms?: number
+}
+
+export interface EvolutionResult {
+	status: string
+	algorithm_version: string
+	run_id: string
+	request: Record<string, unknown>
+	panel: EvolutionPanelInfo
+	generations: EvolutionGenerationStat[]
+	trials: { evaluated: number; duplicates: number; invalid: number }
+	dsr: { expected_max_sharpe: number | null; variance_sharpes: number | null }
+	survivors: EvolutionSurvivor[]
+	pruned: EvolutionPruned[]
+	llm?: EvolutionLlmInfo | null
+	elapsed_ms: number
+}
+
+export interface EvolutionRunProgress {
+	phase?: string
+	label?: string
+	done?: number
+	total?: number
+	best?: number | null
+	mean?: number | null
+	trials_total?: number
+}
+
+// 列表投影 (compact): 成功带 trials/panel/survivor_count; 详情 (full) 带 result
+export interface EvolutionRun {
+	run_id: string
+	status: EvolutionRunStatus
+	request: Record<string, unknown>
+	created_at: string | null
+	updated_at: string | null
+	started_at: string | null
+	finished_at: string | null
+	error: string | null
+	progress?: EvolutionRunProgress | null
+	trials?: { evaluated: number; duplicates: number; invalid: number } | null
+	panel?: EvolutionPanelInfo | null
+	survivor_count?: number
+	elapsed_ms?: number | null
+	result?: EvolutionResult | null
+}
+
 export type ResearchCandidateKind = 'factor' | 'strategy'
 export type ResearchCandidateStatus = 'pending' | 'validated' | 'rejected'
 
@@ -4857,6 +4999,30 @@ export const api = {
 			method: 'PATCH',
 			body: JSON.stringify(payload),
 		}),
+
+	// ===== Factor evolution (P2-22a) =====
+	evolutionRuns: (limit = 30) =>
+		request<{ items: EvolutionRun[] }>(`/api/evolution/runs?limit=${limit}`),
+
+	evolutionRun: (runId: string) =>
+		request<EvolutionRun>(`/api/evolution/runs/${encodeURIComponent(runId)}`),
+
+	evolutionStart: (payload: EvolutionStartPayload) =>
+		request<EvolutionRun>('/api/evolution/runs', {
+			method: 'POST',
+			body: JSON.stringify(payload),
+		}),
+
+	evolutionCancel: (runId: string) =>
+		request<EvolutionRun>(`/api/evolution/runs/${encodeURIComponent(runId)}/cancel`, {
+			method: 'POST',
+		}),
+
+	evolutionPublish: (runId: string, index: number, payload: { label?: string; description?: string } = {}) =>
+		request<{ ok: boolean; id: string; version: number; label: string }>(
+			`/api/evolution/runs/${encodeURIComponent(runId)}/survivors/${index}/publish`,
+			{ method: 'POST', body: JSON.stringify(payload) },
+		),
 
 	researchCandidates: () =>
 		request<{ items: ResearchCandidate[] }>('/api/backtest/candidates'),

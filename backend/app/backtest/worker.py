@@ -183,6 +183,10 @@ def make_worker_task(kind: str, data_dir: Path, config) -> dict[str, Any]:
         if not isinstance(config, dict):
             raise TypeError("guardian worker config must be a dict")
         encoded = dict(config)
+    elif kind == "evolution":
+        if not isinstance(config, dict):
+            raise TypeError("evolution worker config must be a dict")
+        encoded = dict(config)
     else:
         raise ValueError(f"unsupported worker task kind: {kind}")
     return {
@@ -286,6 +290,17 @@ def _worker_entry(task: dict[str, Any], event_queue, cancel_event) -> None:
                 data_dir=data_dir,
                 service=service,
                 strategy_engine=strategy_engine,
+                progress_cb=_progress,
+                cancel_check=cancel_event,
+            )
+        elif kind == "evolution":
+            from app.backtest.evolution_runtime import run_evolution_runtime
+
+            payload = dict(task["config"])
+            result = run_evolution_runtime(
+                {**payload.get("request", {}), "run_id": payload.get("run_id")},
+                data_dir=data_dir,
+                service=service,
                 progress_cb=_progress,
                 cancel_check=cancel_event,
             )
