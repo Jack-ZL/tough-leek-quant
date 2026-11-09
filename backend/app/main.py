@@ -23,6 +23,7 @@ from app.api import (
     events,
     ext_data,
     ext_pages,
+    factor_evolution,
     factors,
     financials,
     guardian,
@@ -184,6 +185,21 @@ async def _application_lifespan(app: FastAPI):
     if recovered_guardian_runs:
         logger.warning(
             "recovered %d interrupted guardian runs", recovered_guardian_runs
+        )
+    # 公式进化 (P2-22a): 同样复用挖掘任务编排, 独立 namespace;
+    # 与挖掘/守护共用 heavy 槽, 全市场面板任务全局串行。
+    with startup_phase(logger, "evolution manager initialization"):
+        evolution_manager = MiningJobManager(
+            store.data_dir,
+            kind="evolution",
+            store=MiningRunStore(store.data_dir, namespace="evolution"),
+        )
+    with startup_phase(logger, "evolution run recovery"):
+        recovered_evolution_runs = evolution_manager.recover_interrupted()
+    app.state.evolution_manager = evolution_manager
+    if recovered_evolution_runs:
+        logger.warning(
+            "recovered %d interrupted evolution runs", recovered_evolution_runs
         )
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
     if settings.backtest_matrix_disk_cache_enabled:
@@ -526,6 +542,9 @@ async def _application_lifespan(app: FastAPI):
         gmanager = getattr(app.state, "guardian_manager", None)
         if gmanager:
             gmanager.shutdown()
+        emanager = getattr(app.state, "evolution_manager", None)
+        if emanager:
+            emanager.shutdown()
         if app.state.scheduler:
             app.state.scheduler.shutdown(wait=False)
         ps = getattr(app.state, "pull_scheduler", None)
@@ -731,6 +750,7 @@ app.include_router(factors.router)
 app.include_router(definitions.router)
 app.include_router(mining.router)
 app.include_router(guardian.router)
+app.include_router(factor_evolution.router)  # P2-22a: GP 公式进化(幸存者发布为 uf_evo_* 草稿因子)
 app.include_router(lab.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

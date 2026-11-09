@@ -7,6 +7,7 @@ import {
 	BookmarkPlus,
 	ChevronsUpDown,
 	Clock,
+	Dna,
 	Expand,
 	Info,
 	Layers3,
@@ -28,6 +29,7 @@ import { fmtPct, priceColorClass } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
 import { FactorBacktest } from './FactorBacktest'
 import { MiningWorkbench } from './MiningWorkbench'
+import { EvolutionWorkbench } from './EvolutionWorkbench'
 import { AutoMiningDialog } from './AutoMiningDialog'
 import { AddFactorSignalDialog } from './AddFactorSignalDialog'
 import { factorBatchCandidate } from './researchCandidates'
@@ -41,7 +43,7 @@ const monthsAgo = (months: number) => {
 const TODAY = formatDate(new Date())
 const INPUT_CLS = 'w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none'
 
-type View = 'batch' | 'single' | 'mining'
+type View = 'batch' | 'single' | 'mining' | 'evolution'
 type SortKey = 'ic' | 'ir' | 'return' | 't_nw' | 'win_rate' | 'drawdown'
 type Verdict = 'valid' | 'edge' | 'invalid' | 'error'
 
@@ -1071,6 +1073,7 @@ export function FactorDiscovery({ focusFactor, initialView = 'batch' }: {
 					{([
 						['batch', '批量筛选', ListFilter],
 						['mining', '挖掘工作台', Pickaxe],
+						['evolution', '公式进化', Dna],
 					] as const).map(([value, label, Icon]) => (
 						<button
 							key={value}
@@ -1086,7 +1089,7 @@ export function FactorDiscovery({ focusFactor, initialView = 'batch' }: {
 						</button>
 					))}
 				</div>
-				{view !== 'mining' && (
+				{view !== 'mining' && view !== 'evolution' && (
 					<button
 						type="button"
 						onClick={() => setAutoOpen(true)}
@@ -1127,6 +1130,11 @@ export function FactorDiscovery({ focusFactor, initialView = 'batch' }: {
 				{view === 'mining' && (
 					<div className="h-full min-h-0 xl:overflow-y-auto">
 						<MiningWorkbench />
+					</div>
+				)}
+				{view === 'evolution' && (
+					<div className="h-full min-h-0 xl:overflow-y-auto">
+						<EvolutionWorkbench />
 					</div>
 				)}
 			</div>

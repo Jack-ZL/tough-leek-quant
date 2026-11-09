@@ -643,6 +643,22 @@ def _compile_call(node: dict) -> tuple[pl.Expr | None, bool, bool]:
     return None, False, False
 
 
+def parse_formula(text: str) -> tuple[dict | None, DslError | None]:
+    """公式文本 → AST (不做语义检查)。
+
+    供公式进化引擎 (app/factors/evolution.py) 等需要在树上做遗传操作的
+    调用方使用; 产物仍应经 compile_formula 完整校验后才可执行。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None, DslError("E014", "语法错误: 表达式为空")
+    tokens, tokenize_error = _tokenize(text)
+    if tokenize_error:
+        return None, tokenize_error
+    if len(tokens) > MAX_TOKENS:
+        return None, DslError("E007", f"规模超限: token 数 {len(tokens)} > {MAX_TOKENS}")
+    return _Parser(tokens, text).parse()
+
+
 def compile_formula(text: str) -> CompiledFormula:
     """编译公式文本; 永不抛异常, 失败以 errors 表达 (fail-closed)。"""
     if not isinstance(text, str) or not text.strip():
