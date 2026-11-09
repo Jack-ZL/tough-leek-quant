@@ -27,6 +27,11 @@ describe('quote freshness', () => {
     expect(quoteFreshnessLabel({ ...live, state: 'stale', data_date: '2026-11-05' })).toBe('数据过期 · 11-05')
     expect(quoteFreshnessLabel(live)).toBe('更新 10:00:00')
   })
+  it('labels suspension apart from stale and never ages it into delayed', () => {
+    const suspended: QuoteFreshness = { ...live, state: 'suspended', data_date: '2026-11-05' }
+    expect(quoteFreshnessLabel(suspended)).toBe('可能停牌 · 11-05')
+    expect(advanceQuoteFreshness(suspended, 100_000).state).toBe('suspended')
+  })
   it('default windows use the Beijing date before UTC midnight and clamp short months', () => {
     expect(cnToday(new Date('2026-11-05T17:00:00Z'))).toBe('2026-11-06')
     expect(klineDateRange(6, '2026-11-06')).toEqual({ start: '2026-05-06', end: '2026-11-06' })

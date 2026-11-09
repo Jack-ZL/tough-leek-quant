@@ -35,6 +35,8 @@ export function quoteFreshnessLabel(info: QuoteFreshness): string {
 			return time ? `更新 ${time}` : '实时行情'
 		case 'stale':
 			return `数据过期${day ? ` · ${day}` : ''}`
+		case 'suspended':
+			return `可能停牌${day ? ` · ${day}` : ''}`
 		case 'delayed':
 			return `更新延迟${time ? ` · ${time}` : ''}`
 		case 'historical':

@@ -88,3 +88,51 @@ def test_restarted_cache_preserves_each_asset_quote_timestamp(tmp_path, asset, s
     assert day == date(2026, 11, 6)
     assert "quote_ts" in frame.columns
     assert frame["quote_ts"][0] == rows["quote_ts"][0]
+
+
+def test_stale_row_with_fresh_feed_reads_as_suspended():
+    from app.services.quote_freshness import QuoteFreshness
+
+    ctx = QuoteFreshness(now=datetime(2026, 11, 6, 10, 0, 10, tzinfo=CN_TZ),
+                         trading=True, feed_fresh=True)
+    status = ctx.describe(_row("2026-11-05"))
+    assert status["state"] == "suspended"
+    assert "停牌" in status["message"]
+
+
+def test_suspended_requires_running_unpaused_feed():
+    from app.services.quote_freshness import QuoteFreshness
+
+    now = datetime(2026, 11, 6, 10, 0, 10, tzinfo=CN_TZ)
+    # 服务关闭/暂停时无法排除断链因素, 不能下"停牌"结论 — 仍按 stale 提示检查连接
+    assert QuoteFreshness(now=now, trading=True, feed_fresh=True,
+                          enabled=False).describe(_row("2026-11-05"))["state"] == "stale"
+    assert QuoteFreshness(now=now, trading=True, feed_fresh=True,
+                          paused=True).describe(_row("2026-11-05"))["state"] == "stale"
+
+
+class _FakeState:
+    pass
+
+
+def _fake_request(fetched_at_ms, *, enabled=True, paused=False):
+    qs = _FakeState()
+    qs._fetched_at = fetched_at_ms
+    qs._enabled = enabled
+    qs._paused = paused
+    qs._interval = 6
+    app = _FakeState()
+    app.state = _FakeState()
+    app.state.quote_service = qs
+    req = _FakeState()
+    req.app = app
+    return req
+
+
+def test_for_request_derives_feed_freshness_from_last_fetch():
+    from app.services.quote_freshness import QuoteFreshness
+
+    now_ms = datetime.now(CN_TZ).timestamp() * 1000
+    assert QuoteFreshness.for_request(_fake_request(now_ms - 60_000)).feed_fresh is True
+    assert QuoteFreshness.for_request(_fake_request(now_ms - 20 * 60_000)).feed_fresh is False
+    assert QuoteFreshness.for_request(_fake_request(0)).feed_fresh is False

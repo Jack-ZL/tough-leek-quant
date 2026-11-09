@@ -642,25 +642,42 @@ export function Layout() {
 		: null
 	const realtimeToggleDisabled = toggleQuote.isPending || isPaused
 	const realtimeActive = realtimeEnabled && isRunning && isTrading
+	// P0-5: 数据源持续失败时 SSE 仍连着、页面仍展示旧数据 — 状态栏必须如实说
+	// "数据有多旧", 不能继续显示"运行中"。阈值与后端 QuoteFreshness 同口径:
+	// max(90s, 3×轮询间隔); last_fetch_ms 只在成功拉取时更新。
+	const lastFetchMs = quoteStatus?.last_fetch_ms ?? null
+	const quoteAgeMs = lastFetchMs != null ? Date.now() - lastFetchMs : null
+	const quoteStaleThresholdMs = Math.max(90_000, (quoteStatus?.interval_s ?? 6) * 3000)
+	const quoteDataStale = realtimeActive && !isPaused
+		&& quoteAgeMs != null && quoteAgeMs > quoteStaleThresholdMs
+	const quoteAgeLabel = quoteAgeMs == null
+		? ''
+		: quoteAgeMs < 60_000 ? '刚刚' : `${Math.floor(quoteAgeMs / 60_000)} 分钟前`
 	const realtimeStatusLabel = toggleQuote.isPending
 		? '正在更新'
-		: isPaused
-			? '同步期间暂停'
-			: realtimeActive
-				? '运行中'
-				: realtimeEnabled
-					? (isTrading ? '正在连接' : '等待交易时段')
-					: '已关闭'
-	const realtimeStatusClass = realtimeActive
-		? 'text-accent'
-		: realtimeEnabled || isPaused
-			? 'text-warning/80'
-			: 'text-muted'
-	const realtimeIndicatorClass = realtimeActive
-		? 'bg-accent animate-pulse'
-		: realtimeEnabled || isPaused
-			? 'bg-warning/70'
-			: 'bg-muted'
+		: quoteDataStale
+			? `数据为 ${quoteAgeLabel}`
+			: isPaused
+				? '同步期间暂停'
+				: realtimeActive
+					? '运行中'
+					: realtimeEnabled
+						? (isTrading ? '正在连接' : '等待交易时段')
+						: '已关闭'
+	const realtimeStatusClass = quoteDataStale
+		? 'text-warning'
+		: realtimeActive
+			? 'text-accent'
+			: realtimeEnabled || isPaused
+				? 'text-warning/80'
+				: 'text-muted'
+	const realtimeIndicatorClass = quoteDataStale
+		? 'bg-warning/70'
+		: realtimeActive
+			? 'bg-accent animate-pulse'
+			: realtimeEnabled || isPaused
+				? 'bg-warning/70'
+				: 'bg-muted'
 	const realtimeToggleTitle = isPaused
 		? '数据同步运行中，实时行情已临时暂停'
 		: toggleQuote.isPending
@@ -1141,7 +1158,10 @@ export function Layout() {
 										<div className="mt-1 flex min-w-0 items-center gap-1 text-[10px] leading-none">
 											<span className="truncate text-muted">{realtimeProviderName || realtimeModeLabel}</span>
 											<span className="shrink-0 text-border" aria-hidden="true">·</span>
-											<span className={`shrink-0 ${realtimeStatusClass}`}>{realtimeStatusLabel}</span>
+											<span
+												className={`shrink-0 ${realtimeStatusClass}`}
+												title={quoteDataStale ? '行情拉取持续失败，页面展示的是最后一次成功获取的数据；请检查数据源与网络' : undefined}
+											>{realtimeStatusLabel}</span>
 										</div>
 									</div>
 								</div>
