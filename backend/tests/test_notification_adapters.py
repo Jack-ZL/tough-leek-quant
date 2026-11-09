@@ -101,6 +101,71 @@ def test_email_adapter_uses_starttls_login_and_multiple_recipients(monkeypatch):
     assert smtp.calls[-1] == ("quit",)
 
 
+def test_email_adapter_retries_transient_failure_with_backoff(monkeypatch):
+    """163 式瞬断: 前两次连接被断, 第三次成功 — 共 3 次尝试, 退避 1s/5s。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr(email_adapter.time, "sleep", sleeps.append)
+    attempts = {"n": 0}
+    sent = []
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise OSError("Connection unexpectedly closed")
+
+        def login(self, username, password):
+            pass
+
+        def send_message(self, message):
+            sent.append(message)
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(email_adapter.smtplib, "SMTP_SSL", FakeSmtp)
+    config = {
+        "host": "smtp.example.com",
+        "port": 465,
+        "security": "ssl",
+        "username": "bot@example.com",
+        "from_address": "bot@example.com",
+        "to_addresses": ["one@example.com"],
+    }
+
+    assert email_adapter.send_email(config, "pw", "每日复盘", "正文")
+    assert attempts["n"] == 3 and len(sent) == 1
+    assert sleeps == [1.0, 5.0]
+
+
+def test_email_adapter_exhausts_attempts_and_reports_failure(monkeypatch):
+    """全部尝试失败: 返回 False, 退避只在尝试之间发生 (3 次尝试 2 次退避)。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr(email_adapter.time, "sleep", sleeps.append)
+    attempts = {"n": 0}
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout=None):
+            attempts["n"] += 1
+            raise OSError("Connection unexpectedly closed")
+
+    monkeypatch.setattr(email_adapter.smtplib, "SMTP_SSL", FakeSmtp)
+    config = {
+        "host": "smtp.example.com",
+        "port": 465,
+        "security": "ssl",
+        "username": "bot@example.com",
+        "from_address": "bot@example.com",
+        "to_addresses": ["one@example.com"],
+    }
+
+    assert not email_adapter.send_email(config, "pw", "每日复盘", "正文")
+    assert attempts["n"] == 3 and sleeps == [1.0, 5.0]
+
+
 def test_email_adapter_attaches_html_alternative_when_html_body_given(monkeypatch):
     captured = []
 

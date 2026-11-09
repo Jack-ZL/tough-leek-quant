@@ -15,7 +15,10 @@ from email.utils import parseaddr
 logger = logging.getLogger(__name__)
 
 SECURITY_MODES = {"ssl", "starttls", "none"}
-_MAX_ATTEMPTS = 2
+_MAX_ATTEMPTS = 3
+# 第 1→2、2→3 次尝试之间的退避间隔: 163 等服务商偶发瞬断("Connection
+# unexpectedly closed")通常几秒内自愈, 1s 内连试两次容易撞同一故障窗口。
+_BACKOFF_SECONDS = (1.0, 5.0)
 
 
 def is_valid_email(address: str) -> bool:
@@ -106,7 +109,7 @@ def send_email(
                 with suppress(Exception):
                     smtp.close()
         if attempt < max_attempts:
-            time.sleep(1)
+            time.sleep(_BACKOFF_SECONDS[min(attempt - 1, len(_BACKOFF_SECONDS) - 1)])
 
     logger.warning("邮件推送最终失败(已尝试 %d 次): %s", max_attempts, last_err)
     return False
