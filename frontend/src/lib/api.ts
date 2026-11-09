@@ -507,7 +507,7 @@ export interface KlineRow {
 }
 
 export interface QuoteFreshness {
-	state: 'live' | 'delayed' | 'stale' | 'historical' | 'unknown' | 'missing' | 'paused' | 'disabled'
+	state: 'live' | 'delayed' | 'stale' | 'suspended' | 'historical' | 'unknown' | 'missing' | 'paused' | 'disabled'
 	message: string
 	data_date: string | null
 	quote_ts: number | null

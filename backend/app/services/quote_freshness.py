@@ -10,20 +10,27 @@ from app.services import trading_day
 
 class QuoteFreshness:
     def __init__(self, *, now: datetime | None = None, trading: bool | None = None,
-                 enabled: bool = True, paused: bool = False, interval: float = 6) -> None:
+                 enabled: bool = True, paused: bool = False, interval: float = 6,
+                 feed_fresh: bool = False) -> None:
         self.now = (now or cn_now()).astimezone(CN_TZ)
         self.trading = trading
         self.enabled, self.paused = enabled, paused
         self.max_age_ms = max(90_000, interval * 3_000)
+        # 全局行情流是否新鲜 (最近成功拉取过): 用于把"单标的无当日数据"从
+        # 连接问题里区分出来 — 流是通的而它没有, 多半是停牌而非断链。
+        self.feed_fresh = feed_fresh
 
     @classmethod
     def for_request(cls, request):
         now = cn_now()
         qs = getattr(request.app.state, "quote_service", None)
+        fetched_at = float(getattr(qs, "_fetched_at", 0) or 0)
+        feed_fresh = bool(fetched_at) and (now.timestamp() * 1000 - fetched_at) < 600_000
         return cls(now=now, trading=trading_day.cached_verdict(now),
                    enabled=bool(qs and getattr(qs, "_enabled", False)),
                    paused=bool(qs and getattr(qs, "_paused", False)),
-                   interval=getattr(qs, "_interval", 6) if qs else 6)
+                   interval=getattr(qs, "_interval", 6) if qs else 6,
+                   feed_fresh=feed_fresh)
 
     def describe(self, row: dict | None, *, historical: bool = False) -> dict:
         row = row or {}
@@ -58,6 +65,10 @@ class QuoteFreshness:
         if historical or not trading or clock < time(9, 30):
             return result("historical", "历史行情，按实际数据日期显示")
         if data_date is None or data_date < today.isoformat():
+            # 全局流新鲜且服务在跑, 唯独该标的没有当日数据 — 排除断链, 最可能是
+            # 停牌 (或所选源不覆盖该标的), 不再误导用户去"检查连接"。
+            if self.feed_fresh and self.enabled and not self.paused:
+                return result("suspended", "可能停牌或数据源无该标的当日行情，显示最后有效数据")
             return result("stale", "行情已过期，保留最近有效数据；请检查连接及所选源对该标的的支持范围")
         if data_date > today.isoformat():
             return result("unknown", "行情日期异常，请检查数据源")

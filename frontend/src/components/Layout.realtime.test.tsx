@@ -32,7 +32,7 @@ vi.mock('@/lib/useSharedQueries', async importOriginal => ({
   ...await importOriginal<typeof import('@/lib/useSharedQueries')>(),
   useSettings: () => ({ data: { onboarding_completed: true } }),
   useCapabilityMatrix: () => ({ data: { capabilities: [] } }),
-  usePreferences: () => ({ data: { realtime_data_provider: 'fuyao', realtime_quotes_enabled: false } }),
+  usePreferences: vi.fn(() => ({ data: { realtime_data_provider: 'fuyao', realtime_quotes_enabled: false } })),
   useVersion: () => ({ data: { version: '0.3.20' } }),
 }))
 vi.mock('@/lib/useQuoteStream', () => ({
@@ -119,4 +119,25 @@ it.each(['succeeded', 'failed'] as const)('离开数据页后, 分钟补拉 %s �
   await act(async () => { await new Promise(r => setTimeout(r, 20)) })
   keys.forEach(key => expect(client.getQueryState(key)?.isInvalidated).toBe(true))
   expect(client.getQueryState(unaffected)?.isInvalidated).toBe(false)
+})
+
+it('行情拉取持续失败时, 状态栏如实显示数据年龄而不是"运行中"', async () => {
+  const { usePreferences } = await import('@/lib/useSharedQueries')
+  const prefsOff = { data: { realtime_data_provider: 'fuyao', realtime_quotes_enabled: false } }
+  vi.mocked(usePreferences).mockReturnValue({
+    data: { realtime_data_provider: 'fuyao', realtime_quotes_enabled: true },
+  } as never)
+  const status = {
+    enabled: true, running: true, paused: false, is_trading_hours: true,
+    mode: 'full_market', realtime_allowed: true, interval_s: 6,
+    last_fetch_ms: Date.now() - 10 * 60_000,
+  } as Awaited<ReturnType<typeof api.quoteStatus>>
+  client.setQueryData(QK.quoteStatus, status)
+  vi.mocked(api.quoteStatus).mockResolvedValue(status)
+  await act(async () => root.render(
+    <MemoryRouter><QueryClientProvider client={client}><Layout /></QueryClientProvider></MemoryRouter>,
+  ))
+  expect(host.textContent).toContain('数据为 10 分钟前')
+  expect(host.textContent).not.toContain('运行中')
+  vi.mocked(usePreferences).mockReturnValue(prefsOff as never)
 })
