@@ -162,8 +162,12 @@ export function ActiveJobCard({ job }: { job: PipelineJob }) {
 					label: 'enriched',
 					value: cell(null, `${job.result.enriched_days} 行`)
 				})
+				if (job.result.remaining_gaps != null) pills.push({
+					label: '剩余缺口',
+					value: `${job.result.remaining_gaps} 条`
+				})
 				if (job.result.minute_rows != null) pills.push({
-					label: '分钟K',
+					label: job.result.requested_gaps != null ? '新增分钟K' : '分钟K',
 					value: cell('sync_minute', `${job.result.minute_rows} 行`)
 				})
 				if (pills.length === 0) return null

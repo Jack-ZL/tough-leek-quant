@@ -283,8 +283,8 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 	const [error, setError] = useState('')
 	const [loading, setLoading] = useState(false)
 	const [saving, setSaving] = useState(false)
-	const [aiStatus, setAiStatus] = useState<{ configured: boolean } | null>(null)
-	const [checkedAi, setCheckedAi] = useState(false)
+	const [aiStatus, setAiStatus] = useState<Awaited<ReturnType<typeof api.strategyAiStatus>> | null>(null)
+	const supportsIteration = aiStatus?.supports_tools ?? (aiStatus?.provider !== 'codex_cli')
 	const [loaded, setLoaded] = useState(false)
 	const [iterateEnabled, setIterateEnabled] = useState(false)
 	const [iterateRounds, setIterateRounds] = useState<AiIterateRound[]>([])
@@ -354,12 +354,14 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 
 	// 打开时检查 AI 状态
 	useEffect(() => {
-		if (!open || checkedAi) return
-		api.strategyAiStatus().then(s => {
-			setAiStatus(s);
-			setCheckedAi(true)
-		}).catch(() => setAiStatus({ configured: false }))
-	}, [open, checkedAi])
+		if (!open) return
+		let active = true
+		setAiStatus(null)
+		api.strategyAiStatus().then(s => { if (active) setAiStatus(s) }).catch(() => {
+			if (active) setAiStatus({ configured: false, has_key: false, has_model: false })
+		})
+		return () => { active = false }
+	}, [open])
 
 	// 持久化
 	const persist = useCallback(() => {
@@ -409,18 +411,11 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 	// Step 1: 生成
 	const handleGenerate = async () => {
 		if (!name.trim() || !rules.trim()) return
-		if (!aiStatus?.configured) {
-			setError('AI 未配置，请在设置页面配置 API Key');
-			return
-		}
-		setLoading(true);
-		setError('');
-		setCode('');
-		setValidated(false);
-		setIterateRounds([]);
-		setIterateDraftId('')
+		if (!aiStatus?.configured) { setError('AI 未配置，请在设置页面配置 API Key'); return }
+		setLoading(true); setError(''); setCode(''); setValidated(false); setIterateRounds([]); setIterateDraftId('')
 		try {
 			if (iterateEnabled) {
+				if (!supportsIteration) throw new Error('当前 AI 接入暂不支持自动迭代，可关闭迭代使用普通生成。')
 				// AI 迭代: 生成 → 回测 → 诊断 → 修改 闭环, 草稿已由后端落盘
 				const result = await api.strategyAiIterate({
 					name: name.trim(), description: description.trim(), direction,
@@ -428,31 +423,18 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 				})
 				setCode(result.final_code)
 				iterateSavedCodeRef.current = result.final_code
-				setStrategyId(result.draft_strategy_id);
-				setSource('ai')
-				setIterateDraftId(result.draft_strategy_id);
-				setIterateRounds(result.rounds ?? [])
-				setStep(2);
-				setValidated(true)
+				setStrategyId(result.draft_strategy_id); setSource('ai')
+				setIterateDraftId(result.draft_strategy_id); setIterateRounds(result.rounds ?? [])
+				setStep(2); setValidated(true)
 				const genDesc = parseMetaField(result.final_code, 'description')
 				const genRules = parseRules(result.final_code)
 				if (genDesc) setDescription(genDesc)
 				if (genRules) setRules(genRules)
 			} else {
 				const id = resolveStrategyId('ai')
-				setStrategyId(id);
-				setSource('ai');
-				setPreviewTab('code')
+				setStrategyId(id); setSource('ai'); setPreviewTab('code')
 				let finalResult: any = null
-				for await (const evt of api.strategyBuildStream(1, {
-					name: name.trim(),
-					description: description.trim(),
-					direction,
-					execution_backend: executionBackend,
-					rules: rules.trim(),
-					strategy_id: id,
-					basic_filter: defaultBF
-				})) {
+				for await (const evt of api.strategyBuildStream(1, { name: name.trim(), description: description.trim(), direction, execution_backend: executionBackend, rules: rules.trim(), strategy_id: id, basic_filter: defaultBF })) {
 					if (evt.type === 'delta') {
 						setCode(prev => prev + evt.content)
 					} else if (evt.type === 'error') {
@@ -462,13 +444,8 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 					}
 				}
 				if (!finalResult) throw new Error('AI 未返回策略结果')
-				if (!finalResult.valid) {
-					setError(finalResult.error ?? '生成失败');
-					return
-				}
-				setCode(finalResult.code);
-				setStep(2);
-				setValidated(true)
+				if (!finalResult.valid) { setError(finalResult.error ?? '生成失败'); return }
+				setCode(finalResult.code); setStep(2); setValidated(true)
 				const genDesc = parseMetaField(finalResult.code, 'description')
 				const genRules = parseRules(finalResult.code)
 				if (genDesc) setDescription(genDesc)
@@ -477,9 +454,7 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 		} catch (e: any) {
 			const msg = friendlyStreamError(String(e?.message ?? ''))
 			setError(msg.includes('API Key') || msg.includes('api_key') ? 'AI API Key 未配置或无效' : (msg || '生成失败'))
-		} finally {
-			setLoading(false)
-		}
+		} finally { setLoading(false) }
 	}
 
 	// Step 2: AI 修改
@@ -721,68 +696,72 @@ export function StrategyBuilderDialog({ open, onClose, onSavedId, mode = 'create
 						</div>
 					)}
 
-					{step === 1 ? (
-						<>
-							<div className="space-y-2">
-								<input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="策略名称，如：xx策略"
-									className="w-full h-9 px-3 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm font-medium text-foreground placeholder:text-muted/30 focus:outline-none focus:ring-2 focus:ring-accent/30" />
-								<input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder="一句话描述，如：筛选满足 xx 条件的 yy 个股"
-									className="w-full h-8 px-3 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm text-foreground placeholder:text-muted/30 focus:outline-none focus:ring-2 focus:ring-accent/30" />
-							</div>
-							<div>
-								<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">策略方向</span>
-								<div className="flex gap-1">
-									{DIRECTIONS.map(d => (
-										<button key={d.value} onClick={() => setDirection(d.value)} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (direction === d.value ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>{d.label}</button>
-									))}
+						{step === 1 ? (
+							<>
+								<div className="space-y-2">
+									<input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="策略名称，如：xx策略"
+										className="w-full h-9 px-3 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm font-medium text-foreground placeholder:text-muted/30 focus:outline-none focus:ring-2 focus:ring-accent/30" />
+									<input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder="一句话描述，如：筛选满足 xx 条件的 yy 个股"
+										className="w-full h-8 px-3 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm text-foreground placeholder:text-muted/30 focus:outline-none focus:ring-2 focus:ring-accent/30" />
 								</div>
-							</div>
-							<div>
-								<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">执行后端</span>
-								<div className="flex flex-wrap gap-1">
-									<button type="button" aria-pressed={executionBackend === 'polars_expr'} onClick={() => selectExecutionBackend('polars_expr')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (executionBackend === 'polars_expr' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>Polars 表达式</button>
-									<button type="button" aria-pressed={executionBackend === 'matrix_native'} onClick={() => selectExecutionBackend('matrix_native')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (executionBackend === 'matrix_native' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>矩阵原生</button>
-									<button type="button" aria-pressed={executionBackend === 'minute_filter'} onClick={() => selectExecutionBackend('minute_filter')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors focus-visible:ring-2 focus-visible:ring-accent ' + (executionBackend === 'minute_filter' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>一分钟策略</button>
+								<div>
+									<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">策略方向</span>
+									<div className="flex gap-1">
+										{DIRECTIONS.map(d => (
+											<button key={d.value} onClick={() => setDirection(d.value)} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (direction === d.value ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>{d.label}</button>
+										))}
+									</div>
 								</div>
-							</div>
-							<div>
-								<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">策略规则</span>
-								<textarea value={rules} onChange={e => setRules(e.target.value)}
-									placeholder={executionBackend === 'minute_filter'
-										? '例如：单分钟涨幅≥2%，且分钟成交量≥前20分钟均量的3倍（不含当前根）'
-										: "描述你的策略逻辑，AI 会自动提取参数。例如：\n前一交易日满足 xx 且跌幅不低于 x%，今日出现 yy 形态，成交量较前一日放大 z 倍以上，且 close > maN ..."}
-									className="w-full h-28 px-3 py-2 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm text-foreground placeholder:text-muted/30 resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
-							</div>
-							<button type="button" onClick={() => setIterateEnabled(v => !v)}
-								className="flex w-full items-center justify-between rounded-lg border border-border/30 bg-surface/30 px-3 py-2 cursor-pointer select-none">
-								<span className="flex items-center gap-1.5 text-[11px] text-secondary">
-									<Terminal className="h-3.5 w-3.5 text-emerald-400" />
-									AI 迭代（自动回测诊断优化）
-								</span>
-								<span className={cn('relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors', iterateEnabled ? 'bg-emerald-400/40' : 'bg-border')}>
-									<span className={cn('inline-block h-4 w-4 rounded-full bg-white transform transition-transform', iterateEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]')} />
-								</span>
-							</button>
-							{iterateEnabled && (
-								<div className="text-[10px] text-muted/60 leading-relaxed">开启后 AI 会先回测再诊断修改，最多迭代 4 轮，耗时更长；结果保存为草稿，仍需你点「保存策略」加入策略池。</div>
-							)}
-							{error &&
-								<div className="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-3 py-2">{error}</div>}
-							<button onClick={handleGenerate} disabled={loading || !name.trim() || !rules.trim()}
-								className="w-full h-10 rounded-xl bg-gradient-to-r from-amber-500/20 to-amber-500/10 border border-amber-400/30 text-amber-400 text-sm font-medium flex items-center justify-center gap-2 hover:from-amber-500/30 hover:to-amber-500/20 disabled:opacity-40 transition-all">
-								{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-								{loading ? (iterateEnabled ? 'AI 迭代中...' : 'AI 生成中...') : code ? '重新生成' : (iterateEnabled ? 'AI 迭代生成' : 'AI 生成策略')}
-							</button>
-						</>
-					) : (
-						<>
-							{/* Tab 切换 */}
-							<div className="flex items-center justify-between">
-								<div className="flex items-center gap-0.5">
-									<button onClick={() => setPreviewTab('params')} className={'px-3 py-1 rounded text-xs font-medium transition-colors ' + (previewTab === 'params' ? 'bg-amber-400/15 text-amber-400' : 'text-muted hover:text-secondary')}>参数</button>
-									<button onClick={() => setPreviewTab('code')} className={'px-3 py-1 rounded text-xs font-medium transition-colors ' + (previewTab === 'code' ? 'bg-amber-400/15 text-amber-400' : 'text-muted hover:text-secondary')}>代码</button>
+								<div>
+									<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">执行后端</span>
+									<div className="flex flex-wrap gap-1">
+										<button type="button" aria-pressed={executionBackend === 'polars_expr'} onClick={() => selectExecutionBackend('polars_expr')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (executionBackend === 'polars_expr' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>Polars 表达式</button>
+										<button type="button" aria-pressed={executionBackend === 'matrix_native'} onClick={() => selectExecutionBackend('matrix_native')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ' + (executionBackend === 'matrix_native' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>矩阵原生</button>
+										<button type="button" aria-pressed={executionBackend === 'minute_filter'} onClick={() => selectExecutionBackend('minute_filter')} className={'px-2.5 py-1 rounded text-[11px] font-medium border transition-colors focus-visible:ring-2 focus-visible:ring-accent ' + (executionBackend === 'minute_filter' ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border bg-base text-muted hover:border-amber-400/30')}>一分钟策略</button>
+									</div>
 								</div>
-							</div>
+								<div>
+									<span className="text-[10px] text-muted/50 uppercase tracking-wider mb-1.5 block">策略规则</span>
+									<textarea value={rules} onChange={e => setRules(e.target.value)}
+										placeholder={executionBackend === 'minute_filter'
+											? '例如：单分钟涨幅≥2%，且分钟成交量≥前20分钟均量的3倍（不含当前根）'
+											: "描述你的策略逻辑，AI 会自动提取参数。例如：\n前一交易日满足 xx 且跌幅不低于 x%，今日出现 yy 形态，成交量较前一日放大 z 倍以上，且 close > maN ..."}
+										className="w-full h-28 px-3 py-2 rounded-lg bg-base border-0 ring-1 ring-border/30 text-sm text-foreground placeholder:text-muted/30 resize-none focus:outline-none focus:ring-2 focus:ring-accent/30" />
+								</div>
+								<button type="button" onClick={() => setIterateEnabled(v => !v)}
+									aria-pressed={iterateEnabled}
+									disabled={loading || !aiStatus?.configured || (!supportsIteration && !iterateEnabled)}
+									className="flex w-full items-center justify-between rounded-lg border border-border/30 bg-surface/30 px-3 py-2 cursor-pointer select-none disabled:cursor-not-allowed disabled:opacity-50">
+									<span className="flex items-center gap-1.5 text-[11px] text-secondary">
+										<Terminal className="h-3.5 w-3.5 text-emerald-400" />
+										AI 迭代（自动回测诊断优化）
+									</span>
+									<span className={cn('relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors', iterateEnabled ? 'bg-emerald-400/40' : 'bg-border')}>
+										<span className={cn('inline-block h-4 w-4 rounded-full bg-white transform transition-transform', iterateEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]')} />
+									</span>
+								</button>
+								{aiStatus?.configured && !supportsIteration && (
+									<div role="status" className="text-[11px] text-muted">当前 AI 接入暂不支持自动迭代，仍可使用普通生成。</div>
+								)}
+								{iterateEnabled && (
+									<div className="text-[10px] text-muted/60 leading-relaxed">开启后 AI 会先回测再诊断修改，最多迭代 4 轮，耗时更长；结果保存为草稿，仍需你点「保存策略」加入策略池。</div>
+								)}
+								{error && <div role="alert" className="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-3 py-2">{error}</div>}
+								<button onClick={handleGenerate} disabled={loading || !aiStatus?.configured || (iterateEnabled && !supportsIteration) || !name.trim() || !rules.trim()}
+									className="w-full h-10 rounded-xl bg-gradient-to-r from-amber-500/20 to-amber-500/10 border border-amber-400/30 text-amber-400 text-sm font-medium flex items-center justify-center gap-2 hover:from-amber-500/30 hover:to-amber-500/20 disabled:opacity-40 transition-all">
+									{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+									{loading ? (iterateEnabled ? 'AI 迭代中...' : 'AI 生成中...') : code ? '重新生成' : (iterateEnabled ? 'AI 迭代生成' : 'AI 生成策略')}
+								</button>
+							</>
+						) : (
+							<>
+								{/* Tab 切换 */}
+								<div className="flex items-center justify-between">
+									<div className="flex items-center gap-0.5">
+										<button onClick={() => setPreviewTab('params')} className={'px-3 py-1 rounded text-xs font-medium transition-colors ' + (previewTab === 'params' ? 'bg-amber-400/15 text-amber-400' : 'text-muted hover:text-secondary')}>参数</button>
+										<button onClick={() => setPreviewTab('code')} className={'px-3 py-1 rounded text-xs font-medium transition-colors ' + (previewTab === 'code' ? 'bg-amber-400/15 text-amber-400' : 'text-muted hover:text-secondary')}>代码</button>
+									</div>
+								</div>
 
 							{iterateRounds.length > 0 && (
 								<div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2.5 space-y-1.5">

@@ -50,6 +50,7 @@ from app.api import (
     stock_debate,
     stock_profile,
     strategy,
+    strategy_pool,
     task_registry,
     watchlist,
 )
@@ -149,11 +150,11 @@ async def _application_lifespan(app: FastAPI):
         logger.warning("signal seeding failed (ignored): %s", e)
     # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
     with startup_phase(logger, "custom factor module import"):
-        from app.factors.store import load_into_registry
+        from app.factors.store import load_runtime_registry
 
     try:
         with startup_phase(logger, "custom factor registration"):
-            loaded_factors = load_into_registry(store.data_dir)
+            loaded_factors = load_runtime_registry(store.data_dir)
         if loaded_factors:
             logger.info("custom factors loaded: %s", len(loaded_factors))
     except Exception as exc:  # noqa: BLE001
@@ -775,6 +776,7 @@ app.include_router(ai_audit.router)  # P2-23: AI 分析不可篡改账本(倒查
 app.include_router(settings_api.router)
 app.include_router(upgrade_guard_api.router)
 app.include_router(strategy.router)
+app.include_router(strategy_pool.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(config_backup.router)

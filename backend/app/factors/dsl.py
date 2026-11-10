@@ -22,7 +22,7 @@ from typing import Any
 
 import polars as pl
 
-from app.factors.registry import factor_dependencies, get_factor
+from app.factors.registry import factor_dependencies, factor_warmup_bars, get_factor
 
 FACTOR_COLUMN = "__dsl_factor__"
 
@@ -113,6 +113,7 @@ class CompiledFormula:
     dependencies: frozenset[str] = frozenset()  # 展开到 enriched base 列
     referenced_factors: frozenset[str] = frozenset()  # 引用的注册因子 id (含 virtual, 需物化)
     warmup_bars: int = 1
+    input_windows: tuple[tuple[str, int], ...] = ()
     cross_sectional: bool = False
     formula_text: str = ""
 
@@ -692,7 +693,6 @@ def compile_formula(text: str) -> CompiledFormula:
 
     dependencies: set[str] = set()
     referenced_factors: set[str] = set()
-    factor_warmup: dict[str, int] = {}
     warmup = 1
     cross_sectional = False
     for name in identifiers:
@@ -704,8 +704,6 @@ def compile_formula(text: str) -> CompiledFormula:
             continue
         referenced_factors.add(name)
         dependencies.update(factor_dependencies([name]))
-        factor_warmup[name] = spec.warmup_bars
-        warmup = max(warmup, spec.warmup_bars)
 
     # 预热推断: 滚动窗口按 n+1; 递归算子按 RECURSIVE_WARMUP_* 放大 (P1-17 第 2 批)。
     # 必须走 AST 才能拿到算子名 —— constants_by_call 的 value 里没有名字。
@@ -720,9 +718,20 @@ def compile_formula(text: str) -> CompiledFormula:
     # (含当前 bar), 直接相加会把当前 bar 重复计一次 —— 引用因子 warmup=1 意为「不需要
     # 额外历史」, 加上去就凭空多出一根。
     #
+    # 叶子 (引用因子/指标列) 的回看走 registry 的 factor_warmup_bars 递归解析整条
+    # 依赖链 (上游 v0.3.35 口径): DSL 引用的中间因子、历史 parquet 指标列
+    # (_INDICATOR_HISTORY) 都能拿到正确回看数; 按名字缓存, 同一叶子多处引用不重复解析。
+    #
     # 注意每层仍有 1 根富余, 这是**沿用既有口径**不是本批引入的: 窗口 n 的滚动均值在
     # 第 n 根就能出值, 而仓库一直按 n+1 报 (单层 21 vs 实测最小 20)。嵌套后富余按层数
     # 累加 (双层 26 vs 24、三层 13 vs 10), 方向是多加载历史, 安全。
+    col_lookback: dict[str, int] = {}
+
+    def _col_lookback_of(name: str) -> int:
+        if name not in col_lookback:
+            col_lookback[name] = max(0, factor_warmup_bars([name]) - 1)
+        return col_lookback[name]
+
     def _lookback_of(node: dict) -> int:
         own = 0
         if node["kind"] == "call":
@@ -738,10 +747,27 @@ def compile_formula(text: str) -> CompiledFormula:
             own = max(own, RECURSIVE_WARMUP_FLOOR.get(op_name, 0) - 1)
         elif node["kind"] == "col":
             # 引用的因子是叶子: 它自己的回看要加到外层窗口头上, 而不是跟外层取 max
-            own = max(0, factor_warmup.get(str(node["value"]), 1) - 1)
+            own = _col_lookback_of(str(node["value"]))
         return own + max((_lookback_of(child) for child in node["children"]), default=0)
 
     warmup = max(warmup, 1 + _lookback_of(ast))
+
+    # input_windows (上游 v0.3.35): 记录每个叶子列沿路径累计的窗口 bar 数,
+    # 供 registry 的 factor_warmup_bars 沿依赖链递归推算引用因子的预热。
+    windows: dict[str, int] = {}
+
+    def collect_windows(node: dict, bars: int) -> None:
+        if node["kind"] == "col":
+            name = node["value"]
+            windows[name] = max(windows.get(name, 0), bars)
+        if node["kind"] == "call" and node["value"] in TS_OPERATORS:
+            n = constants_by_call.get(id(node), {}).get("n", 0)
+            if 0 <= n <= max(WINDOW_MAX, DELAY_MAX):
+                bars += int(n)
+        for child in node["children"]:
+            collect_windows(child, bars)
+
+    collect_windows(ast, 0)
 
     def _find_cross(node: dict) -> None:
         nonlocal cross_sectional
@@ -756,6 +782,7 @@ def compile_formula(text: str) -> CompiledFormula:
         return CompiledFormula(
             ok=False, errors=errors, dependencies=frozenset(dependencies),
             referenced_factors=frozenset(referenced_factors),
+            input_windows=tuple(sorted(windows.items())),
             warmup_bars=warmup, cross_sectional=cross_sectional, formula_text=text,
         )
 
@@ -792,10 +819,11 @@ def compile_formula(text: str) -> CompiledFormula:
         return CompiledFormula(
             ok=False, errors=errors, dependencies=frozenset(dependencies),
             referenced_factors=frozenset(referenced_factors),
+            input_windows=tuple(sorted(windows.items())),
             warmup_bars=warmup, cross_sectional=cross_sectional, formula_text=text,
         )
 
-    # 阶段二: 提取截面算子的含窗口子树为临时列 (Polars 嵌套窗口会静默全 null)
+    # 阶段二: 把窗口算子的含窗口操作数先物化为临时列 (Polars 嵌套窗口会静默全 null)
     # worklist 逐层下钻; temps 后进先出反转即依赖顺序 (深层先算)。
     def _needs_symbol_window(node: dict) -> bool:
         kind = node["kind"]
@@ -815,14 +843,16 @@ def compile_formula(text: str) -> CompiledFormula:
     pending: list[dict] = [ast]
     while pending:
         current = pending.pop(0)
-        if current.get("kind") == "call" and current.get("value") in CROSS_OPERATORS:
-            operand = current["children"][0]
-            if _has_any_over(operand):
-                alias = f"__tsfx_{len(temp_roots)}__"
-                current["children"][0] = {"kind": "col", "value": alias, "children": [], "offset": operand["offset"]}
-                temp_roots.append({"alias": alias, "root": copy.deepcopy(operand)})
-                pending.append(temp_roots[-1]["root"])
-                continue  # 操作数已替换为临时列, 不再下钻原子树
+        if current["kind"] == "call" and current["value"] in TS_OPERATORS | CROSS_OPERATORS:
+            expr_count, _ = OPERATORS[current["value"]]
+            for index, operand in enumerate(current["children"][:expr_count]):
+                if _has_any_over(operand):
+                    alias = f"__tsfx_{len(temp_roots)}__"
+                    current["children"][index] = {
+                        "kind": "col", "value": alias, "children": [], "offset": operand["offset"],
+                    }
+                    temp_roots.append({"alias": alias, "root": operand})
+                    pending.append(operand)
         pending.extend(current.get("children", []))
 
     # 阶段三: 编译最终表达式与临时列表达式 (按依赖顺序: 深层在前)
@@ -846,6 +876,7 @@ def compile_formula(text: str) -> CompiledFormula:
             errors=errors or [DslError("E009", "产出类型非法: 无法编译为数值表达式")],
             dependencies=frozenset(dependencies),
             referenced_factors=frozenset(referenced_factors),
+            input_windows=tuple(sorted(windows.items())),
             warmup_bars=warmup, cross_sectional=cross_sectional, formula_text=text,
         )
     if needs_window:
@@ -859,16 +890,14 @@ def compile_formula(text: str) -> CompiledFormula:
         # 口径详见 docs/factor-system-design.md §3.6「布尔因子的三值语义与 nan 地雷」。
         compiled = compiled.cast(pl.Float64)
 
-    # 运行期帧变换: 检查全部引用列 (基准依赖 + 引用因子) 存在, 否则 None (E013 fail-closed)
-    required_columns = set(dependencies) | set(referenced_factors)
     staged_exprs = temp_exprs  # 依赖顺序已排
 
     def frame_transform(frame: pl.DataFrame) -> pl.DataFrame | None:
-        if not required_columns.issubset(set(frame.columns)):
+        if not identifiers.issubset(frame.columns):
             return None
         result = frame
-        if staged_exprs:
-            result = result.with_columns(staged_exprs)
+        for stage in staged_exprs:
+            result = result.with_columns(stage)
         return result.with_columns(compiled.alias(FACTOR_COLUMN))
 
     return CompiledFormula(
@@ -878,15 +907,19 @@ def compile_formula(text: str) -> CompiledFormula:
         dependencies=frozenset(dependencies),
         referenced_factors=frozenset(referenced_factors),
         warmup_bars=warmup,
+        input_windows=tuple(sorted(windows.items())),
         cross_sectional=cross_sectional,
         formula_text=text,
     )
 
 
 @lru_cache(maxsize=256)
-def compile_formula_cached(text: str) -> CompiledFormula:
-    """带 LRU 缓存的编译入口 (公式文本 → 编译产物, 设计文档 §3.3)。
-
-    CompiledFormula 为不可变值对象 (frame_transform 闭包只读), 缓存共享安全。
-    """
+def _compile_cached(text: str, revision: int) -> CompiledFormula:
     return compile_formula(text)
+
+
+def compile_formula_cached(text: str) -> CompiledFormula:
+    from app.factors.registry import registry_cache_revision
+
+    revision = registry_cache_revision()
+    return compile_formula(text) if revision is None else _compile_cached(text, revision)
