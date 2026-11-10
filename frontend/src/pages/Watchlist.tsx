@@ -3,35 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
-import {
-	Trash2,
-	RefreshCw,
-	Star,
-	X,
-	Search,
-	LayoutGrid,
-	List,
-	Rows3,
-	BarChart3,
-	Settings2,
-	Plus,
-	Check,
-	Filter,
-	Eye,
-	EyeOff,
-	Minus,
-	ChevronsUp,
-	Clock,
-	RotateCcw,
-	FileUp,
-	FolderOpen,
-	FolderMinus,
-	FolderPlus
-} from 'lucide-react'
+import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
 import { api, type KlineRow, type MinuteKlineRow, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { ExtSparkChart } from '@/components/screener/ExtSparkChart'
-import { fetchMinuteBatchIncremental, MINUTE_SEED_MAX } from '@/lib/minuteBatchIncremental'
-import { fetchDailyBatchChunked } from '@/lib/klineBatchChunked'
+import { MINUTE_SEED_MAX } from '@/lib/minuteBatchIncremental'
+import { useMinuteBatchQuery } from '@/lib/useMinuteBatchQuery'
+import { useWatchlistDailyBatch } from '@/lib/useWatchlistDailyBatch'
 import { extendMinuteTail } from '@/lib/minuteTailExtend'
 import { extendDailyTail } from '@/lib/dailyTailExtend'
 import { useWatchlistPrepare } from '@/lib/useWatchlistPrepare'
@@ -98,10 +75,10 @@ const BOARD_OPTIONS = [...BOARDS, ETF_BOARD]
 
 function getBoardType(symbol: string): BoardType | null {
 	if (/^(300|301)/.test(symbol)) return '创业板'
-	if (/^688/.test(symbol)) return '科创板'
-	if (/\.BJ$/.test(symbol)) return '北交所'
-	if (/^60[0135]/.test(symbol)) return '沪主板'
-	if (/^00[012]/.test(symbol)) return '深主板'
+	if (/^688/.test(symbol))       return '科创板'
+	if (/\.BJ$/.test(symbol))      return '北交所'
+	if (/^60[0135]/.test(symbol))  return '沪主板'
+	if (/^00[012]/.test(symbol))   return '深主板'
 	return null
 }
 
@@ -109,10 +86,10 @@ function getBoardType(symbol: string): BoardType | null {
 
 function turnoverColor(rate: number | null | undefined): string {
 	if (rate == null || Number.isNaN(rate)) return 'text-[#888]'
-	if (rate < 5) return 'text-[#888]'
-	if (rate < 10) return 'text-[#d4a800]'
-	if (rate < 20) return 'text-[#f97316]'
-	if (rate < 35) return 'text-[#d94a3d]'
+	if (rate < 5)   return 'text-[#888]'
+	if (rate < 10)  return 'text-[#d4a800]'
+	if (rate < 20)  return 'text-[#f97316]'
+	if (rate < 35)  return 'text-[#d94a3d]'
 	return 'text-[#b84a8a]'
 }
 
@@ -136,11 +113,7 @@ function renderExtValue(
 		const cfg = col.extDisplay
 		const hasNumFmt = cfg?.thousandSeparator || (cfg?.unitConvert && cfg.unitConvert !== 'none')
 		const displayVal = hasNumFmt
-			? formatExtNumber(val, {
-				thousandSeparator: cfg?.thousandSeparator,
-				unitConvert: cfg?.unitConvert,
-				unitDecimals: cfg?.unitDecimals
-			})
+			? formatExtNumber(val, { thousandSeparator: cfg?.thousandSeparator, unitConvert: cfg?.unitConvert, unitDecimals: cfg?.unitDecimals })
 			: (Number.isInteger(val) ? fmtPrice(val, 0) : fmtPrice(val))
 		return <span className="tabular-nums">{displayVal}</span>
 	}
@@ -183,10 +156,7 @@ function renderExtValue(
 				<button
 					key={i}
 					type="button"
-					onClick={event => {
-						event.stopPropagation();
-						onTagClick(tag)
-					}}
+					onClick={event => { event.stopPropagation(); onTagClick(tag) }}
 					className="inline-block px-1.5 py-px rounded text-[10px] font-medium leading-tight text-yellow-500 bg-yellow-500/10 hover:brightness-95"
 				>
 					{tag}
@@ -330,16 +300,12 @@ function StockSearchBox({
 				setOpen(false)
 			}
 		}
-
 		document.addEventListener('mousedown', handleClick)
 		return () => document.removeEventListener('mousedown', handleClick)
 	}, [])
 
 	function handleKeyDown(e: React.KeyboardEvent) {
-		if (e.key === 'Escape') {
-			setOpen(false);
-			return
-		}
+		if (e.key === 'Escape') { setOpen(false); return }
 		if (!open || results.length === 0) return
 		if (e.key === 'ArrowDown') {
 			e.preventDefault()
@@ -370,14 +336,8 @@ function StockSearchBox({
 					type="text"
 					placeholder="搜索…"
 					value={query}
-					onChange={(e) => {
-						setQuery(e.target.value);
-						setOpen(true);
-						setActiveIdx(-1)
-					}}
-					onFocus={() => {
-						if (query.trim()) setOpen(true)
-					}}
+					onChange={(e) => { setQuery(e.target.value); setOpen(true); setActiveIdx(-1) }}
+					onFocus={() => { if (query.trim()) setOpen(true) }}
 					onKeyDown={handleKeyDown}
 					className="w-44 h-8 pl-8 pr-2.5 rounded-btn bg-elevated border border-border text-xs text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50 focus:w-56 transition-all duration-200"
 				/>
@@ -398,8 +358,9 @@ function StockSearchBox({
 							return (
 								<div
 									key={r.symbol}
-									className={`flex items-center gap-2.5 px-3 py-2 text-xs transition-colors duration-100 ${i === activeIdx ? 'bg-accent/10 text-accent' : 'hover:bg-elevated text-foreground'
-										}`}
+									className={`flex items-center gap-2.5 px-3 py-2 text-xs transition-colors duration-100 ${
+										i === activeIdx ? 'bg-accent/10 text-accent' : 'hover:bg-elevated text-foreground'
+									}`}
 								>
 									<button
 										type="button"
@@ -449,10 +410,7 @@ function StockSearchBox({
 										<span className="flex shrink-0 items-center gap-0.5">
 											<button
 												type="button"
-												onClick={event => {
-													event.stopPropagation();
-													onAdd(r.symbol, preferredGroupId ?? null)
-												}}
+												onClick={event => { event.stopPropagation(); onAdd(r.symbol, preferredGroupId ?? null) }}
 												disabled={addPending}
 												className="shrink-0 rounded p-1 text-muted transition-colors hover:bg-accent/10 hover:text-accent disabled:opacity-50 cursor-pointer"
 												title={
@@ -696,11 +654,7 @@ const StockCard = React.memo(function StockCard({
 										expanded,
 										() => onToggleExpand(cellKey),
 										true,
-										dimensionKind ? value => onDimensionClick({
-											kind: dimensionKind,
-											value,
-											sourceField
-										}) : undefined,
+										dimensionKind ? value => onDimensionClick({ kind: dimensionKind, value, sourceField }) : undefined,
 									)}
 								</span>
 							</span>
@@ -734,6 +688,11 @@ const StockCard = React.memo(function StockCard({
 		</div>
 	)
 })
+
+function minuteScopeFor(rows: { symbol: string; asset_type?: string }[]): string {
+	// 分时按标的缓存。单纯排序不改变取数范围，指数走独立数据入口。
+	return rows.filter(row => row.asset_type !== 'index').map(row => row.symbol).sort().join(',')
+}
 
 // ===== 主页面 =====
 
@@ -925,35 +884,15 @@ export function Watchlist() {
 	})
 	const preparation = useWatchlistPrepare(enriched.data?.rows)
 
-	// symbol 派生只依赖 enriched.data: 旧写法 symbols 每次渲染都是新引用 (击穿 memo)
-	// 且 filter×find 为 O(n²), 实时行情每 tick 重渲染时放大为每秒全量比较。
-	// 指数无本地分钟K数据, 分时批量请求剔除指数 symbol (省请求, 避免逐只 404)
-	const enrichedRows = enriched.data?.rows
-	const { symbols, minuteSymbols, minuteSymbolsKey } = useMemo(() => {
-		const rows = enrichedRows ?? []
-		const syms = rows.map((r: any) => r.symbol)
-		const nonIndex = rows.filter((r: any) => r.asset_type !== 'index').map((r: any) => r.symbol)
-		return {
-			symbols: syms,
-			minuteSymbols: nonIndex,
-			minuteSymbolsKey: nonIndex.join(','),
-		}
-	}, [enrichedRows])
+	// 直接使用已保存的自选名单，图表请求无需等待 enriched 行情返回。
+	const symbols = useMemo(() => list.data?.symbols.map(entry => entry.symbol) ?? [], [list.data?.symbols])
 
 	// 实时行情状态 (提前到此处: 分时轮询判断需要 realtimeRunning)
 	const quoteStatus = useQuoteStatus()
 	const realtimeRunning = quoteStatus.data?.running ?? false
 
 	// 批量日k数据 (天数由列配置决定; 分组卡片视图不展示蜡烛, 挂起请求)。
-	// symbols 不进 key, 按 300/块分块拉取 (后端单次上限 400): 增删自选不再整批
-	// 重拉, 缓存单份常驻; 天数变化才换 key (placeholderData 防蜡烛闪空)。
-	const klineBatch = useQuery({
-		queryKey: QK.watchlistKlineBatch(candleDays),
-		queryFn: () => fetchDailyBatchChunked(symbols, candleDays),
-		enabled: dailyKVisible && symbols.length > 0 && !groupCardsOpen,
-		staleTime: 5 * 60_000,  // 5 分钟内不重请求
-		placeholderData: (prev: any) => prev,
-	})
+	const klineBatch = useWatchlistDailyBatch(symbols, candleDays, dailyKVisible && !groupCardsOpen)
 
 	// 当日蜡烛实时修补: 历史 K 线按 staleTime 周期拉取 (见 queryKeys 注释), 最后一根
 	// 蜡烛用每 tick 刷新的 enriched 当日 OHLC 前端覆盖/追加, 蜡烛随实时行情跳动, 零额外请求。
@@ -980,26 +919,12 @@ export function Watchlist() {
 	const { data: prefsData } = usePreferences()
 	const intradayRefreshEnabled = prefsData?.minute_intraday_refresh ?? false
 	const intradayRefreshInterval = prefsData?.minute_intraday_refresh_interval ?? 6
-	// 视口感知: 虚拟器渲染中的 symbol 集合 (可见 + overscan 缓冲), 由下方虚拟器
-	// 区域的 effect 写入; null = 未就绪/非虚拟化视图。大列表 (千只自选) 全量播种
-	// 会造成 40 万级分钟对象常驻 — 视口集合就绪后各轮只拉视口, 缓存按 LRU 淘汰
-	// 视口外序列 (见 lib/minuteBatchIncremental.ts)。
-	const minuteRequestSymbolsRef = useRef<string[] | null>(null)
-	const minuteBatch = useQuery({
-		queryKey: QK.minuteBatch(),
-		// 增量轮询 (prefer_local): 读缓存以最后一根为 since 只拉新增, 本地合并为
-		// 完整序列; 全量分钟健康时服务端零补拉, 不健康时也只增量。
-		// 请求集合 = 视口内 symbol (缓存按 symbol upsert, 视口外保留旧序列);
-		// 视口未就绪时: 小列表全量, 大列表先拉头部播种 (effect 填充视口后防抖补拉)
-		queryFn: () => {
-			let reqSymbols = minuteRequestSymbolsRef.current ?? minuteSymbols
-			if (minuteRequestSymbolsRef.current == null && reqSymbols.length > MINUTE_SEED_MAX) {
-				reqSymbols = reqSymbols.slice(0, MINUTE_SEED_MAX)
-			}
-			return fetchMinuteBatchIncremental(qc, reqSymbols, true)
-		},
-		enabled: intradayVisible && minuteSymbols.length > 0 && !groupCardsOpen,
-		staleTime: 10_000,
+	// 实际渲染的股票/ETF 由下方表格或卡片视口上报，变化时即使未开启轮询也补拉。
+	const [minuteScope, setMinuteScope] = useState('')
+	const minuteRequestSymbols = useMemo(() => minuteScope ? minuteScope.split(',') : [], [minuteScope])
+	const minuteBatch = useMinuteBatchQuery(minuteRequestSymbols, {
+		enabled: intradayVisible && !groupCardsOpen,
+		preferLocal: true,
 		// SSE tick 新鲜 (enriched 10s 内被行情推送刷新过) → 分时图已由下方续画本地
 		// 跳动, 轮询降为 30s 兜底校准; tick 断流时回到用户设定间隔
 		refetchInterval: () => {
@@ -1010,7 +935,6 @@ export function Watchlist() {
 			const tickFresh = Date.now() - enriched.dataUpdatedAt < 10_000
 			return tickFresh ? 30_000 : intradayRefreshInterval * 1000
 		},
-		placeholderData: (prev: any) => prev,
 	})
 
 	// 分时图 SSE 续画: enriched 行情列每 tick 刷新 (SSE 触发), 前端本地续写分钟序列
@@ -1047,8 +971,6 @@ export function Watchlist() {
 			qc.setQueryData(QK.watchlist, data)
 			qc.invalidateQueries({ queryKey: QK.watchlist })
 			qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
-			qc.invalidateQueries({ queryKey: ['kline-batch'] })
-			qc.invalidateQueries({ queryKey: ['minute-batch'] })
 		},
 	})
 
@@ -1150,12 +1072,10 @@ export function Watchlist() {
 
 	// 稳定的 per-symbol 回调 (供 memo 化的 StockCard 使用, 避免每次渲染都传新引用)
 	const handleCardPreview = useCallback((sym: string, name: string) => {
-		setPreviewSymbol(sym);
-		setPreviewName(name)
+		setPreviewSymbol(sym); setPreviewName(name)
 	}, [])
 	const handleCardConfirmRemove = useCallback((sym: string) => {
-		remove.mutate(sym);
-		setConfirmRemove(null)
+		remove.mutate(sym); setConfirmRemove(null)
 	}, [remove])
 	const handleCardCancelRemove = useCallback(() => setConfirmRemove(null), [])
 	const handleCardRequestRemove = useCallback((sym: string) => setConfirmRemove(sym), [])
@@ -1423,7 +1343,8 @@ export function Watchlist() {
 
 	const cardColumns = useCardColumnCount()
 	const cardGridRef = useRef<HTMLDivElement>(null)
-	const virtualizeCards = viewMode === 'card' && !groupCardsOpen && sortedRows.length > VIRTUAL_LIST_THRESHOLD
+	const virtualized = sortedRows.length > VIRTUAL_LIST_THRESHOLD
+	const virtualizeCards = viewMode === 'card' && !groupCardsOpen && virtualized
 	const cardRowCount = Math.ceil(sortedRows.length / cardColumns)
 	const { getScrollElement: getCardScrollElement, scrollMargin: cardScrollMargin } = useParentScroll(
 		cardGridRef,
@@ -1439,57 +1360,33 @@ export function Watchlist() {
 		scrollMargin: cardScrollMargin,
 	})
 
-	// 视口感知 (数据层): 从虚拟器派生"正在渲染的 symbol" (可见 + overscan 缓冲,
-	// 滚动前已就绪)。卡片视图直读 getVirtualItems (滚动不换 deps, 不能 useMemo);
-	// 表格视图由 StockDataTable 的 onVisibleRowsChange 回调上报。两个视图都
-	// 非虚拟化 (小列表/分组) 时为 null → 沿用全列表。
-	const visibleCardSymbols = (() => {
-		if (!virtualizeCards) return null
-		// 与 minuteSymbols 同口径: 剔除指数 (minute-batch 契约只收股票/ETF)
-		const scope = new Set(minuteSymbols as string[])
-		const items = cardRowVirtualizer.getVirtualItems()
-		const out: string[] = []
-		for (const item of items) {
-			for (let i = item.index * cardColumns; i < (item.index + 1) * cardColumns && i < sortedRows.length; i++) {
-				const s = (sortedRows[i] as any)?.symbol
-				if (typeof s === 'string' && scope.has(s)) out.push(s)
+	const [visibleTableScope, setVisibleTableScope] = useState<string | null>(null)
+	const handleTableVisibleRows = useCallback((visibleRows: any[] | null) => {
+		setVisibleTableScope(visibleRows ? minuteScopeFor(visibleRows) : null)
+	}, [])
+	let visibleMinuteScope = ''
+	if (intradayVisible && !groupCardsOpen) {
+		if (!virtualized) {
+			visibleMinuteScope = minuteScopeFor(sortedRows)
+		} else {
+			let viewport = visibleTableScope
+			if (viewMode === 'card') {
+				const items = cardRowVirtualizer.getVirtualItems()
+				const first = items[0], last = items.at(-1)
+				viewport = first && last ? minuteScopeFor(sortedRows.slice(first.index * cardColumns, (last.index + 1) * cardColumns)) : null
 			}
+			visibleMinuteScope = viewport ?? minuteScopeFor(sortedRows.slice(0, MINUTE_SEED_MAX))
 		}
-		return out.length ? out : null
-	})()
-	// 表格是分时列所在视图 — 没有它上报视口, 大列表表格视图会恒按全量请求
-	const minuteScopeSet = useMemo(() => new Set(minuteSymbols), [minuteSymbols])
-	const tableVisibleSymbolsRef = useRef<string[] | null>(null)
-	const [tableVisibleKey, setTableVisibleKey] = useState('')
-	const handleTableVisibleRows = useCallback((rows: any[] | null) => {
-		if (!rows) {
-			tableVisibleSymbolsRef.current = null
-			setTableVisibleKey('')
+	}
+	useEffect(() => {
+		if (!virtualized || !visibleMinuteScope) {
+			setMinuteScope(visibleMinuteScope)
 			return
 		}
-		const scope = minuteScopeSet
-		const syms = rows.map((r: any) => r?.symbol).filter((s: unknown) => typeof s === 'string' && scope.has(s as string))
-		tableVisibleSymbolsRef.current = syms
-		setTableVisibleKey(syms.join(','))   // 相同 key 的 setState 不触发重渲染
-	}, [minuteScopeSet])
-	const minuteVisibleKey = visibleCardSymbols?.join(',') ?? tableVisibleKey
-	const lastVisibleKeyRef = useRef<string | null>(null)
-	useEffect(() => {
-		minuteRequestSymbolsRef.current = visibleCardSymbols ?? tableVisibleSymbolsRef.current
-		if (!minuteVisibleKey) return
-		if (lastVisibleKeyRef.current === minuteVisibleKey) return
-		const prevKey = lastVisibleKeyRef.current
-		lastVisibleKeyRef.current = minuteVisibleKey
-		// 首次: 小列表播种轮已按全量发出, 不额外触发; 大列表首轮只有头部兜底播种,
-		// 视口可能落在别处 → 也补拉一次
-		if (prevKey === null && minuteSymbols.length <= MINUTE_SEED_MAX) return
-		// 视口集合变化 (滚动到新区段) → 防抖 300ms 补拉一次, 新滚入的 symbol 即时就绪
-		const t = setTimeout(() => {
-			qc.invalidateQueries({ queryKey: QK.minuteBatch() })
-		}, 300)
-		return () => clearTimeout(t)
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [minuteVisibleKey, minuteSymbolsKey])
+		// 快速滚动只拉最终视口，避免每经过一屏都发起一轮分钟请求。
+		const timer = setTimeout(() => setMinuteScope(visibleMinuteScope), 300)
+		return () => clearTimeout(timer)
+	}, [visibleMinuteScope, virtualized])
 
 	// 可见的 ext 列（卡片视图使用）
 	const visibleExtCols = useMemo(
@@ -1550,9 +1447,7 @@ export function Watchlist() {
 							<button
 								type="button"
 								disabled={preparation.isFetching}
-								onClick={() => {
-									void preparation.refetch()
-								}}
+								onClick={() => { void preparation.refetch() }}
 								className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-muted/15 text-muted border border-border/50 whitespace-nowrap disabled:cursor-wait"
 								title={preparation.isFetching ? '正在按需补齐自选日K，已有数据仍可查看' :
 									`${preparation.data?.filter(r => r.status !== 'ready').map(r => `${r.symbol}：${r.message}`).join('\n') || '日K暂未就绪，请检查数据源配置'}\n点击重试补齐`}
@@ -1578,10 +1473,11 @@ export function Watchlist() {
 						{/* 筛选 / 重置 / 搜索 */}
 						<button
 							onClick={() => setFilterOpen(v => !v)}
-							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${filterOpen || hasActiveFilters
-								? 'bg-accent/15 text-accent hover:bg-accent/25'
-								: 'bg-elevated text-secondary hover:bg-elevated/80'
-								}`}
+							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${
+								filterOpen || hasActiveFilters
+									? 'bg-accent/15 text-accent hover:bg-accent/25'
+									: 'bg-elevated text-secondary hover:bg-elevated/80'
+							}`}
 							title={`筛选${activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}`}
 						>
 							<Filter className="h-4 w-4" />
@@ -1597,10 +1493,7 @@ export function Watchlist() {
 							</button>
 						)}
 						<StockSearchBox
-							onPreview={(sym, name) => {
-								setPreviewSymbol(sym);
-								setPreviewName(name)
-							}}
+							onPreview={(sym, name) => { setPreviewSymbol(sym); setPreviewName(name) }}
 							existingBySymbol={groupBySymbol}
 							groups={groups}
 							onAdd={(symbol, groupId) => addMutation.mutate({ symbol, groupId })}
@@ -1630,10 +1523,11 @@ export function Watchlist() {
 						<button
 							onClick={toggleGroupView}
 							aria-pressed={groupCardsOpen}
-							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${groupCardsOpen
-								? 'bg-accent/15 text-accent hover:bg-accent/25'
-								: 'bg-elevated text-secondary hover:bg-elevated/80 hover:text-foreground'
-								}`}
+							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${
+								groupCardsOpen
+									? 'bg-accent/15 text-accent hover:bg-accent/25'
+									: 'bg-elevated text-secondary hover:bg-elevated/80 hover:text-foreground'
+							}`}
 							title={groupCardsOpen ? '退出分组卡片' : '分组卡片视图'}
 							aria-label={groupCardsOpen ? '退出分组卡片' : '分组卡片视图'}
 						>
@@ -1643,10 +1537,11 @@ export function Watchlist() {
 						<button
 							onClick={toggleGroupStats}
 							aria-pressed={groupStatsOpen}
-							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${groupStatsOpen
-								? 'bg-accent/15 text-accent hover:bg-accent/25'
-								: 'bg-elevated text-secondary hover:bg-elevated/80 hover:text-foreground'
-								}`}
+							className={`inline-flex items-center justify-center h-8 w-8 rounded-btn transition-colors duration-150 ease-smooth ${
+								groupStatsOpen
+									? 'bg-accent/15 text-accent hover:bg-accent/25'
+									: 'bg-elevated text-secondary hover:bg-elevated/80 hover:text-foreground'
+							}`}
 							title={groupStatsOpen ? '收起分组统计' : '分组统计'}
 							aria-label={groupStatsOpen ? '收起分组统计' : '分组统计'}
 						>
@@ -1708,6 +1603,7 @@ export function Watchlist() {
 			)}
 
 			<WatchlistGroupBar
+				entries={listEntries}
 				groups={groups}
 				counts={groupCounts}
 				selected={selectedGroup}
@@ -1715,11 +1611,7 @@ export function Watchlist() {
 				pcts={groupPcts}
 				onSelect={handleGroupSelect}
 				onCreate={(name, color) => createGroup.mutateAsync({ name, color }).then(() => undefined)}
-				onRename={(groupId, name, color) => renameGroup.mutateAsync({
-					groupId,
-					name,
-					color
-				}).then(() => undefined)}
+				onRename={(groupId, name, color) => renameGroup.mutateAsync({ groupId, name, color }).then(() => undefined)}
 				onDelete={groupId => deleteGroup.mutateAsync(groupId).then(() => undefined)}
 				onClearGroup={groupId => clearGroup.mutateAsync(groupId).then(() => undefined)}
 				onReorder={orderedIds => reorderGroup.mutateAsync(orderedIds).then(() => undefined)}
@@ -1738,10 +1630,11 @@ export function Watchlist() {
 									<button
 										key={board}
 										onClick={() => toggleBoard(board)}
-										className={`px-2 py-0.5 rounded text-[11px] transition-colors ${active
-											? 'bg-accent/15 text-accent'
-											: 'bg-elevated text-secondary hover:text-foreground hover:bg-elevated/80'
-											}`}
+										className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+											active
+												? 'bg-accent/15 text-accent'
+												: 'bg-elevated text-secondary hover:text-foreground hover:bg-elevated/80'
+										}`}
 									>
 										{board}
 									</button>
@@ -1755,10 +1648,11 @@ export function Watchlist() {
 						<div className="flex flex-wrap gap-1">
 							<button
 								onClick={toggleExcludeST}
-								className={`px-2 py-0.5 rounded text-[11px] transition-colors ${excludeST
-									? 'bg-accent/15 text-accent'
-									: 'bg-elevated text-secondary hover:text-foreground hover:bg-elevated/80'
-									}`}
+								className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+									excludeST
+										? 'bg-accent/15 text-accent'
+										: 'bg-elevated text-secondary hover:text-foreground hover:bg-elevated/80'
+								}`}
 								title="勾选后隐藏简称含 ST 标记的标的 (ST/*ST/S*ST)"
 							>
 								排除ST
@@ -1783,8 +1677,9 @@ export function Watchlist() {
 													value={f.min ?? ''}
 													onChange={e => updateFilter(item.id, { min: e.target.value })}
 													placeholder="min"
-													className={`w-12 h-5 rounded border text-[10px] px-1 placeholder:text-muted focus:outline-none ${hasFilter ? 'border-accent/30 bg-accent/5' : 'border-border bg-elevated'
-														} text-foreground focus:border-accent/50`}
+													className={`w-12 h-5 rounded border text-[10px] px-1 placeholder:text-muted focus:outline-none ${
+														hasFilter ? 'border-accent/30 bg-accent/5' : 'border-border bg-elevated'
+													} text-foreground focus:border-accent/50`}
 												/>
 												<span className="text-muted">~</span>
 												<input
@@ -1792,8 +1687,9 @@ export function Watchlist() {
 													value={f.max ?? ''}
 													onChange={e => updateFilter(item.id, { max: e.target.value })}
 													placeholder="max"
-													className={`w-12 h-5 rounded border text-[10px] px-1 placeholder:text-muted focus:outline-none ${hasFilter ? 'border-accent/30 bg-accent/5' : 'border-border bg-elevated'
-														} text-foreground focus:border-accent/50`}
+													className={`w-12 h-5 rounded border text-[10px] px-1 placeholder:text-muted focus:outline-none ${
+														hasFilter ? 'border-accent/30 bg-accent/5' : 'border-border bg-elevated'
+													} text-foreground focus:border-accent/50`}
 												/>
 											</div>
 										)
@@ -1862,14 +1758,12 @@ export function Watchlist() {
 											<span className="shrink-0 whitespace-nowrap">{col.label}</span>
 											<button
 												type="button"
-												onClick={(event) => {
-													event.stopPropagation();
-													toggleDailyKChart()
-												}}
-												className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${dailyKChartVisible
-													? 'text-accent bg-accent/10 hover:bg-accent/20'
-													: 'text-muted hover:text-foreground hover:bg-elevated'
-													}`}
+												onClick={(event) => { event.stopPropagation(); toggleDailyKChart() }}
+												className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${
+													dailyKChartVisible
+														? 'text-accent bg-accent/10 hover:bg-accent/20'
+														: 'text-muted hover:text-foreground hover:bg-elevated'
+												}`}
 												title={dailyKChartVisible ? '隐藏日k蜡烛' : '显示日k蜡烛'}
 												aria-label={dailyKChartVisible ? '隐藏日k蜡烛' : '显示日k蜡烛'}
 											>
@@ -1885,14 +1779,12 @@ export function Watchlist() {
 											<span className="shrink-0 whitespace-nowrap">{col.label}</span>
 											<button
 												type="button"
-												onClick={(event) => {
-													event.stopPropagation();
-													toggleIntradayChart()
-												}}
-												className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${intradayChartVisible
-													? 'text-accent bg-accent/10 hover:bg-accent/20'
-													: 'text-muted hover:text-foreground hover:bg-elevated'
-													}`}
+												onClick={(event) => { event.stopPropagation(); toggleIntradayChart() }}
+												className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${
+													intradayChartVisible
+														? 'text-accent bg-accent/10 hover:bg-accent/20'
+														: 'text-muted hover:text-foreground hover:bg-elevated'
+												}`}
 												title={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
 												aria-label={intradayChartVisible ? '隐藏分时图' : '显示分时图'}
 											>
@@ -1902,10 +1794,7 @@ export function Watchlist() {
 											{intradayChartVisible && !intradayAutoRefresh && (
 												<button
 													type="button"
-													onClick={(event) => {
-														event.stopPropagation();
-														minuteBatch.refetch()
-													}}
+													onClick={(event) => { event.stopPropagation(); minuteBatch.refetch() }}
 													disabled={minuteBatch.isFetching}
 													className="inline-flex items-center justify-center w-5 h-5 rounded text-muted hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-40"
 													title="刷新分时数据"
@@ -1922,14 +1811,12 @@ export function Watchlist() {
 											{intradayChartVisible && (
 												<button
 													type="button"
-													onClick={(event) => {
-														event.stopPropagation();
-														toggleIntradayYMode()
-													}}
-													className={`inline-flex items-center justify-center h-5 px-1 rounded text-[10px] whitespace-nowrap transition-colors ${intradayYMode === 'limit'
-														? 'text-accent bg-accent/10 hover:bg-accent/20'
-														: 'text-muted hover:text-foreground hover:bg-elevated'
-														}`}
+													onClick={(event) => { event.stopPropagation(); toggleIntradayYMode() }}
+													className={`inline-flex items-center justify-center h-5 px-1 rounded text-[10px] whitespace-nowrap transition-colors ${
+														intradayYMode === 'limit'
+															? 'text-accent bg-accent/10 hover:bg-accent/20'
+															: 'text-muted hover:text-foreground hover:bg-elevated'
+													}`}
 													title={intradayYMode === 'limit' ? '纵轴按涨跌停显示 (点击切回自适应)' : '纵轴自适应 (点击按涨跌停显示)'}
 													aria-label={intradayYMode === 'limit' ? '纵轴按涨跌停' : '纵轴自适应'}
 												>
@@ -1958,10 +1845,7 @@ export function Watchlist() {
 											<div className="flex items-center gap-1 w-full">
 												<button
 													type="button"
-													onClick={() => {
-														setPreviewSymbol(r.symbol);
-														setPreviewName(name ?? '')
-													}}
+													onClick={() => { setPreviewSymbol(r.symbol); setPreviewName(name ?? '') }}
 													className="flex items-center gap-1 text-left min-w-0"
 												>
 													<span className="font-mono text-foreground text-xs group-hover:text-accent transition-colors duration-150">
@@ -1985,10 +1869,7 @@ export function Watchlist() {
 													{confirmRemove === r.symbol ? (
 														<div className="flex items-center gap-1">
 															<button
-																onClick={() => {
-																	remove.mutate(r.symbol);
-																	setConfirmRemove(null)
-																}}
+																onClick={() => { remove.mutate(r.symbol); setConfirmRemove(null) }}
 																className="px-1.5 py-0.5 rounded text-[10px] text-danger bg-danger/10 hover:bg-danger/20 transition-colors"
 															>
 																确认
@@ -2083,12 +1964,7 @@ export function Watchlist() {
 									return (
 										<td
 											className="pl-2 pr-3 py-1.5"
-											style={{
-												width: candleSize.width + 4,
-												minWidth: candleSize.width + 4,
-												maxWidth: candleSize.width + 4,
-												height: candleSize.height
-											}}
+											style={{ width: candleSize.width + 4, minWidth: candleSize.width + 4, maxWidth: candleSize.width + 4, height: candleSize.height }}
 										>
 											<MiniCandlestick rows={klineData[r.symbol] ?? EMPTY_ROWS} width={candleSize.width} height={candleSize.height} volume={candleVolume} />
 										</td>
@@ -2101,12 +1977,7 @@ export function Watchlist() {
 										const iw = intradayChartVisible ? intradayResolved.width : 40
 										const ih = intradayChartVisible ? intradayResolved.height : 40
 										return (
-											<td className="pl-3 pr-2 py-1.5 border-l border-border/30" style={{
-												width: iw + 4,
-												minWidth: iw + 4,
-												maxWidth: iw + 4,
-												height: ih
-											}}>
+											<td className="pl-3 pr-2 py-1.5 border-l border-border/30" style={{ width: iw + 4, minWidth: iw + 4, maxWidth: iw + 4, height: ih }}>
 												<div className="flex items-center justify-center">
 													<span className="text-[10px] text-muted">—</span>
 												</div>
@@ -2118,26 +1989,21 @@ export function Watchlist() {
 									const iw = intradayChartVisible ? intradayResolved.width : 40
 									const ih = intradayChartVisible ? intradayResolved.height : 40
 									return (
-										<td className="pl-3 pr-2 py-1.5 border-l border-border/30" style={{
-											width: iw + 4,
-											minWidth: iw + 4,
-											maxWidth: iw + 4,
-											height: ih
-										}}>
+										<td className="pl-3 pr-2 py-1.5 border-l border-border/30" style={{ width: iw + 4, minWidth: iw + 4, maxWidth: iw + 4, height: ih }}>
 											<div className="flex items-center justify-center">
 												{intradayChartVisible
 													? <MiniIntraday
-														rows={rows}
-														prevClose={r.prev_close}
-														changePct={r.change_pct}
-														width={iw - 4}
-														height={ih}
-														yMode={intradayYMode}
-														limitRate={r.asset_type === 'etf' || r.asset_type === 'index' ? null : boardLimitRate(r.symbol)}
-														auction={auctionData[r.symbol] ?? null}
-														volume={intradayResolved.volume}
-														auctionWidth={intradayResolved.auctionWidth}
-													/>
+															rows={rows}
+															prevClose={r.prev_close}
+															changePct={r.change_pct}
+															width={iw - 4}
+															height={ih}
+															yMode={intradayYMode}
+															limitRate={r.asset_type === 'etf' || r.asset_type === 'index' ? null : boardLimitRate(r.symbol)}
+															auction={auctionData[r.symbol] ?? null}
+															volume={intradayResolved.volume}
+															auctionWidth={intradayResolved.auctionWidth}
+														/>
 													: <span className="text-[10px] text-muted">分时</span>}
 											</div>
 										</td>
@@ -2234,10 +2100,7 @@ export function Watchlist() {
 				name={previewName}
 				onClose={closePreview}
 				navList={previewNavList.length > 0 ? previewNavList : previewNavItems}
-				onNavigate={(sym, n) => {
-					setPreviewSymbol(sym);
-					setPreviewName(n ?? '')
-				}}
+				onNavigate={(sym, n) => { setPreviewSymbol(sym); setPreviewName(n ?? '') }}
 			/>
 
 			<DimensionMembersDialog

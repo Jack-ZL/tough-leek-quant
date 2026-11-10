@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, RefreshCw, Clock, LineChart, Star, RadioTower, Maximize2, Minimize2, Activity } from 'lucide-react'
@@ -24,6 +24,8 @@ import { useListNav } from '@/lib/useListNav'
 import { DEFAULT_INTRADAY_DAYS, cnToday, klineDateRange } from '@/lib/kline'
 import { useQuoteClock } from '@/lib/useQuoteClock'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
+import { ExtensionBoundary } from '@/extensions/ExtensionBoundary'
+import { getFrontendSlotRegistrations } from '@/extensions/registry'
 
 export interface Props {
 	symbol: string | null
@@ -51,14 +53,16 @@ const PRESETS: { label: string; months: number }[] = [
 	{ label: '1年', months: 12 },
 ]
 
-type PreviewView = 'daily' | 'intraday'
-
+const CHART_TABS = [
+	{ key: 'daily', label: '日 K', icon: LineChart },
+	{ key: 'intraday', label: '分时', icon: Clock },
+] as const
+type PreviewView = typeof CHART_TABS[number]['key'] | `extension:${string}`
 interface PriceAlertDraft {
 	id: number
 	targetPrice: number
 	currentPrice: number
 }
-
 const INTRADAY_DAY_OPTIONS = [1, 5, 10, 20] as const
 
 function loadIntradayDays(): number {
@@ -70,32 +74,17 @@ function loadIntradayDays(): number {
 
 function boardTag(symbol: string): { label: string; color: string } | null {
 	if (/^(300|301)/.test(symbol)) return { label: '创', color: 'text-[#f97316] bg-[#f97316]/12 border-[#f97316]/25' }
-	if (/^688/.test(symbol)) return { label: '科', color: 'text-purple-400 bg-purple-400/12 border-purple-400/25' }
-	if (/^[48]/.test(symbol)) return { label: '北', color: 'text-cyan-400 bg-cyan-400/12 border-cyan-400/25' }
+	if (/^688/.test(symbol))       return { label: '科', color: 'text-purple-400 bg-purple-400/12 border-purple-400/25' }
+	if (/^[48]/.test(symbol))      return { label: '北', color: 'text-cyan-400 bg-cyan-400/12 border-cyan-400/25' }
 	return null
 }
 
 // ===== 异动边缘 (与异动页同口径) =====
 
 const AB_STATUS_META: Record<string, { label: string; cls: string; bar: string; icon: string }> = {
-	triggered: {
-		label: '已触发',
-		cls: 'bg-danger/20 text-danger font-semibold',
-		bar: 'border-b border-danger/30 bg-danger/[0.08]',
-		icon: 'text-danger'
-	},
-	edge: {
-		label: '异动边缘',
-		cls: 'bg-warning/20 text-warning font-semibold',
-		bar: 'border-b border-warning/30 bg-warning/[0.07]',
-		icon: 'text-warning'
-	},
-	watch: {
-		label: '观察',
-		cls: 'bg-elevated text-secondary font-semibold',
-		bar: 'border-b border-border bg-surface',
-		icon: 'text-secondary'
-	},
+	triggered: { label: '已触发', cls: 'bg-danger/20 text-danger font-semibold', bar: 'border-b border-danger/30 bg-danger/[0.08]', icon: 'text-danger' },
+	edge: { label: '异动边缘', cls: 'bg-warning/20 text-warning font-semibold', bar: 'border-b border-warning/30 bg-warning/[0.07]', icon: 'text-warning' },
+	watch: { label: '观察', cls: 'bg-elevated text-secondary font-semibold', bar: 'border-b border-border bg-surface', icon: 'text-secondary' },
 }
 
 /** 异动引擎计算时间 (服务端 asof 秒级时间戳 → 月-日 时:分:秒) */
@@ -106,15 +95,17 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 }
 
 
-export function StockPreviewDialogContent({
-	symbol,
-	name,
-	onClose,
-	triggerInfo,
-	navList: navListSource,
-	onNavigate
-}: Props) {
+export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate }: Props) {
 	const [view, setView] = useState<PreviewView>('daily')
+	const panelId = useId()
+	const extensionTabs = getFrontendSlotRegistrations('stock-preview.tabs')
+	const tabs = [
+		...CHART_TABS,
+		...extensionTabs.map(tab => ({ key: `extension:${tab.id}` as const, label: tab.label, icon: null })),
+	]
+	const isChartView = view === 'daily' || view === 'intraday'
+	const selectedTab = isChartView ? undefined : extensionTabs.find(tab => view === `extension:${tab.id}`)
+	const TabContent = selectedTab?.component
 	const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
 	const [dateRange, setDateRange] = useState(getDefaultRange)
 	const [rollingMonths, setRollingMonths] = useState<number | null>(6)
@@ -158,9 +149,9 @@ export function StockPreviewDialogContent({
 	// 接近度最高的窗口 (信息条中高亮)
 	const abDominantWindow = abRow
 		? Object.entries(abRow.windows).reduce(
-			(best, [k, w]) => (!best || w.closeness > best[1].closeness ? [k, w] as const : best),
-			undefined as undefined | readonly [string, { value: number; threshold: number; closeness: number }],
-		)
+				(best, [k, w]) => (!best || w.closeness > best[1].closeness ? [k, w] as const : best),
+				undefined as undefined | readonly [string, { value: number; threshold: number; closeness: number }],
+			)
 		: undefined
 	const monitorPriceLines = useMemo(
 		() => symbol ? buildMonitorPriceLines(monitorRules.data?.rules ?? [], symbol) : [],
@@ -185,8 +176,8 @@ export function StockPreviewDialogContent({
 			action: 'add' | 'remove'
 			groupId?: string | null
 		}) => action === 'remove'
-				? api.watchlistRemove(symbol!)
-				: api.watchlistAdd(symbol!, '', groupId),
+			? api.watchlistRemove(symbol!)
+			: api.watchlistAdd(symbol!, '', groupId),
 		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: QK.watchlist })
 			qc.invalidateQueries({ queryKey: ['watchlist-enriched'] })
@@ -257,9 +248,9 @@ export function StockPreviewDialogContent({
 		if (!symbol) return
 		if (view === 'daily') {
 			qc.invalidateQueries({ queryKey: ['kline', symbol] })
-		} else {
+		} else if (view === 'intraday') {
 			qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] })
-			qc.invalidateQueries({ queryKey: ['kline-minute', symbol!] })
+			qc.invalidateQueries({ queryKey: ['kline-minute', symbol] })
 		}
 	}
 
@@ -303,150 +294,140 @@ export function StockPreviewDialogContent({
 						{/* 顶栏: 单行 = 个股身份 + 视图/区间控件 + 操作按钮。纯样式重排, 交互逻辑不变 */}
 						<div className="shrink-0 border-b border-border/60 bg-elevated/30">
 							<div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-2 pt-2.5 sm:px-5">
-								<div className="flex min-w-0 items-center gap-2">
-									{(() => {
-										const board = symbol ? boardTag(symbol) : null
-										return board ? (
-											<span className={`inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>
-												{board.label}
-											</span>
-										) : null
-									})()}
-									<span className="shrink-0 font-mono text-[15px] font-semibold tracking-tight text-foreground">{symbol}</span>
-									{name && <span className="truncate text-xs text-secondary">{name}</span>}
+							<div className="flex min-w-0 items-center gap-2">
+								{(() => {
+									const board = symbol ? boardTag(symbol) : null
+									return board ? (
+										<span className={`inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>
+											{board.label}
+										</span>
+									) : null
+								})()}
+								<span className="shrink-0 font-mono text-[15px] font-semibold tracking-tight text-foreground">{symbol}</span>
+								{name && <span className="truncate text-xs text-secondary">{name}</span>}
 
-									{/* 切股导航: 上一只 / n·N / 下一只 */}
-									<NavPager nav={nav} prevLabel="上一只" nextLabel="下一只" />
+								{/* 切股导航: 上一只 / n·N / 下一只 */}
+								<NavPager nav={nav} prevLabel="上一只" nextLabel="下一只" />
+							</div>
+
+							{/* 视图/区间控件: 原第二行并入顶行, 紧邻操作按钮 (原「自选于」标注位置) */}
+							<div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2.5">
+								<div role="tablist" aria-label="图表视图" className="inline-flex max-w-full flex-wrap items-center rounded border border-border/60 bg-base/60 p-0.5">
+									{tabs.map(({ key, label, icon: Icon }) => (
+										<button
+											key={key}
+											id={`${panelId}-${key}`}
+											type="button"
+											role="tab"
+											aria-selected={view === key}
+											aria-controls={panelId}
+											onClick={() => setView(key)}
+											className={`inline-flex h-6 max-w-full items-center gap-1 rounded px-2.5 text-[11px] transition-colors ${
+												view === key ? 'bg-accent/20 text-accent font-medium' : 'text-muted hover:text-secondary hover:bg-elevated/60'
+											}`}
+										>
+											{Icon && <Icon className="h-3 w-3" />}
+											<span className="truncate">{label}</span>
+										</button>
+									))}
 								</div>
-
-								{/* 视图/区间控件: 原第二行并入顶行, 紧邻操作按钮 (原「自选于」标注位置) */}
-								<div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2.5">
-									{/* 日K / 分时 切换 */}
-									<div role="tablist" aria-label="图表视图" className="inline-flex shrink-0 items-center rounded border border-border/60 bg-base/60 p-0.5">
-										<button
-											type="button"
-											role="tab"
-											aria-selected={view === 'daily'}
-											onClick={() => setView('daily')}
-											className={`inline-flex h-6 items-center gap-1 rounded px-2.5 text-[11px] transition-colors ${view === 'daily' ? 'bg-accent/20 text-accent font-medium' : 'text-muted hover:text-secondary hover:bg-elevated/60'
-												}`}
-										>
-											<LineChart className="h-3 w-3" />
-											日 K
-										</button>
-										<button
-											type="button"
-											role="tab"
-											aria-selected={view === 'intraday'}
-											onClick={() => setView('intraday')}
-											className={`inline-flex h-6 items-center gap-1 rounded px-2.5 text-[11px] transition-colors ${view === 'intraday' ? 'bg-accent/20 text-accent font-medium' : 'text-muted hover:text-secondary hover:bg-elevated/60'
-												}`}
-										>
-											<Clock className="h-3 w-3" />
-											分时
-										</button>
-									</div>
-									<span className="h-4 w-px shrink-0 bg-border/70" />
-									{/* 区间选择 — 随视图切换 */}
-									{view === 'daily' ? (
-										<div className="flex max-w-full flex-wrap items-center gap-2">
-											<div className="inline-flex shrink-0 items-center rounded border border-border/60 bg-base/60 p-0.5">
-												{PRESETS.map(p => {
-													const expected = klineDateRange(p.months, today).start
-													const isActive = dateRange.start === expected
-													return (
-														<button
-															key={p.label}
-															onClick={() => {
-																setRollingMonths(p.months)
-																setDateRange(klineDateRange(p.months, today))
-															}}
-															className={`h-6 shrink-0 whitespace-nowrap rounded px-2.5 text-[11px] transition-colors cursor-pointer
-                            ${isActive
-																	? 'bg-accent/20 text-accent font-medium'
-																	: 'text-muted hover:text-secondary hover:bg-elevated/60'
-																}`}
-														>
-															{p.label}
-														</button>
-													)
-												})}
-											</div>
-											<div className="inline-flex shrink-0 items-center gap-2">
-												<DatePicker
-													value={dateRange.start}
-													onChange={(v) => {
-														setRollingMonths(null);
-														setDateRange(prev => ({ ...prev, start: v }))
+								{isChartView && <span className="h-4 w-px shrink-0 bg-border/70" />}
+								{/* 区间选择 — 随视图切换 */}
+								{view === 'daily' ? (
+									<div className="flex max-w-full flex-wrap items-center gap-2">
+										<div className="inline-flex shrink-0 items-center rounded border border-border/60 bg-base/60 p-0.5">
+										{PRESETS.map(p => {
+											const expected = klineDateRange(p.months, today).start
+											const isActive = dateRange.start === expected
+											return (
+												<button
+													key={p.label}
+													onClick={() => {
+														setRollingMonths(p.months)
+														setDateRange(klineDateRange(p.months, today))
 													}}
-													max={dateRange.end}
-												/>
-												<span className="text-muted/70 text-[10px]">~</span>
-												<DatePicker
-													value={dateRange.end}
-													onChange={(v) => {
-														setRollingMonths(null);
-														setDateRange(prev => ({ ...prev, end: v }))
-													}}
-													min={dateRange.start}
-												/>
-											</div>
-										</div>
-									) : (
-										<div className="inline-flex items-center gap-2">
-											<div className="inline-flex shrink-0 items-center rounded border border-border/60 bg-base/60 p-0.5" aria-label="分时周期">
-												{dayOptions.map(days => (
-													<button
-														key={days}
-														type="button"
-														aria-pressed={effectiveIntradayDays === days}
-														onClick={() => selectIntradayDays(days)}
-														className={`h-6 rounded px-2.5 text-[11px] transition-colors ${effectiveIntradayDays === days
+													className={`h-6 shrink-0 whitespace-nowrap rounded px-2.5 text-[11px] transition-colors cursor-pointer
+														${isActive
 															? 'bg-accent/20 text-accent font-medium'
 															: 'text-muted hover:text-secondary hover:bg-elevated/60'
-															}`}
-													>
-														{days}日
-													</button>
-												))}
-											</div>
+														}`}
+												>
+													{p.label}
+												</button>
+											)
+										})}
 										</div>
-									)}
-								</div>
+										<div className="inline-flex shrink-0 items-center gap-2">
+										<DatePicker
+											value={dateRange.start}
+											onChange={(v) => { setRollingMonths(null); setDateRange(prev => ({ ...prev, start: v })) }}
+											max={dateRange.end}
+										/>
+										<span className="text-muted/70 text-[10px]">~</span>
+										<DatePicker
+											value={dateRange.end}
+											onChange={(v) => { setRollingMonths(null); setDateRange(prev => ({ ...prev, end: v })) }}
+											min={dateRange.start}
+										/>
+										</div>
+									</div>
+								) : view === 'intraday' && (
+									<div className="inline-flex items-center gap-2">
+										<div className="inline-flex shrink-0 items-center rounded border border-border/60 bg-base/60 p-0.5" aria-label="分时周期">
+											{dayOptions.map(days => (
+												<button
+													key={days}
+													type="button"
+													aria-pressed={effectiveIntradayDays === days}
+													onClick={() => selectIntradayDays(days)}
+													className={`h-6 rounded px-2.5 text-[11px] transition-colors ${
+														effectiveIntradayDays === days
+															? 'bg-accent/20 text-accent font-medium'
+															: 'text-muted hover:text-secondary hover:bg-elevated/60'
+													}`}
+												>
+													{days}日
+												</button>
+											))}
+										</div>
+									</div>
+								)}
+							</div>
 
-								<div className="flex shrink-0 items-center gap-1">
-									{/* 自选 */}
-									{inWatchlist ? (
-										<button
-											type="button"
-											onClick={() => toggleWatchlist.mutate({ action: 'remove' })}
-											disabled={toggleWatchlist.isPending}
-											className="rounded-btn p-1.5 text-[#FACC15] transition-colors cursor-pointer hover:bg-elevated disabled:opacity-50"
-											title="移出自选"
-											aria-label={`将 ${symbol} 移出自选`}
-										>
-											<Star className="h-4 w-4" />
-										</button>
-									) : (
-										<WatchlistAddMenu
-											onSelect={groupId => toggleWatchlist.mutate({ action: 'add', groupId })}
-											disabled={toggleWatchlist.isPending}
-											triggerClassName="rounded-btn p-1.5 text-muted transition-colors cursor-pointer hover:bg-elevated hover:text-foreground disabled:opacity-50"
-											ariaLabel={`将 ${symbol} 加入自选`}
-										>
-											<Star className="h-4 w-4" />
-										</WatchlistAddMenu>
-									)}
-									{/* 加监控 */}
+							<div className="flex shrink-0 items-center gap-1">
+								{/* 自选 */}
+								{inWatchlist ? (
 									<button
-										onClick={() => setShowMonitorEditor(true)}
-										className="p-1.5 rounded-btn text-amber-400 hover:bg-amber-400/10 transition-colors cursor-pointer"
-										title="加监控"
+										type="button"
+										onClick={() => toggleWatchlist.mutate({ action: 'remove' })}
+										disabled={toggleWatchlist.isPending}
+										className="rounded-btn p-1.5 text-[#FACC15] transition-colors cursor-pointer hover:bg-elevated disabled:opacity-50"
+										title="移出自选"
+										aria-label={`将 ${symbol} 移出自选`}
 									>
-										<RadioTower className="h-4 w-4" />
+										<Star className="h-4 w-4" />
 									</button>
+								) : (
+									<WatchlistAddMenu
+										onSelect={groupId => toggleWatchlist.mutate({ action: 'add', groupId })}
+										disabled={toggleWatchlist.isPending}
+										triggerClassName="rounded-btn p-1.5 text-muted transition-colors cursor-pointer hover:bg-elevated hover:text-foreground disabled:opacity-50"
+										ariaLabel={`将 ${symbol} 加入自选`}
+									>
+										<Star className="h-4 w-4" />
+									</WatchlistAddMenu>
+								)}
+								{/* 加监控 */}
+								<button
+									onClick={() => setShowMonitorEditor(true)}
+									className="p-1.5 rounded-btn text-amber-400 hover:bg-amber-400/10 transition-colors cursor-pointer"
+									title="加监控"
+								>
+									<RadioTower className="h-4 w-4" />
+								</button>
 
-									{/* 刷新 */}
+								{/* 刷新 */}
+								{isChartView && (
 									<button
 										onClick={handleRefresh}
 										className="p-1.5 rounded-btn text-secondary hover:text-foreground hover:bg-elevated transition-colors"
@@ -454,25 +435,26 @@ export function StockPreviewDialogContent({
 									>
 										<RefreshCw className="h-4 w-4" />
 									</button>
+								)}
 
-									{/* 放大 / 缩小 */}
-									<button
-										onClick={() => setMaximized(v => !v)}
-										className="p-1.5 rounded-btn text-secondary hover:text-foreground hover:bg-elevated transition-colors"
-										title={maximized ? '缩小' : '放大'}
-									>
-										{maximized ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-									</button>
+								{/* 放大 / 缩小 */}
+								<button
+									onClick={() => setMaximized(v => !v)}
+									className="p-1.5 rounded-btn text-secondary hover:text-foreground hover:bg-elevated transition-colors"
+									title={maximized ? '缩小' : '放大'}
+								>
+									{maximized ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+								</button>
 
-									<button
-										onClick={onClose}
-										className="shrink-0 rounded-btn p-1.5 text-secondary transition-colors hover:bg-danger/15 hover:text-danger"
-										aria-label="关闭个股详情"
-										title="关闭"
-									>
-										<X className="h-4 w-4" />
-									</button>
-								</div>
+								<button
+									onClick={onClose}
+									className="shrink-0 rounded-btn p-1.5 text-secondary transition-colors hover:bg-danger/15 hover:text-danger"
+									aria-label="关闭个股详情"
+									title="关闭"
+								>
+									<X className="h-4 w-4" />
+								</button>
+							</div>
 							</div>
 						</div>
 
@@ -484,12 +466,7 @@ export function StockPreviewDialogContent({
 									<span className="text-[10px] font-semibold text-amber-400">⚡ 触发</span>
 									{triggerInfo.ts && (
 										<span className="text-[11px] text-secondary font-mono">
-											{new Date(triggerInfo.ts).toLocaleString('zh-CN', {
-												month: '2-digit',
-												day: '2-digit',
-												hour: '2-digit',
-												minute: '2-digit'
-											})}
+											{new Date(triggerInfo.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
 										</span>
 									)}
 								</div>
@@ -542,10 +519,11 @@ export function StockPreviewDialogContent({
 												<span
 													key={w}
 													title={`近${parseInt(w, 10)}日累计偏离(含实时) / 交易所规则阈值 · 接近度=|偏离|/阈值`}
-													className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] ${dominant
-														? 'border-border bg-elevated font-semibold text-foreground'
-														: 'border-border/60 bg-base/40 text-secondary'
-														}`}
+													className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+														dominant
+															? 'border-border bg-elevated font-semibold text-foreground'
+															: 'border-border/60 bg-base/40 text-secondary'
+													}`}
 												>
 													{parseInt(w, 10)}日{' '}
 													<span className={info.value >= 0 ? 'text-bull' : 'text-bear'}>{fmtPct(info.value)}</span>
@@ -564,7 +542,7 @@ export function StockPreviewDialogContent({
 							)
 						})()}
 
-						<div className="min-h-0 flex-1 overflow-auto p-3 sm:px-4 sm:py-3">
+						<div role="tabpanel" id={panelId} aria-labelledby={`${panelId}-${view}`} className="min-h-0 flex-1 overflow-auto p-3 sm:px-4 sm:py-3">
 							{view === 'daily' ? (
 								<StockPanel
 									onAssetType={handleAssetType}
@@ -581,39 +559,47 @@ export function StockPreviewDialogContent({
 									intradayDays={effectiveIntradayDays}
 									addedDate={addedDate}
 								/>
-							) : (
+							) : view === 'intraday' ? (
 								<div className="flex min-w-0 flex-col gap-4">
-									<StockPanel
-										onAssetType={handleAssetType}
-										symbol={symbol}
-										renderer="lightweight"
-										showQuoteIdentity={!name}
-										dateRange={dateRange}
-										infoBarOnly
-										prefetchSymbols={prefetchSymbols}
-										intradayDays={effectiveIntradayDays}
-										addedDate={addedDate}
-									/>
-									<StockMultiDayIntradayChart
-										symbol={symbol}
-										renderer="lightweight"
-										days={effectiveIntradayDays}
-										height={480}
-										refetchIntervalMs={intradayRefetchMs}
-										priceLines={monitorPriceLines}
-										onPriceDoubleClick={openPriceAlert}
-									/>
+								<StockPanel
+									onAssetType={handleAssetType}
+									symbol={symbol}
+									renderer="lightweight"
+									showQuoteIdentity={!name}
+									dateRange={dateRange}
+									infoBarOnly
+									prefetchSymbols={prefetchSymbols}
+									intradayDays={effectiveIntradayDays}
+									addedDate={addedDate}
+								/>
+								<StockMultiDayIntradayChart
+									symbol={symbol}
+									renderer="lightweight"
+									days={effectiveIntradayDays}
+									height={480}
+									refetchIntervalMs={intradayRefetchMs}
+									priceLines={monitorPriceLines}
+									onPriceDoubleClick={openPriceAlert}
+								/>
 								</div>
+							) : selectedTab && TabContent && (
+								<ExtensionBoundary key={`${selectedTab.id}:${symbol}`} extensionId={selectedTab.extensionId}>
+									<Suspense fallback={<div role="status" className="text-xs text-muted">加载中…</div>}>
+										<TabContent symbol={symbol} name={name ?? null} />
+									</Suspense>
+								</ExtensionBoundary>
 							)}
 						</div>
 
 						{/* 扩展插槽: 对话框底部二开区 (无注册时不渲染) */}
-						<div className="shrink-0">
-							<ExtensionSlot
-								name="stock-preview.footer"
-								context={{ symbol, name: name ?? null, view }}
-							/>
-						</div>
+						{isChartView && (
+							<div className="shrink-0">
+								<ExtensionSlot
+									name="stock-preview.footer"
+									context={{ symbol, name: name ?? null, view }}
+								/>
+							</div>
+						)}
 
 						{/* 加监控编辑器弹层 */}
 						<AnimatePresence>

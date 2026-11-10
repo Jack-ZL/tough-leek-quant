@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileInput, Pause, Play, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { StrategyOptions } from '@/components/StrategyOptions'
 import { useBacktestTask } from '@/lib/backtestTask'
 import { Modal } from '@/components/Modal'
 import {
@@ -117,8 +118,7 @@ function BindingDialog({ account, binding, onClose }: {
 					setId(e.target.value);
 					reset()
 				}}><option value="">请选择日线策略</option>
-					{strategies.data?.presets.map(s =>
-						<option value={s.id} key={s.id}>{s.name}</option>)}</select>{strategies.isError &&
+					<StrategyOptions strategies={strategies.data?.presets ?? []} selected={[id]} /></select>{strategies.isError &&
 							<span role="alert" className="text-danger">{strategies.error.message}</span>}<span className="mt-1 block">冻结已保存调参，仓位默认最多 10 仓、敞口 100%；精确复用回测请选回测候选或结果。</span></label>}
 			{kind === 'report' &&
 				<div className="space-y-2 text-xs"><label className="block text-muted">读取回测 JSON<input aria-label="读取回测 JSON" type="file" accept=".json,application/json" className={input} disabled={busy} onChange={async e => {
