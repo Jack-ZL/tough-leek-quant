@@ -19,7 +19,10 @@ import {
 import { api, type ExtDataDetectUrlResult, type ExtDataField } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
-import { SectionHead, INPUT_CLS, INPUT_SM_CLS } from './dialogShared'
+import {
+	SectionHead, INPUT_CLS, INPUT_SM_CLS, formatIntervalSummary,
+	MIN_PULL_INTERVAL_SECONDS, MAX_PULL_INTERVAL_SECONDS, validatePullInterval,
+} from './dialogShared'
 
 type SourceMode = 'url' | 'file' | 'manual'
 
@@ -60,6 +63,8 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 	const [body, setBody] = useState('')
 	const [responsePath, setResponsePath] = useState('')
 	const [fieldMapStr, setFieldMapStr] = useState('')
+	// 间隔: 单位可切换 (秒/分钟), 默认分钟; 创建后可在拉取设置里再调
+	const [scheduleUnit, setScheduleUnit] = useState<'seconds' | 'minutes'>('minutes')
 	const [schedule, setSchedule] = useState(1440)
 	// 调度二选一 (UI 态): 间隔制 / 固定时刻制, 显式切换; 切回间隔制清空时刻
 	const [scheduleMode, setScheduleMode] = useState<'interval' | 'fixed'>('interval')
@@ -104,9 +109,7 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 				.map(([raw]) => raw)
 
 			if (upstreamKeys.length) {
-				upstreamKeys.forEach((raw) => {
-					finalMap[raw] = target
-				})
+				upstreamKeys.forEach((raw) => { finalMap[raw] = target })
 			} else {
 				finalMap[source] = target
 			}
@@ -125,6 +128,11 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 		mutationFn: async () => {
 			if (scheduleMode === 'fixed' && !scheduleTime) {
 				throw new Error('固定时刻模式请先选择时刻（或切回「按间隔」）')
+			}
+			const shouldSavePull = sourceMode === 'url' && (savePull || importNow || enablePull)
+			if (shouldSavePull) {
+				const intervalError = validatePullInterval(schedule, scheduleUnit)
+				if (intervalError) throw new Error(intervalError)
 			}
 			const userF = fields.filter((f) => f.name.trim() && f.name !== 'symbol' && f.name !== 'code')
 			const pullFieldMap = sourceMode === 'url' ? buildPullFieldMap() : {}
@@ -148,7 +156,7 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 				market_level: marketLevel,
 			})
 
-			if (sourceMode === 'url' && (savePull || importNow || enablePull)) {
+			if (shouldSavePull) {
 				const headers = parseJsonObject(headerStr, 'Headers')
 				const finalFieldMap = Object.keys(pullFieldMap).length ? pullFieldMap : undefined
 				await api.extDataPullConfig(config.id, {
@@ -158,7 +166,10 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 					body: method === 'POST' && body.trim() ? body : undefined,
 					response_path: responsePath.trim() || urlPreview?.response_path || '',
 					field_map: finalFieldMap,
-					schedule_minutes: schedule,
+					// 分钟制双写 schedule_minutes，供旧版按最接近的频率回退。
+					schedule_minutes: scheduleUnit === 'seconds'
+						? Math.ceil(schedule / 60) : schedule,
+					schedule_seconds: scheduleUnit === 'seconds' ? schedule : null,
 					schedule_time: scheduleMode === 'fixed' ? scheduleTime : null,
 					schedule_period: scheduleMode === 'fixed' ? schedulePeriod : null,
 					schedule_day: scheduleMode === 'fixed' && schedulePeriod !== 'daily' ? scheduleDay : null,
@@ -198,10 +209,10 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 
 	const valid = Boolean(
 		id.trim()
-		&& label.trim()
-		&& fields.some((f) => f.name.trim())
-		&& (marketLevel || matchStatus !== 'none')
-		&& (sourceMode !== 'url' || url.trim()),
+			&& label.trim()
+			&& fields.some((f) => f.name.trim())
+			&& (marketLevel || matchStatus !== 'none')
+			&& (sourceMode !== 'url' || url.trim()),
 	)
 
 	const processDetection = (
@@ -394,10 +405,11 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 									<button
 										key={key}
 										onClick={() => selectSource(key)}
-										className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ${active
-											? 'bg-surface text-foreground shadow-sm'
-											: 'text-muted hover:text-secondary hover:bg-elevated/60'
-											}`}
+										className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ${
+											active
+												? 'bg-surface text-foreground shadow-sm'
+												: 'text-muted hover:text-secondary hover:bg-elevated/60'
+										}`}
 									>
 										<Icon className={`h-3.5 w-3.5 transition-colors ${active ? 'text-amber-500' : ''}`} />
 										{text}
@@ -417,13 +429,15 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 									<button
 										key={m}
 										onClick={() => setMode(m)}
-										className={`relative flex items-start gap-3 px-4 py-3.5 rounded-xl border text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/40 ${active
-											? 'border-amber-500/40 bg-amber-500/[0.07] shadow-sm shadow-amber-500/10'
-											: 'border-border bg-elevated/30 hover:bg-elevated/60 hover:border-border'
-											}`}
+										className={`relative flex items-start gap-3 px-4 py-3.5 rounded-xl border text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/40 ${
+											active
+												? 'border-amber-500/40 bg-amber-500/[0.07] shadow-sm shadow-amber-500/10'
+												: 'border-border bg-elevated/30 hover:bg-elevated/60 hover:border-border'
+										}`}
 									>
-										<div className={`mt-0.5 p-1.5 rounded-lg transition-colors ${active ? 'bg-amber-500/15 text-amber-500' : 'bg-elevated text-muted'
-											}`}>
+										<div className={`mt-0.5 p-1.5 rounded-lg transition-colors ${
+											active ? 'bg-amber-500/15 text-amber-500' : 'bg-elevated text-muted'
+										}`}>
 											{m === 'snapshot' ? <Tag className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
 										</div>
 										<div className="flex-1 min-w-0">
@@ -565,35 +579,53 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 								<div className="text-[10px] text-muted">调度方式</div>
 								<div className="grid grid-cols-2 gap-1 rounded-lg bg-elevated/50 p-1 border border-border/40">
 									<button
-										onClick={() => {
-											setScheduleMode('interval');
-											setScheduleTime('')
-										}}
-										className={`h-8 rounded-md text-[11px] font-medium transition-all ${scheduleMode === 'interval' ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-secondary hover:bg-elevated/40'
-											}`}
+										onClick={() => { setScheduleMode('interval'); setScheduleTime('') }}
+										className={`h-8 rounded-md text-[11px] font-medium transition-all ${
+											scheduleMode === 'interval' ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-secondary hover:bg-elevated/40'
+										}`}
 									>
 										按间隔
 									</button>
 									<button
 										onClick={() => setScheduleMode('fixed')}
-										className={`h-8 rounded-md text-[11px] font-medium transition-all ${scheduleMode === 'fixed' ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-secondary hover:bg-elevated/40'
-											}`}
+										className={`h-8 rounded-md text-[11px] font-medium transition-all ${
+											scheduleMode === 'fixed' ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-secondary hover:bg-elevated/40'
+										}`}
 									>
 										固定时刻
 									</button>
 								</div>
 								{scheduleMode === 'interval' ? (
 									<div>
-										<div className="text-[10px] text-muted/70 mb-1">间隔（分钟）</div>
-										<input
-											type="number"
-											min={1}
-											value={schedule}
-											onChange={(e) => setSchedule(Number(e.target.value) || 1)}
-											className={`${INPUT_SM_CLS} font-mono tabular-nums`}
-										/>
+										<div className="text-[10px] text-muted/70 mb-1">间隔</div>
+										<div className="flex gap-1">
+											<input
+												type="number"
+												min={scheduleUnit === 'seconds' ? MIN_PULL_INTERVAL_SECONDS : 1}
+												max={scheduleUnit === 'seconds' ? MAX_PULL_INTERVAL_SECONDS : undefined}
+												step={1}
+												value={schedule}
+												onChange={(e) => setSchedule(Number(e.target.value) || 1)}
+												className={`${INPUT_SM_CLS} font-mono tabular-nums`}
+											/>
+											<select
+												value={scheduleUnit}
+												onChange={(e) => {
+													const unit = e.target.value as 'seconds' | 'minutes'
+													if (unit === scheduleUnit) return
+													// 数值跟随换算 (5 分钟 ↔ 300 秒), 避免切单位后语义突变
+													setSchedule(unit === 'seconds' ? schedule * 60 : Math.ceil(schedule / 60))
+													setScheduleUnit(unit)
+												}}
+												title={`间隔单位: 秒 (${MIN_PULL_INTERVAL_SECONDS}~${MAX_PULL_INTERVAL_SECONDS}) / 分钟 (1~)`}
+												className="h-8 shrink-0 rounded-lg border border-border bg-base px-1.5 text-[11px] text-foreground cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent/25"
+											>
+												<option value="minutes">分钟</option>
+												<option value="seconds">秒</option>
+											</select>
+										</div>
 										<div className="text-[9px] text-muted/70 mt-1">
-											每隔 N 分钟拉取一次（从启用时刻起算）—「每天 09:30」这类日程请用固定时刻
+											每隔 N 秒/分钟拉取一次（从启用时刻起算）—「每天 09:30」这类日程请用固定时刻；秒级（≥10s）适合盘中快照
 										</div>
 									</div>
 								) : (
@@ -703,8 +735,7 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 											<table className="min-w-full text-left text-[10px]">
 												<thead className="bg-elevated/50 text-muted">
 													<tr>
-														{previewColumns.map(col =>
-															<th key={col} className="px-2 py-1 font-medium font-mono">{col}</th>)}
+														{previewColumns.map(col => <th key={col} className="px-2 py-1 font-medium font-mono">{col}</th>)}
 													</tr>
 												</thead>
 												<tbody>
@@ -793,10 +824,7 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 						{sourceMode === 'file' && fields.length === 0 ? (
 							<div
 								onClick={() => detectFileRef.current?.click()}
-								onDragOver={e => {
-									e.preventDefault();
-									setDragOver(true)
-								}}
+								onDragOver={e => { e.preventDefault(); setDragOver(true) }}
 								onDragLeave={() => setDragOver(false)}
 								onDrop={e => {
 									e.preventDefault()
@@ -804,12 +832,13 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 									const file = e.dataTransfer.files[0]
 									if (file) detectFile(file)
 								}}
-								className={`rounded-xl border-2 border-dashed py-8 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-200 ${dragOver
-									? 'border-amber-500 bg-amber-500/[0.06] scale-[1.01]'
-									: detecting
-										? 'border-border/40 pointer-events-none'
-										: 'border-border/40 hover:border-amber-500/40 hover:bg-amber-500/[0.02]'
-									}`}
+								className={`rounded-xl border-2 border-dashed py-8 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-200 ${
+									dragOver
+										? 'border-amber-500 bg-amber-500/[0.06] scale-[1.01]'
+										: detecting
+											? 'border-border/40 pointer-events-none'
+											: 'border-border/40 hover:border-amber-500/40 hover:bg-amber-500/[0.02]'
+								}`}
 							>
 								{detecting ? (
 									<><Loader2 className="h-5 w-5 text-amber-500 animate-spin" /><span className="text-[11px] text-muted">检测字段中…</span></>
@@ -842,33 +871,23 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 						) : (
 							<div className="space-y-1">
 								{[
-									{
-										name: '标的代码',
-										key: 'symbol',
-										mapped: matchStatus !== 'none',
-										hint: symbolMap.type === 'mapped' ? `← ${symbolMap.col}` : '← 计算'
-									},
-									{
-										name: '代码',
-										key: 'code',
-										mapped: matchStatus !== 'none',
-										hint: codeMap.type === 'mapped' ? `← ${codeMap.col}` : codeMap.method === 'strip_exchange' ? '← symbol截取' : '← 推算'
-									},
+									{ name: '标的代码', key: 'symbol', mapped: matchStatus !== 'none', hint: symbolMap.type === 'mapped' ? `← ${symbolMap.col}` : '← 计算' },
+									{ name: '代码', key: 'code', mapped: matchStatus !== 'none', hint: codeMap.type === 'mapped' ? `← ${codeMap.col}` : codeMap.method === 'strip_exchange' ? '← symbol截取' : '← 推算' },
 								].map(row => (
 									<div
 										key={row.key}
-										className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border ${row.mapped ? 'border-border/40 bg-elevated/20' : 'border-danger/30 bg-danger/[0.04]'
-											}`}
+										className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border ${
+											row.mapped ? 'border-border/40 bg-elevated/20' : 'border-danger/30 bg-danger/[0.04]'
+										}`}
 									>
 										<span className="w-16 shrink-0 text-[11px] text-secondary">{row.name}</span>
 										<span className="flex-1 text-[11px] font-mono text-muted">{row.key}</span>
 										<span className="w-10 text-center text-[10px] text-muted/50">文本</span>
 										{row.mapped
-											?
-											<span className="inline-flex items-center gap-1 text-[10px] text-green-600 dark:text-green-500/80 shrink-0">
-												<Check className="h-3 w-3" strokeWidth={2.5} />
-												{row.hint}
-											</span>
+											? <span className="inline-flex items-center gap-1 text-[10px] text-green-600 dark:text-green-500/80 shrink-0">
+													<Check className="h-3 w-3" strokeWidth={2.5} />
+													{row.hint}
+												</span>
 											: <AlertCircle className="h-3.5 w-3.5 text-danger/60 shrink-0" />}
 									</div>
 								))}
@@ -917,36 +936,18 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 						<section className="rounded-xl border border-border/60 bg-elevated/20 p-4 space-y-1">
 							<div className="text-xs font-semibold text-foreground mb-1.5">创建选项</div>
 							{([
-								{
-									checked: savePull, set: (v: boolean) => {
-										setSavePull(v);
-										if (!v) {
-											setImportNow(false);
-											setEnablePull(false)
-										}
-									}, label: '保存为拉取配置', hint: '记录请求参数，之后可在表卡片中调整', disabled: false
-								},
-								{
-									checked: importNow,
-									set: (v: boolean) => {
-										setImportNow(v);
-										if (v) setSavePull(true)
-									},
-									label: '创建后立即导入本次数据',
-									hint: '立刻执行一次拉取并写入 Parquet',
-									disabled: !savePull
-								},
-								{
-									checked: enablePull, set: (v: boolean) => {
-										setEnablePull(v);
-										if (v) setSavePull(true)
-									}, label: '启用定时拉取', hint: scheduleMode === 'fixed' && scheduleTime
-										? `${schedulePeriod === 'weekly' ? `每周${WEEKDAY_OPTS[scheduleDay - 1][1].slice(1)}`
+								{ checked: savePull, set: (v: boolean) => { setSavePull(v); if (!v) { setImportNow(false); setEnablePull(false) } }, label: '保存为拉取配置', hint: '记录请求参数，之后可在表卡片中调整', disabled: false },
+								{ checked: importNow, set: (v: boolean) => { setImportNow(v); if (v) setSavePull(true) }, label: '创建后立即导入本次数据', hint: '立刻执行一次拉取并写入 Parquet', disabled: !savePull },
+								{ checked: enablePull, set: (v: boolean) => { setEnablePull(v); if (v) setSavePull(true) }, label: '启用定时拉取', hint: scheduleMode === 'fixed' && scheduleTime
+									? `${
+										schedulePeriod === 'weekly' ? `每周${WEEKDAY_OPTS[scheduleDay - 1][1].slice(1)}`
 											: schedulePeriod === 'monthly' ? `每月 ${scheduleDay} 号`
 												: '每天'
 										} ${scheduleTime}${scheduleTradingOnly ? '（仅交易日）' : ''}`
-										: `每 ${schedule} 分钟自动拉取`, disabled: !savePull
-								},
+									: `${formatIntervalSummary(
+										scheduleUnit === 'seconds' ? schedule : null,
+										schedule,
+									)} 自动拉取`, disabled: !savePull },
 							] as const).map(opt => (
 								<label
 									key={opt.label}
@@ -968,7 +969,7 @@ export function CreateExtDialog({ onClose }: { onClose: () => void }) {
 					)}
 
 					{error && (
-						<div className="flex items-start gap-2 text-[11px] text-danger bg-danger/5 border border-danger/20 rounded-lg px-3 py-2.5">
+						<div role="alert" className="flex items-start gap-2 text-[11px] text-danger bg-danger/5 border border-danger/20 rounded-lg px-3 py-2.5">
 							<AlertCircle className="h-3.5 w-3.5 mt-px shrink-0" />
 							<span className="leading-relaxed">{error}</span>
 						</div>

@@ -28,25 +28,26 @@ type Codec = 'bool01' | 'int' | 'float' | 'string' | 'json'
  * - json: 经 storage.ts 的 kv() 写入, localStorage 是 JSON 文本 (字符串带引号)
  */
 const SPECS: { ls: string; remote: string; codec: Codec }[] = [
-	{ls: 'alert_toast_enabled', remote: 'alert_toast_enabled', codec: 'bool01'},
-	{ls: 'alert_toast_max', remote: 'alert_toast_max', codec: 'int'},
-	{ls: 'alert_sound_enabled', remote: 'alert_sound_enabled', codec: 'bool01'},
-	{ls: 'alert_sound', remote: 'alert_sound', codec: 'string'},
-	{ls: 'voice_broadcast_enabled', remote: 'voice_broadcast_enabled', codec: 'bool01'},
-	{ls: 'voice_broadcast_voice', remote: 'voice_broadcast_voice', codec: 'string'},
-	{ls: 'voice_broadcast_rate', remote: 'voice_broadcast_rate', codec: 'float'},
-	{ls: 'stock_external_template', remote: 'stock_external_template', codec: 'json'},
-	{ls: 'tf-page-zoom', remote: 'page_zoom', codec: 'json'},
-	// 局部界面状态也走跨端副本 (随配置备份迁移): 监控徽标/设置页收起/回测列表高度/导航形态
-	{ls: 'monitor_badge_enabled', remote: 'monitor_badge_enabled', codec: 'bool01'},
-	{ls: 'tf-settings-nav-collapsed', remote: 'settings_nav_collapsed', codec: 'bool01'},
-	{ls: 'bt_strategy_list_maxh', remote: 'bt_strategy_list_maxh', codec: 'int'},
-	{ls: 'tf-nav-state', remote: 'nav_state', codec: 'string'},
-	// AI 助手悬浮球显隐 — 不入副本时桌面版换端口即回默认开启 ("关了过一会又开")
-	{ls: 'assistant.fab.enabled', remote: 'assistant_fab_enabled', codec: 'bool01'},
-	// 保留 JSON 文本，兼容后端界面偏好只接收标量的契约。
-	{ls: 'strategy-pool', remote: 'strategy_pool', codec: 'string'},
-	{ls: 'tf-theme', remote: 'theme', codec: 'string'},
+  { ls: 'alert_toast_enabled', remote: 'alert_toast_enabled', codec: 'bool01' },
+  { ls: 'alert_toast_max', remote: 'alert_toast_max', codec: 'int' },
+  { ls: 'alert_sound_enabled', remote: 'alert_sound_enabled', codec: 'bool01' },
+  { ls: 'alert_sound', remote: 'alert_sound', codec: 'string' },
+  { ls: 'voice_broadcast_enabled', remote: 'voice_broadcast_enabled', codec: 'bool01' },
+  { ls: 'voice_broadcast_voice', remote: 'voice_broadcast_voice', codec: 'string' },
+  { ls: 'voice_broadcast_rate', remote: 'voice_broadcast_rate', codec: 'float' },
+  { ls: 'stock_external_template', remote: 'stock_external_template', codec: 'json' },
+  { ls: 'tf-page-zoom', remote: 'page_zoom', codec: 'json' },
+  // 局部界面状态也走跨端副本 (随配置备份迁移): 监控徽标/设置页收起/回测列表高度/导航形态
+  { ls: 'monitor_badge_enabled', remote: 'monitor_badge_enabled', codec: 'bool01' },
+  { ls: 'tf-settings-nav-collapsed', remote: 'settings_nav_collapsed', codec: 'bool01' },
+  { ls: 'bt_strategy_list_maxh', remote: 'bt_strategy_list_maxh', codec: 'int' },
+  { ls: 'tf-nav-state', remote: 'nav_state', codec: 'string' },
+  { ls: 'tf-nav-groups', remote: 'nav_groups', codec: 'string' },
+  // AI 助手悬浮球显隐 — 不入副本时桌面版换端口即回默认开启 ("关了过一会又开")
+  { ls: 'assistant.fab.enabled', remote: 'assistant_fab_enabled', codec: 'bool01' },
+  // 保留 JSON 文本，兼容后端界面偏好只接收标量的契约。
+  { ls: 'strategy-pool', remote: 'strategy_pool', codec: 'string' },
+  { ls: 'tf-theme', remote: 'theme', codec: 'string' },
 ]
 
 const BY_LS = new Map(SPECS.map(s => [s.ls, s]))
