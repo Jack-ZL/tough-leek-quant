@@ -271,19 +271,20 @@ const StockCard = React.memo(function StockCard({
 	/** 正在 K 线弹窗预览中 → 高亮卡片 */
 	active?: boolean
 }) {
-	const [showMonitorMenu, setShowMonitorMenu] = useState(false)
-	const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null)
-	const code = stock.symbol.replace(/\.BJ$/, '').replace(/\.SZ$/, '').replace(/\.SH$/, '')
-	const tag = boardTag(stock.symbol)
-	const status = stock.status || (direction === 'down' ? 'limit_down' : 'limit_up')
-	const style = STATUS_STYLE[status] || STATUS_STYLE[direction === 'down' ? 'limit_down' : 'limit_up']
-	const isLimitHit = status === 'limit_up' || status === 'limit_down'
-	const conceptTags = getExtTags(stock, extFields.concept)
-	const industryTags = getExtTags(stock, extFields.industry)
-	const isTextConcept = extFields.concept?.display?.displayMode === 'text'
-	const isTextIndustry = extFields.industry?.display?.displayMode === 'text'
-	const conceptLayout = extFields.concept?.display?.tagLayout ?? 'horizontal'
-	const industryLayout = extFields.industry?.display?.tagLayout ?? 'horizontal'
+  const [showMonitorMenu, setShowMonitorMenu] = useState(false)
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null)
+  const code = stock.symbol.replace(/\.BJ$/, '').replace(/\.SZ$/, '').replace(/\.SH$/, '')
+  const name = stock.name?.trim() || undefined
+  const tag = boardTag(stock.symbol)
+  const status = stock.status || (direction === 'down' ? 'limit_down' : 'limit_up')
+  const style = STATUS_STYLE[status] || STATUS_STYLE[direction === 'down' ? 'limit_down' : 'limit_up']
+  const isLimitHit = status === 'limit_up' || status === 'limit_down'
+  const conceptTags = getExtTags(stock, extFields.concept)
+  const industryTags = getExtTags(stock, extFields.industry)
+  const isTextConcept = extFields.concept?.display?.displayMode === 'text'
+  const isTextIndustry = extFields.industry?.display?.displayMode === 'text'
+  const conceptLayout = extFields.concept?.display?.tagLayout ?? 'horizontal'
+  const industryLayout = extFields.industry?.display?.tagLayout ?? 'horizontal'
 
 	// 连板数: 按 direction 选字段
 	const consecNum = direction === 'down' ? stock.consecutive_limit_downs : stock.consecutive_limit_ups
@@ -297,140 +298,139 @@ const StockCard = React.memo(function StockCard({
 
 	const hasTags = conceptTags.length > 0 || industryTags.length > 0
 
-	// 齿轮始终可见: 让免费用户也能看到功能入口, 点开后在菜单内提示权限不足。
-	// 有五档盘口能力的用户正常设置; 无能力时保存按钮禁用 + 显示能力提示。
-	return (
-		<div className="relative group w-full">
-			{/* 监控设置按钮 (右上角): 不能嵌在卡片 button 内 */}
-			<button
-				onClick={e => {
-					e.stopPropagation()
-					setMenuAnchor(e.currentTarget.getBoundingClientRect())
-					setShowMonitorMenu(v => !v)
-				}}
-				title={monitored ? '封单监控已开启' : '开启封单监控'}
-				className={`absolute top-1 right-1 z-20 p-0.5 rounded transition-opacity cursor-pointer ${monitored ? 'opacity-100 text-amber-400' : 'opacity-0 group-hover:opacity-70 text-muted hover:!opacity-100'
-					}`}
-			>
-				{monitored ? <Bell className="h-3 w-3" /> : <BellOff className="h-3 w-3" />}
-			</button>
-			{/* 监控菜单 */}
-			{showMonitorMenu && menuAnchor && (
-				<MonitorMenu
-					stock={stock}
-					direction={direction}
-					sealMode={sealMode}
-					monitorRule={monitorRule}
-					anchorRect={menuAnchor}
-					hasDepth={hasDepth}
-					onClose={() => setShowMonitorMenu(false)}
-					onChanged={onMonitorChange}
-				/>
-			)}
-			<div
-				role="button"
-				tabIndex={0}
-				onClick={() => onClick(stock.symbol, stock.name ?? undefined)}
-				onKeyDown={event => {
-					if (event.key !== 'Enter' && event.key !== ' ') return
-					event.preventDefault()
-					onClick(stock.symbol, stock.name ?? undefined)
-				}}
-				className={`w-full flex flex-col items-start gap-1 px-2.5 py-2 rounded-md transition-all duration-200 cursor-pointer hover:opacity-100 ${style.bg} ${style.bar} ${monitored ? 'ring-1 ring-amber-400/50 ring-inset' : ''} ${active ? 'ring-1 ring-accent/60 ring-inset' : ''}`}
-				style={style.cardStyle ? { ...style.cardStyle } : undefined}
-				onMouseEnter={e => {
-					if (!style.cardStyle || !style.hoverShadow) return
-					e.currentTarget.style.boxShadow = style.hoverShadow
-				}}
-				onMouseLeave={e => {
-					if (!style.cardStyle) return
-					e.currentTarget.style.boxShadow = style.cardStyle.boxShadow ?? ''
-				}}
-			>
-				{/* 名称行 */}
-				<div className="flex items-center gap-1.5 w-full min-w-0 pr-4">
-					<span className={`${style.nameCls} font-medium truncate`}>{stock.name}</span>
-					{stock.is_one_word && (
-						<span className={`shrink-0 rounded-sm border px-1 py-px text-[9px] font-medium leading-none ${direction === 'down'
-							? 'border-bear/25 bg-bear/10 text-bear'
-							: 'border-bull/25 bg-bull/10 text-bull'
-							}`}>一字</span>
-					)}
-					{tag && (
-						<span className={`shrink-0 text-[9px] px-1 py-px rounded-full border leading-none ${tag.cls}`}>{tag.label}</span>
-					)}
-				</div>
-				{/* 代码 + 数字行 */}
-				<div className="flex items-center gap-1.5 w-full">
-					<span className={`${style.codeCls} font-mono text-[10px] tracking-tight`}>{code}</span>
-					<span className="ml-auto flex items-center gap-1">
-						{!isLimitHit ? (
-							<span className={`text-[10px] font-semibold tabular-nums ${priceColorClass(stock.change_pct)}`}>
-								{fmtPct(stock.change_pct)}
-							</span>
-						) : stock.sealed_status === 'real' && stock.sealed_vol != null ? (
-							/* 已修正真封板: 右侧显示封单(量或额, 替代连板数)。
-							 sealed_vol 单位是手, 1手=100股, 算金额需 ×100 */
-							<span className="text-[10px] font-semibold tabular-nums text-accent/80">
-								{sealMode === 'amount' && stock.close
-									? fmtSealAmount(stock.sealed_vol * 100 * stock.close)
-									: fmtSealVol(stock.sealed_vol)}
-							</span>
-						) : stock.sealed_status === 'pending' ? (
-							<span className="text-[9px] text-yellow-500/60 leading-none">待确认</span>
-						) : (
-							/* 未修正: 显示连板数 */
-							<span className="text-[10px] font-semibold tabular-nums text-accent/80">
-								{consecNum}
-							</span>
-						)}
-						{badgeText && (
-							<span className={`text-[9px] font-medium ${style.badge}`}>{badgeText}</span>
-						)}
-					</span>
-				</div>
-				{/* 标签行 */}
-				{hasTags && (
-					<div className="flex flex-col gap-0.5 w-full">
-						{conceptTags.length > 0 && (
-							<div className={`flex gap-0.5 ${conceptLayout === 'vertical' ? 'flex-col items-start' : 'flex-wrap'}`}>
-								{conceptTags.map((t, i) => (
-									<button
-										key={i}
-										type="button"
-										onClick={event => {
-											event.stopPropagation();
-											onDimensionClick('concept', t, extFields.concept?.field)
-										}}
-										className={`${isTextConcept ? textCls : conceptCls} hover:brightness-95`}
-									>
-										{t}
-									</button>
-								))}
-							</div>
-						)}
-						{industryTags.length > 0 && (
-							<div className={`flex gap-0.5 ${industryLayout === 'vertical' ? 'flex-col items-start' : 'flex-wrap'}`}>
-								{industryTags.map((t, i) => (
-									<button
-										key={i}
-										type="button"
-										onClick={event => {
-											event.stopPropagation();
-											onDimensionClick('industry', t, extFields.industry?.field)
-										}}
-										className={`${isTextIndustry ? textCls : industryCls} hover:brightness-95`}
-									>
-										{t}
-									</button>
-								))}
-							</div>
-						)}
-					</div>
-				)}
-			</div>
-		</div>
-	)
+  // 齿轮始终可见: 让免费用户也能看到功能入口, 点开后在菜单内提示权限不足。
+  // 有五档盘口能力的用户正常设置; 无能力时保存按钮禁用 + 显示能力提示。
+  return (
+    <div className="relative group w-full">
+      {/* 监控设置按钮 (右上角): 不能嵌在卡片 button 内 */}
+      <button
+        onClick={e => {
+          e.stopPropagation()
+          setMenuAnchor(e.currentTarget.getBoundingClientRect())
+          setShowMonitorMenu(v => !v)
+        }}
+        title={monitored ? '封单监控已开启' : '开启封单监控'}
+        className={`absolute top-1 right-1 z-20 p-0.5 rounded transition-opacity cursor-pointer ${
+          monitored ? 'opacity-100 text-amber-400' : 'opacity-0 group-hover:opacity-70 text-muted hover:!opacity-100'
+        }`}
+      >
+        {monitored ? <Bell className="h-3 w-3" /> : <BellOff className="h-3 w-3" />}
+      </button>
+      {/* 监控菜单 */}
+      {showMonitorMenu && menuAnchor && (
+        <MonitorMenu
+          stock={stock}
+          direction={direction}
+          sealMode={sealMode}
+          monitorRule={monitorRule}
+          anchorRect={menuAnchor}
+          hasDepth={hasDepth}
+          onClose={() => setShowMonitorMenu(false)}
+          onChanged={onMonitorChange}
+        />
+      )}
+      <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onClick(stock.symbol, name)}
+      onKeyDown={event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onClick(stock.symbol, name)
+      }}
+      className={`w-full flex flex-col items-start gap-1 px-2.5 py-2 rounded-md transition-all duration-200 cursor-pointer hover:opacity-100 ${style.bg} ${style.bar} ${monitored ? 'ring-1 ring-amber-400/50 ring-inset' : ''} ${active ? 'ring-1 ring-accent/60 ring-inset' : ''}`}
+      style={style.cardStyle ? { ...style.cardStyle } : undefined}
+      onMouseEnter={e => {
+        if (!style.cardStyle || !style.hoverShadow) return
+        e.currentTarget.style.boxShadow = style.hoverShadow
+      }}
+      onMouseLeave={e => {
+        if (!style.cardStyle) return
+        e.currentTarget.style.boxShadow = style.cardStyle.boxShadow ?? ''
+      }}
+    >
+      {/* 名称行 */}
+      <div className="flex items-center gap-1.5 w-full min-w-0 pr-4">
+        <span className={`${style.nameCls} font-medium truncate`}
+          title={name ? undefined : '名称数据缺失，请同步标的信息'}>
+          {name || '名称待同步'}
+        </span>
+        {stock.is_one_word && (
+          <span className={`shrink-0 rounded-sm border px-1 py-px text-[9px] font-medium leading-none ${
+            direction === 'down'
+              ? 'border-bear/25 bg-bear/10 text-bear'
+              : 'border-bull/25 bg-bull/10 text-bull'
+          }`}>一字</span>
+        )}
+        {tag && (
+          <span className={`shrink-0 text-[9px] px-1 py-px rounded-full border leading-none ${tag.cls}`}>{tag.label}</span>
+        )}
+      </div>
+      {/* 代码 + 数字行 */}
+      <div className="flex items-center gap-1.5 w-full">
+        <span className={`${style.codeCls} font-mono text-[10px] tracking-tight`}>{code}</span>
+        <span className="ml-auto flex items-center gap-1">
+          {!isLimitHit ? (
+            <span className={`text-[10px] font-semibold tabular-nums ${priceColorClass(stock.change_pct)}`}>
+              {fmtPct(stock.change_pct)}
+            </span>
+          ) : stock.sealed_status === 'real' && stock.sealed_vol != null ? (
+            /* 已修正真封板: 右侧显示封单(量或额, 替代连板数)。
+               sealed_vol 单位是手, 1手=100股, 算金额需 ×100 */
+            <span className="text-[10px] font-semibold tabular-nums text-accent/80">
+              {sealMode === 'amount' && stock.close
+                ? fmtSealAmount(stock.sealed_vol * 100 * stock.close)
+                : fmtSealVol(stock.sealed_vol)}
+            </span>
+          ) : stock.sealed_status === 'pending' ? (
+            <span className="text-[9px] text-yellow-500/60 leading-none">待确认</span>
+          ) : (
+            /* 未修正: 显示连板数 */
+            <span className="text-[10px] font-semibold tabular-nums text-accent/80">
+              {consecNum}
+            </span>
+          )}
+          {badgeText && (
+            <span className={`text-[9px] font-medium ${style.badge}`}>{badgeText}</span>
+          )}
+        </span>
+      </div>
+      {/* 标签行 */}
+      {hasTags && (
+        <div className="flex flex-col gap-0.5 w-full">
+          {conceptTags.length > 0 && (
+            <div className={`flex gap-0.5 ${conceptLayout === 'vertical' ? 'flex-col items-start' : 'flex-wrap'}`}>
+              {conceptTags.map((t, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={event => { event.stopPropagation(); onDimensionClick('concept', t, extFields.concept?.field) }}
+                  className={`${isTextConcept ? textCls : conceptCls} hover:brightness-95`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
+          {industryTags.length > 0 && (
+            <div className={`flex gap-0.5 ${industryLayout === 'vertical' ? 'flex-col items-start' : 'flex-wrap'}`}>
+              {industryTags.map((t, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={event => { event.stopPropagation(); onDimensionClick('industry', t, extFields.industry?.field) }}
+                  className={`${isTextIndustry ? textCls : industryCls} hover:brightness-95`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+    </div>
+  )
 })
 
 // ===== 封单监控菜单 =====

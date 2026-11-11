@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -28,13 +28,14 @@ import { setUiPref } from '@/lib/uiPrefs'
 import { useStrategyLibrarySync } from '@/lib/strategyLibrary'
 import { getPageScale } from '@/lib/pageZoom'
 import { setKlineBatchLimits } from '@/lib/klineBatchLimits'
-import { compareByDefaultNav, defaultNavIndex, seedHiddenForNewUser } from '@/lib/navOrder'
+import { seedHiddenForNewUser } from '@/lib/navOrder'
+import { navPageIds, resolveNavLayout, visibleNavLayout, type NavGroup } from '@/lib/navLayout'
+import { getNavigationEntries, type NavigationEntry } from '@/lib/navigation'
+import { NavFolder } from './navigation/NavFolder'
 import {
 	Settings,
 	DatabaseZap,
 	Loader2,
-	Tags,
-	BarChart3,
 	Sparkles,
 	CheckCircle2,
 	ChevronRight,
@@ -50,17 +51,6 @@ import {
 	Download,
 	HardDriveDownload,
 } from 'lucide-react'
-import {
-	IconDashboard,
-	IconWatchlist,
-	IconStrategy,
-	IconFactors,
-	IconBacktest,
-	IconRegime,
-	IconIndices,
-	IconData,
-	type BrandIconProps,
-} from './BrandIcons'
 import { BRAND, Logo } from './Logo'
 import { MarketClock } from './MarketClock'
 import { api, type CapabilityMatrix, type IndexQuote, type SettingsState } from '@/lib/api'
@@ -74,7 +64,6 @@ import { findDataSource } from '@/lib/dataSources'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { setCurrentTotal as setAlertTotal, useUnreadAlerts } from '@/lib/monitorBadge'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
-import { getFrontendExtensionNavigation } from '@/extensions/registry'
 
 // 品牌色统一由 Logo.tsx 的 BRAND 常量提供
 
@@ -87,17 +76,6 @@ export const CORE_INDEXES = [
 ] as const
 
 type CoreIndex = (typeof CORE_INDEXES)[number]
-
-const nav = [
-	{ to: '/', label: '看板', icon: IconDashboard },
-	{ to: '/watchlist', label: '自选', icon: IconWatchlist },
-	{ to: '/screener', label: '策略', icon: IconStrategy },
-	{ to: '/factors', label: '因子', icon: IconFactors },
-	{ to: '/backtest', label: '回测', icon: IconBacktest },
-	{ to: '/regime', label: '市场环境', icon: IconRegime },
-	{ to: '/indices', label: '指数', icon: IconIndices },
-	{ to: '/data', label: '数据', icon: IconData },
-] as const
 
 /** 亮/暗主题切换 — 状态存 localStorage, 生效见 lib/theme.ts */
 function ThemeToggle() {
@@ -136,11 +114,7 @@ function MonitorBadge({ active }: { active: boolean }) {
 	const unread = useUnreadAlerts()
 	// 尊重用户设置: 可在菜单设置里关闭数字提示
 	const badgeEnabled = (() => {
-		try {
-			return localStorage.getItem('monitor_badge_enabled') !== '0'
-		} catch {
-			return true
-		}
+		try { return localStorage.getItem('monitor_badge_enabled') !== '0' } catch { return true }
 	})()
 	if (active || unread <= 0 || !badgeEnabled) return null
 	return (
@@ -167,8 +141,8 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 						title={`${item.name} ${item.symbol}`}
 					>
 						{/* 名称不换行 + 涨跌幅不压缩: 两列布局下单卡内容区仅 85px,
-						 「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
-						 指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
+								「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
+								指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
 						<div className="flex items-center justify-between gap-1">
 							<span className="min-w-0 truncate text-[10px] text-secondary">{item.name}</span>
 							<span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
@@ -200,8 +174,7 @@ function QuickDataEntry({ syncing, justDone }: { syncing: boolean; justDone: boo
 		>
 			{syncing
 				? <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-				:
-				<HardDriveDownload className="h-3 w-3 shrink-0 text-muted transition-colors group-hover:text-foreground" />}
+				: <HardDriveDownload className="h-3 w-3 shrink-0 text-muted transition-colors group-hover:text-foreground" />}
 			<span className="text-[11px] leading-none">数据</span>
 			{!syncing && justDone && <CheckCircle2 className="h-3 w-3 shrink-0 text-bull" />}
 		</NavLink>
@@ -228,8 +201,8 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
 		: down.length === 0 ? 'ok' : down.some(c => c.id === 'daily') ? 'danger' : 'warn'
 	const countCls = level === 'ok' ? 'text-accent/80'
 		: level === 'danger' ? 'text-danger'
-			: level === 'warn' ? 'text-warning'
-				: 'text-muted'
+		: level === 'warn' ? 'text-warning'
+		: 'text-muted'
 
 	// 悬浮卡: 侧栏 aside 是 overflow-hidden, 用 fixed 定位逃逸裁剪 (坐标取自徽标实时位置)。
 	// 徽标靠近屏幕顶部时居中定位会把卡片上半截推出视口 → 渲染后按实际高度钳制进视口。
@@ -270,9 +243,7 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
 				onMouseLeave={closePop}
 				onFocus={openPop}
 				onBlur={closePop}
-				onKeyDown={e => {
-					if (e.key === 'Escape') setPopPos(null)
-				}}
+				onKeyDown={e => { if (e.key === 'Escape') setPopPos(null) }}
 				className="group relative flex items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70"
 			>
 				<DatabaseZap className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-foreground transition-colors" />
@@ -280,11 +251,11 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
 				<span className="flex items-center gap-1 shrink-0">
 					{loading
 						? Array.from({ length: 5 }, (_, i) => (
-							<span key={i} className="h-2 w-2 rounded-[2px] bg-muted animate-pulse" />
-						))
+								<span key={i} className="h-2 w-2 rounded-[2px] bg-muted animate-pulse" />
+							))
 						: caps.map(c => (
-							<span key={c.id} className={`h-2 w-2 rounded-[2px] ${capSquareCls(c)}`} />
-						))}
+								<span key={c.id} className={`h-2 w-2 rounded-[2px] ${capSquareCls(c)}`} />
+							))}
 				</span>
 				{!loading && (
 					<span className={`ml-auto text-[10px] font-mono font-bold leading-none shrink-0 ${countCls}`}>
@@ -435,6 +406,47 @@ export function Layout() {
 	// 自选二级菜单展开状态 — 默认当前在自选页时展开
 	const [watchlistNavExpanded, setWatchlistNavExpanded] = useState(location.pathname === '/watchlist')
 
+	const allNav = getNavigationEntries(analysisMenus?.items ?? [])
+	const navById = new Map(allNav.map(item => [item.id, item]))
+	const layout = resolveNavLayout(prefs?.nav_layout, allNav, prefs?.nav_order)
+	const visibleLayout = visibleNavLayout(layout, allNav, prefs?.nav_hidden ?? [])
+	if (!prefs?.nav_layout) visibleLayout.items = visibleLayout.items.filter(node => node.id !== '/settings')
+	const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>(() => {
+		try {
+			const value = JSON.parse(localStorage.getItem('tf-nav-groups') || '{}')
+			return value && typeof value === 'object' && !Array.isArray(value)
+				? Object.fromEntries(Object.entries(value).filter((item): item is [string, boolean] => typeof item[1] === 'boolean')) : {}
+		} catch { return {} }
+	})
+	const groupEdited = useRef(false)
+	const groupRestored = useRef(false)
+	const [railGroupId, setRailGroupId] = useState<string | null>(null)
+	const activeGroupId = visibleLayout.items.find(node => node.type === 'group' && node.children.some(page =>
+		location.pathname === page.id || (page.id !== '/' && location.pathname.startsWith(`${page.id}/`))))?.id
+	useEffect(() => {
+		setRailGroupId(null)
+		if (activeGroupId) setGroupOpen(previous => ({ ...previous, [activeGroupId]: true }))
+	}, [location.pathname, location.search, activeGroupId])
+	const savedGroupOpen = prefs?.ui_prefs?.nav_groups
+	useEffect(() => {
+		if (groupRestored.current || groupEdited.current || typeof savedGroupOpen !== 'string') return
+		groupRestored.current = true
+		try {
+			const value = JSON.parse(savedGroupOpen)
+			if (value && typeof value === 'object' && !Array.isArray(value)) {
+				const restored = Object.fromEntries(Object.entries(value).filter((item): item is [string, boolean] => typeof item[1] === 'boolean'))
+				setGroupOpen(previous => ({ ...restored, ...previous }))
+			}
+		} catch { /* 非法展开偏好不影响页面入口 */ }
+	}, [savedGroupOpen])
+	const isGroupOpen = (group: NavGroup) => groupOpen[group.id] ?? group.id === activeGroupId
+	const toggleGroup = (group: NavGroup) => {
+		groupEdited.current = true
+		const next = { ...groupOpen, [group.id]: !isGroupOpen(group) }
+		setGroupOpen(next)
+		setUiPref('tf-nav-groups', JSON.stringify(next))
+	}
+
 	// 侧边栏三态 — expanded(14rem) / rail(3.5rem 图标条) / hidden(0, 左缘悬浮按钮唤出)。
 	// 仅桌面 (≥768px) 参与三态; 移动端 aside 以抽屉呈现, 由 drawerOpen 控制, 恒渲染完整形态。
 	// 持久化到 localStorage; 迁移旧两态键 tf-nav-collapsed (收起 → 图标条)。
@@ -444,9 +456,7 @@ export function Layout() {
 			const v = localStorage.getItem('tf-nav-state')
 			if (v === 'expanded' || v === 'rail') return v
 			return localStorage.getItem('tf-nav-collapsed') === '1' ? 'rail' : 'expanded'
-		} catch {
-			return 'expanded'
-		}
+		} catch { return 'expanded' }
 	})
 	const [drawerOpen, setDrawerOpen] = useState(false)
 	const isDesktop = useIsDesktop()
@@ -455,23 +465,15 @@ export function Layout() {
 	const overlayTimer = useRef<number | undefined>(undefined)
 	const setNavStatePersist = (s: NavState) => {
 		setNavState(s)
-		try {
-			// localStorage.setItem('tf-nav-state', s)
-			setUiPref('tf-nav-state', s)
-		} catch {
-		}
+		try { setUiPref('tf-nav-state', s) } catch {}
 	}
 	// 图标条形态仅桌面 rail 态成立 (移动端抽屉与 overlay 预览恒为完整形态)
 	const railMode = isDesktop && navState === 'rail'
 	// 路由跳转/切回桌面时关抽屉; ESC 同样关闭
-	useEffect(() => {
-		setDrawerOpen(false)
-	}, [location.pathname, isDesktop])
+	useEffect(() => { setDrawerOpen(false) }, [location.pathname, location.search, isDesktop])
 	useEffect(() => {
 		if (!drawerOpen) return
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') setDrawerOpen(false)
-		}
+		const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawerOpen(false) }
 		window.addEventListener('keydown', onKey)
 		return () => window.removeEventListener('keydown', onKey)
 	}, [drawerOpen])
@@ -479,8 +481,14 @@ export function Layout() {
 	// 分组等权平均涨跌幅 — 复用 watchlist/enriched 查询缓存(与自选页同 key,
 	// 盘中随 SSE 刷新)。可见性门控: 子菜单实际可见(桌面展开 + 二级菜单展开, 或
 	// 移动端抽屉打开) 时才拉取, 收起/隐藏/抽屉关闭下不为隐藏 UI 发请求。
-	const sidebarFullyVisible = navState === 'expanded' && (isDesktop || drawerOpen)
-	const navGroupPctVisible = groupsInNav && sidebarFullyVisible && watchlistNavExpanded
+	const sidebarFullyVisible = isDesktop ? navState === 'expanded' : drawerOpen
+	const watchlistParent = visibleLayout.items.find(node => node.type === 'group' && navPageIds(node).includes('/watchlist'))
+	const watchlistVisible = visibleLayout.items.some(node => navPageIds(node).includes('/watchlist'))
+	const watchlistParentOpen = !watchlistParent || (watchlistParent.type === 'group' &&
+		(railMode ? railGroupId === watchlistParent.id : isGroupOpen(watchlistParent)))
+	// 图标模式仅在包含自选的分类弹层中显示分组统计。
+	const navGroupPctVisible = groupsInNav && watchlistVisible && watchlistParentOpen
+		&& (sidebarFullyVisible || (railMode && railGroupId === watchlistParent?.id)) && watchlistNavExpanded
 	const { data: navWatchlist } = useQuery({
 		queryKey: QK.watchlist,
 		queryFn: api.watchlistList,
@@ -488,7 +496,9 @@ export function Layout() {
 		staleTime: 60_000,
 	})
 	const { data: navEnriched } = useQuery({
-		queryKey: QK.watchlistEnriched(undefined),
+		// 无参 → key 归一为 ['watchlist-enriched', ''], 与自选页 (无 ext 列时) 共享缓存,
+		// 消除侧栏与自选页各拉一份整表的双份内存
+		queryKey: QK.watchlistEnriched(),
 		queryFn: () => api.watchlistEnriched(),
 		enabled: navGroupPctVisible,
 		staleTime: 60_000,
@@ -704,63 +714,6 @@ export function Layout() {
 		if (alertsTotal != null) setAlertTotal(alertsTotal)
 	}, [alertsTotal])
 
-	// 合并内置页面 + 可见的扩展分析菜单
-	type NavIcon = (props: BrandIconProps) => ReactNode
-	// arch: 'ext' = 扩展域页面 (官方扩展/自定义分析), 核心域 nav 常量不带标。
-	// 与菜单设置 ARCH_CLASS 同口径: nav 常量 8 项全部核心, 其余两个来源全部扩展。
-	type NavItem = { to: string; label: string; icon: NavIcon; badge?: string; arch?: 'core' | 'ext' }
-	const analysisNav: NavItem[] = (analysisMenus?.items ?? [])
-		.filter(m => m.visible)
-		.map(m => ({
-			to: `/analysis/${m.id}`,
-			label: m.label,
-			icon: m.icon === 'tags' ? Tags : BarChart3,
-			arch: 'ext' as const
-		}))
-	const extensionNav: NavItem[] = getFrontendExtensionNavigation().map(item => ({
-		to: item.route.path,
-		label: item.label,
-		icon: item.icon,
-		badge: item.badge,
-		arch: 'ext' as const,
-	}))
-
-	const allNav: NavItem[] = [...nav, ...analysisNav, ...extensionNav]
-	const savedOrder = prefs?.nav_order ?? []
-
-	const navItems = savedOrder.length > 0
-		? (() => {
-			const byTo = new Map(allNav.map(n => [n.to, n]))
-			const ordered = (savedOrder
-				.map(id => byTo.get(id) ?? byTo.get(`/analysis/${id}`))
-				.filter(Boolean)) as typeof allNav
-			const seen = new Set(ordered.map(n => n.to))
-			const merged = [...ordered]
-			for (const item of allNav) {
-				if (seen.has(item.to)) continue
-				// 未保存过排序的新条目: 默认基准内的路径插回默认位置(排在已出现的
-				// 最近默认前驱之后), 分析菜单/未知扩展追加到末尾。基准含迁移到
-				// custom/ 的扩展域页面, 保证老用户升级无感 (lib/navOrder)。
-				const di = defaultNavIndex(item.to)
-				let anchor = -1
-				if (Number.isFinite(di) && di > 0) {
-					for (let i = di - 1; i >= 0 && anchor < 0; i -= 1) {
-						anchor = merged.findIndex(n => defaultNavIndex(n.to) === i)
-					}
-				}
-				if (anchor >= 0) merged.splice(anchor + 1, 0, item)
-				else if (di === 0) merged.unshift(item)
-				else merged.push(item)
-			}
-			return merged
-		})()
-		// 无保存排序 (新装/从未调整过菜单): 按迁移前默认基准排序, 扩展域页面
-		// 不沉底 — 老用户升级侧栏顺序与迁移前一致; 未知路径稳定追加在后。
-		: [...allNav].sort((a, b) => compareByDefaultNav(a.to, b.to))
-
-	const hiddenIds = new Set(prefs?.nav_hidden ?? [])
-	const visibleNavItems = navItems.filter(n => !hiddenIds.has(n.to) && !hiddenIds.has(n.to.replace(/^\/analysis\//, '')))
-
 	// 新装用户一次性种子: 扩展域页面默认隐藏, 菜单设置里可逐个开启。
 	// 老用户 (升级前已完成 onboarding) 只写标记不动偏好, 升级前后侧栏一致。
 	// 种子标记存 localStorage (每设备一次, 保存成功后才写); 隐藏偏好本体持久化在后端 nav_hidden。
@@ -768,43 +721,26 @@ export function Layout() {
 	useEffect(() => {
 		if (!prefs || !settingsState || extSeedRef.current) return
 		let seeded = false
-		try {
-			seeded = localStorage.getItem('tf-ext-pages-seed') === '1'
-		} catch {
-			return
-		}
-		if (seeded) {
-			extSeedRef.current = true;
-			return
-		}
+		try { seeded = localStorage.getItem('tf-ext-pages-seed') === '1' } catch { return }
+		if (seeded) { extSeedRef.current = true; return }
 		const next = seedHiddenForNewUser(settingsState.onboarding_completed, prefs.nav_hidden)
 		if (!next) {
 			extSeedRef.current = true
-			try {
-				localStorage.setItem('tf-ext-pages-seed', '1')
-			} catch {
-			}
+			try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {}
 			return
 		}
 		extSeedRef.current = true
 		api.saveNavHidden(next)
-			.then(() => {
-				try {
-					localStorage.setItem('tf-ext-pages-seed', '1')
-				} catch {
-				}
-			})
+			.then(() => { try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {} })
 			.then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
-			.catch(() => { /* 保存失败不写标记, 下次启动重试; 结果集幂等, 重复触发无害 */
-			})
+			.catch(() => { /* 保存失败不写标记, 下次启动重试; 结果集幂等, 重复触发无害 */ })
 	}, [prefs, settingsState, qc])
 
 	const doEnableRealtime = async () => {
 		await toggleQuote.mutateAsync(true)
 		// 仅在交易时段立即获取一次行情
 		if (isTrading) {
-			api.intradayRefresh().catch(() => {
-			})
+			api.intradayRefresh().catch(() => {})
 		}
 	}
 
@@ -841,6 +777,150 @@ export function Layout() {
 			// 挖掘运行历史查询失败不阻塞开关实时行情
 		}
 		await doEnableRealtime()
+	}
+
+	const renderNavItem = (entry: NavigationEntry, nested = false) => {
+		const itemRail = railMode && !nested
+		const { to, label, icon: Icon, badge, arch } = entry
+		// 「自选」项 — 开启分组侧栏且未整体收起时, 渲染为可展开父项 + 二级分组
+		const isWatchlistExpandable = to === '/watchlist' && groupsInNav && !itemRail && watchlistGroups.length > 0
+		return (
+			<div key={to}>
+				{isWatchlistExpandable ? (
+					/* 可展开的自选父项 — 点击切换展开, 不直接跳页 */
+					<button
+						aria-expanded={watchlistNavExpanded}
+						onClick={() => setWatchlistNavExpanded(v => !v)}
+						className={cn(
+							'group relative flex w-full items-center gap-3 rounded-btn px-3 py-2 text-sm transition-all duration-150 ease-smooth',
+							location.pathname === '/watchlist'
+								? 'bg-elevated text-foreground font-medium'
+								: 'text-foreground/75 hover:bg-elevated/70 hover:text-foreground',
+						)}
+					>
+						<span
+							className={cn(
+								'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
+								location.pathname === '/watchlist' ? 'opacity-100' : 'opacity-0',
+							)}
+						/>
+						<Icon className={cn('h-4 w-4 shrink-0 transition-colors', location.pathname === '/watchlist' ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
+						<span className="flex-1 text-left">{label}</span>
+						{watchlistNavExpanded
+							? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
+							: <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+						}
+					</button>
+				) : (
+					/* 普通菜单项 */
+					<NavLink
+						to={to}
+						title={itemRail ? label : undefined}
+						className={({ isActive }) =>
+							cn(
+								'group relative flex items-center rounded-btn text-sm transition-all duration-150 ease-smooth',
+								itemRail ? 'justify-center px-0 py-2' : 'gap-3 px-3 py-2',
+								isActive
+									? 'bg-elevated text-foreground font-medium'
+									: 'text-foreground/75 hover:bg-elevated/70 hover:text-foreground',
+							)
+						}
+					>
+						{({ isActive }) => (
+							<>
+								{/* active 左侧 accent 竖条指示 */}
+								<span
+									className={cn(
+										'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
+										isActive ? 'opacity-100' : 'opacity-0',
+									)}
+								/>
+								<Icon className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
+								{!itemRail && (
+									<span className="flex min-w-0 flex-1 items-center gap-1.5">
+										<span className="truncate">{label}</span>
+										{arch === 'ext' && (
+											<span
+												title="扩展域页面 — 可整体替换/移除而不伤核心"
+												className="shrink-0 font-mono text-[8px] font-medium uppercase leading-none tracking-[0.08em] text-muted/70"
+											>
+												ext
+											</span>
+										)}
+									</span>
+								)}
+								{!itemRail && badge && (
+									<span className="ml-auto inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400 shrink-0">
+										{badge}
+									</span>
+								)}
+								{/* 数据同步状态: 同步中转圈, 刚完成显示绿色对勾闪烁 3 秒 */}
+								{to === '/data' && isDataSyncing && !itemRail && (
+									<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+								)}
+								{to === '/data' && !isDataSyncing && dataSyncJustDone && !itemRail && (
+									<CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-bull animate-pulse" />
+								)}
+								{/* 监控中心徽标: 仅非监控页且有未读时显示 */}
+								{to === '/monitor' && !itemRail && <MonitorBadge active={isActive} />}
+							</>
+						)}
+					</NavLink>
+				)}
+
+				{/* 自选分组二级子菜单 — 展开时显示 */}
+				{isWatchlistExpandable && watchlistNavExpanded && (
+					<div className="mt-0.5 space-y-0.5">
+						<NavLink
+							to="/watchlist"
+							className={({ isActive }) => cn(
+								'flex items-center gap-3 rounded-btn py-1.5 pl-9 pr-3 text-[12px] transition-colors duration-150 ease-smooth',
+								isActive && !location.search
+									? 'text-accent font-medium'
+									: 'text-foreground/60 hover:text-foreground hover:bg-elevated/50',
+							)}
+						>
+							<span className="flex h-4 w-4 shrink-0 items-center justify-center"><span className="h-1.5 w-1.5 rounded-full bg-muted" /></span>
+							<span>全部</span>
+							{(() => {
+								const info = navGroupPcts['all']
+								return info && info.pct != null ? (
+									<span className={`ml-auto font-mono text-[10px] tabular-nums ${groupPctColor(info.pct)}`} title={groupPctTitle(info)}>
+										{fmtPct(info.pct)}
+									</span>
+								) : null
+							})()}
+						</NavLink>
+						{watchlistGroups.map(group => {
+							const color = resolveWatchlistGroupColor(group.color)
+							const groupPath = `/watchlist?group=${group.id}`
+							const isGroupActive = location.pathname === '/watchlist' && location.search === `?group=${group.id}`
+							const pctInfo = navGroupPcts[group.id]
+							return (
+								<NavLink
+									key={group.id}
+									to={groupPath}
+									className={cn(
+										'flex items-center gap-3 rounded-btn py-1.5 pl-9 pr-3 text-[12px] transition-colors duration-150 ease-smooth',
+										isGroupActive
+											? 'text-accent font-medium'
+											: 'text-foreground/60 hover:text-foreground hover:bg-elevated/50',
+									)}
+								>
+									<span className="flex h-4 w-4 shrink-0 items-center justify-center"><span className={`h-1.5 w-1.5 rounded-full ${color.dot}`} /></span>
+									<span className="truncate">{group.name}</span>
+									{pctInfo && pctInfo.pct != null && (
+										<span className={`ml-auto font-mono text-[10px] tabular-nums ${groupPctColor(pctInfo.pct)}`} title={groupPctTitle(pctInfo)}>
+											{fmtPct(pctInfo.pct)}
+										</span>
+									)}
+								</NavLink>
+							)
+						})}
+					</div>
+				)}
+			</div>
+		)
 	}
 
 	return (
@@ -884,18 +964,16 @@ export function Layout() {
 				</button>
 			)}
 			<aside
-				onMouseLeave={() => {
-					if (overlayPreview) setOverlayPreview(false)
-				}}
+				onMouseLeave={() => { if (overlayPreview) setOverlayPreview(false) }}
 				className={cn(
 					'bg-surface flex flex-col min-h-0 overflow-hidden',
 					isDesktop
 						? cn('h-full', navState === 'hidden' && !overlayPreview ? 'border-r-0' : 'border-r border-border')
 						: cn(
-							'fixed inset-y-0 left-0 z-50 w-[80vw] max-w-[320px] border-r border-border shadow-2xl',
-							'transition-transform duration-200 ease-smooth',
-							drawerOpen ? 'translate-x-0' : '-translate-x-full',
-						),
+								'fixed inset-y-0 left-0 z-50 w-[80vw] max-w-[320px] border-r border-border shadow-2xl',
+								'transition-transform duration-200 ease-smooth',
+								drawerOpen ? 'translate-x-0' : '-translate-x-full',
+							),
 					overlayPreview && 'fixed inset-y-0 left-0 z-50 w-56 shadow-2xl border-r border-border',
 				)}
 			>
@@ -938,17 +1016,17 @@ export function Layout() {
 						)}
 					</div>
 
-					{/* 日期/时间 + 交易日状态 — 收起时隐藏 */}
-					{!railMode && (
-						<div className="mt-2.5">
-							<MarketClock />
-						</div>
-					)}
+						{/* 日期/时间 + 交易日状态 — 收起时隐藏 */}
+						{!railMode && (
+							<div className="mt-2.5">
+								<MarketClock />
+							</div>
+						)}
 
-					{/* 状态卡 — 收起时隐藏 */}
-					{!railMode && (
-						<div className="mt-2.5 border-t border-border/60 pt-1">
-							<DataSourceHealthBadge matrix={matrix} />
+						{/* 状态卡 — 收起时隐藏 */}
+						{!railMode && (
+							<div className="mt-2.5 border-t border-border/60 pt-1">
+								<DataSourceHealthBadge matrix={matrix} />
 							<div className="mx-2 border-t border-border/60" aria-hidden="true" />
 							<AIConfigBadge
 								configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
@@ -970,145 +1048,25 @@ export function Layout() {
 				</div>
 
 				<nav className="tf-nav-scroll flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
-					{visibleNavItems.map(({ to, label, icon: Icon, badge, arch }) => {
-						// 「自选」项 — 开启分组侧栏且未整体收起时, 渲染为可展开父项 + 二级分组
-						const isWatchlistExpandable = to === '/watchlist' && groupsInNav && !railMode && watchlistGroups.length > 0
-						return (
-							<div key={to}>
-								{isWatchlistExpandable ? (
-									/* 可展开的自选父项 — 点击切换展开, 不直接跳页 */
-									<button
-										onClick={() => setWatchlistNavExpanded(v => !v)}
-										className={cn(
-											'group relative flex w-full items-center gap-3 rounded-btn px-3 py-2 text-sm transition-all duration-150 ease-smooth',
-											location.pathname === '/watchlist'
-												? 'bg-elevated text-foreground font-medium'
-												: 'text-foreground/75 hover:bg-elevated/70 hover:text-foreground',
-										)}
-									>
-										<span
-											className={cn(
-												'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
-												location.pathname === '/watchlist' ? 'opacity-100' : 'opacity-0',
-											)}
-										/>
-										<Icon className={cn('h-4 w-4 shrink-0 transition-colors', location.pathname === '/watchlist' ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
-										<span className="flex-1 text-left">{label}</span>
-										{watchlistNavExpanded
-											? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" />
-											: <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
-										}
-									</button>
-								) : (
-									/* 普通菜单项 */
-									<NavLink
-										to={to}
-										title={railMode ? label : undefined}
-										className={({ isActive }) =>
-											cn(
-												'group relative flex items-center rounded-btn text-sm transition-all duration-150 ease-smooth',
-												railMode ? 'justify-center px-0 py-2' : 'gap-3 px-3 py-2',
-												isActive
-													? 'bg-elevated text-foreground font-medium'
-													: 'text-foreground/75 hover:bg-elevated/70 hover:text-foreground',
-											)
-										}
-									>
-										{({ isActive }) => (
-											<>
-												{/* active 左侧 accent 竖条指示 */}
-												<span
-													className={cn(
-														'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
-														isActive ? 'opacity-100' : 'opacity-0',
-													)}
-												/>
-												<Icon className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
-												{!railMode && (
-													<span className="flex min-w-0 flex-1 items-center gap-1.5">
-														<span className="truncate">{label}</span>
-														{arch === 'ext' && (
-															<span
-																title="扩展域页面 — 可整体替换/移除而不伤核心"
-																className="shrink-0 font-mono text-[8px] font-medium uppercase leading-none tracking-[0.08em] text-muted/70"
-															>
-																ext
-															</span>
-														)}
-													</span>
-												)}
-												{!railMode && badge && (
-													<span className="ml-auto inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400 shrink-0">
-														{badge}
-													</span>
-												)}
-												{/* 数据同步状态: 同步中转圈, 刚完成显示绿色对勾闪烁 3 秒 */}
-												{to === '/data' && isDataSyncing && !railMode && (
-													<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
-												)}
-												{to === '/data' && !isDataSyncing && dataSyncJustDone && !railMode && (
-													<CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-bull animate-pulse" />
-												)}
-												{/* 监控中心徽标: 仅非监控页且有未读时显示 */}
-												{to === '/monitor' && !railMode && <MonitorBadge active={isActive} />}
-											</>
-										)}
-									</NavLink>
-								)}
-
-								{/* 自选分组二级子菜单 — 展开时显示 */}
-								{isWatchlistExpandable && watchlistNavExpanded && (
-									<div className="mt-0.5 space-y-0.5">
-										<NavLink
-											to="/watchlist"
-											className={({ isActive }) => cn(
-												'flex items-center gap-2 rounded-btn py-1.5 pl-9 pr-3 text-[12px] transition-colors duration-150 ease-smooth',
-												isActive && !location.search
-													? 'text-accent font-medium'
-													: 'text-foreground/60 hover:text-foreground hover:bg-elevated/50',
-											)}
-										>
-											<span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted" />
-											<span>全部</span>
-											{(() => {
-												const info = navGroupPcts['all']
-												return info && info.pct != null ? (
-													<span className={`ml-auto font-mono text-[10px] tabular-nums ${groupPctColor(info.pct)}`} title={groupPctTitle(info)}>
-														{fmtPct(info.pct)}
-													</span>
-												) : null
-											})()}
-										</NavLink>
-										{watchlistGroups.map(group => {
-											const color = resolveWatchlistGroupColor(group.color)
-											const groupPath = `/watchlist?group=${group.id}`
-											const isGroupActive = location.pathname === '/watchlist' && location.search === `?group=${group.id}`
-											const pctInfo = navGroupPcts[group.id]
-											return (
-												<NavLink
-													key={group.id}
-													to={groupPath}
-													className={cn(
-														'flex items-center gap-2 rounded-btn py-1.5 pl-9 pr-3 text-[12px] transition-colors duration-150 ease-smooth',
-														isGroupActive
-															? 'text-accent font-medium'
-															: 'text-foreground/60 hover:text-foreground hover:bg-elevated/50',
-													)}
-												>
-													<span className={`h-1.5 w-1.5 shrink-0 rounded-full ${color.dot}`} />
-													<span className="truncate">{group.name}</span>
-													{pctInfo && pctInfo.pct != null && (
-														<span className={`ml-auto font-mono text-[10px] tabular-nums ${groupPctColor(pctInfo.pct)}`} title={groupPctTitle(pctInfo)}>
-															{fmtPct(pctInfo.pct)}
-														</span>
-													)}
-												</NavLink>
-											)
-										})}
-									</div>
-								)}
-							</div>
-						)
+					{visibleLayout.items.map(node => {
+						if (node.type === 'page') {
+							const entry = navById.get(node.id)
+							return entry ? renderNavItem(entry) : null
+						}
+						const ids = navPageIds(node)
+						return <NavFolder key={node.id} label={node.label} active={node.id === activeGroupId}
+							expanded={isGroupOpen(node)} rail={railMode} popupOpen={railGroupId === node.id}
+							onToggle={() => toggleGroup(node)} onPopupChange={open => setRailGroupId(open ? node.id : null)}
+							indicators={<>
+								{ids.includes('/data') && isDataSyncing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+								{ids.includes('/monitor') && <MonitorBadge active={location.pathname === '/monitor'} />}
+							</>}>
+							{node.children.length === 0 && <p className="px-3 py-2 text-xs leading-5 text-muted">暂无子菜单，请在菜单管理中移入页面。</p>}
+							{node.children.map(page => {
+								const entry = navById.get(page.id)
+								return entry ? renderNavItem(entry, true) : null
+							})}
+						</NavFolder>
 					})}
 					<ExtensionSlot
 						name="layout.navigation.extra"
@@ -1132,113 +1090,113 @@ export function Layout() {
 						</button>
 					</div>
 				) : (
-					<div className="border-t border-border px-3 py-2.5 shrink-0">
-						{realtimeUnavailable && !realtimeProviderName ? (
-							<div>
-								<div className="flex items-center justify-between">
-									<span className="text-xs text-secondary truncate">实时行情</span>
-									<span className="text-[10px] text-muted/80 bg-elevated px-1.5 py-0.5 rounded">
-										不可用
-									</span>
-								</div>
-								<div className="mt-1.5 text-[10px] leading-snug text-muted">
-									当前数据源无实时行情权限,
-									<button
-										type="button"
-										onClick={() => navigate('/settings?tab=data-sources&highlight=data-sources')}
-										className="mx-0.5 text-accent/80 hover:text-accent hover:underline"
-									>
-										去配置数据源
-									</button>
-								</div>
+				<div className="border-t border-border px-3 py-2.5 shrink-0">
+					{realtimeUnavailable && !realtimeProviderName ? (
+						<div>
+							<div className="flex items-center justify-between">
+								<span className="text-xs text-secondary truncate">实时行情</span>
+								<span className="text-[10px] text-muted/80 bg-elevated px-1.5 py-0.5 rounded">
+									不可用
+								</span>
 							</div>
-						) : (
-							/* 实时可用 — 开关 + 跳转设置 */
-							<div className="flex items-center gap-2">
-								<div className="flex min-w-0 flex-1 items-center gap-2">
-									<span className={`inline-block h-2 w-2 shrink-0 rounded-full ${realtimeIndicatorClass}`} />
-									<div className="min-w-0">
-										<div className="text-xs font-medium leading-none text-foreground">实时行情</div>
-										<div className="mt-1 flex min-w-0 items-center gap-1 text-[10px] leading-none">
-											<span className="truncate text-muted">{realtimeProviderName || realtimeModeLabel}</span>
-											<span className="shrink-0 text-border" aria-hidden="true">·</span>
-											<span
-												className={`shrink-0 ${realtimeStatusClass}`}
-												title={quoteDataStale ? '行情拉取持续失败，页面展示的是最后一次成功获取的数据；请检查数据源与网络' : undefined}
-											>{realtimeStatusLabel}</span>
-										</div>
+							<div className="mt-1.5 text-[10px] leading-snug text-muted">
+								当前数据源无实时行情权限,
+								<button
+									type="button"
+									onClick={() => navigate('/settings?tab=data-sources&highlight=data-sources')}
+									className="mx-0.5 text-accent/80 hover:text-accent hover:underline"
+								>
+									去配置数据源
+								</button>
+							</div>
+						</div>
+					) : (
+						/* 实时可用 — 开关 + 跳转设置 */
+						<div className="flex items-center gap-2">
+							<div className="flex min-w-0 flex-1 items-center gap-2">
+								<span className={`inline-block h-2 w-2 shrink-0 rounded-full ${realtimeIndicatorClass}`} />
+								<div className="min-w-0">
+									<div className="text-xs font-medium leading-none text-foreground">实时行情</div>
+									<div className="mt-1 flex min-w-0 items-center gap-1 text-[10px] leading-none">
+										<span className="truncate text-muted">{realtimeProviderName || realtimeModeLabel}</span>
+										<span className="shrink-0 text-border" aria-hidden="true">·</span>
+										<span
+											className={`shrink-0 ${realtimeStatusClass}`}
+											title={quoteDataStale ? '行情拉取持续失败，页面展示的是最后一次成功获取的数据；请检查数据源与网络' : undefined}
+										>{realtimeStatusLabel}</span>
 									</div>
 								</div>
-								<div className="flex shrink-0 items-center gap-1">
-									<button
-										onClick={() => navigate('/settings?tab=monitoring&highlight=quotes')}
-										aria-label="打开实时监控设置"
-										className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground"
-										title="实时监控设置"
-									>
-										<Settings className="h-3.5 w-3.5" />
-									</button>
-									<button
-										type="button"
-										role="switch"
-										aria-checked={realtimeEnabled}
-										aria-label={realtimeToggleTitle}
-										aria-busy={toggleQuote.isPending}
-										onClick={() => handleToggle(!realtimeEnabled)}
-										disabled={realtimeToggleDisabled}
-										title={realtimeToggleTitle}
-										className={cn(
-											'relative inline-flex h-5 w-9 items-center rounded-full border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
-											realtimeEnabled
-												? 'border-accent/50 bg-accent shadow-[0_0_6px_rgba(59,130,246,0.25)]'
-												: 'border-border bg-elevated hover:border-muted',
-											realtimeToggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-										)}
-									>
-										<span className={cn(
-											'inline-block h-3.5 w-3.5 rounded-full border border-black/5 bg-white shadow-sm transition-transform duration-200',
-											realtimeEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
-										)} />
-									</button>
-								</div>
+							</div>
+							<div className="flex shrink-0 items-center gap-1">
+								<button
+									onClick={() => navigate('/settings?tab=monitoring&highlight=quotes')}
+									aria-label="打开实时监控设置"
+									className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground"
+									title="实时监控设置"
+								>
+									<Settings className="h-3.5 w-3.5" />
+								</button>
+								<button
+									type="button"
+									role="switch"
+									aria-checked={realtimeEnabled}
+									aria-label={realtimeToggleTitle}
+									aria-busy={toggleQuote.isPending}
+									onClick={() => handleToggle(!realtimeEnabled)}
+									disabled={realtimeToggleDisabled}
+									title={realtimeToggleTitle}
+									className={cn(
+										'relative inline-flex h-5 w-9 items-center rounded-full border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
+										realtimeEnabled
+											? 'border-accent/50 bg-accent shadow-[0_0_6px_rgba(59,130,246,0.25)]'
+											: 'border-border bg-elevated hover:border-muted',
+										realtimeToggleDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+									)}
+								>
+									<span className={cn(
+										'inline-block h-3.5 w-3.5 rounded-full border border-black/5 bg-white shadow-sm transition-transform duration-200',
+										realtimeEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+									)} />
+								</button>
+							</div>
+						</div>
+					)}
+
+					{/* 状态提示 */}
+					{realtimeEnabled
+						&& (!realtimeUnavailable || realtimeProviderName)
+						&& (isPaused || (isWatchlistMode && !dismissFreeHint && !realtimeProviderName))
+						&& (
+							<div className="mt-1.5 text-[10px] leading-snug space-y-0.5">
+								{isWatchlistMode && !dismissFreeHint && !realtimeProviderName && (
+									<div className="flex items-start gap-1 text-amber-400/80">
+										<span className="flex-1">自选实时模式监控前 5 只，全市场实时依赖数据源支持</span>
+										<button
+											onClick={() => setDismissFreeHint(true)}
+											className="text-amber-400/50 hover:text-amber-400 shrink-0 transition-colors"
+											title="关闭提示"
+										>
+											<X className="h-2.5 w-2.5" />
+										</button>
+									</div>
+								)}
+								{isPaused && (
+									<div className="text-warning/80">数据同步运行中，实时行情已临时暂停</div>
+								)}
 							</div>
 						)}
-
-						{/* 状态提示 */}
-						{realtimeEnabled
-							&& (!realtimeUnavailable || realtimeProviderName)
-							&& (isPaused || (isWatchlistMode && !dismissFreeHint && !realtimeProviderName))
-							&& (
-								<div className="mt-1.5 text-[10px] leading-snug space-y-0.5">
-									{isWatchlistMode && !dismissFreeHint && !realtimeProviderName && (
-										<div className="flex items-start gap-1 text-amber-400/80">
-											<span className="flex-1">自选实时模式监控前 5 只，全市场实时依赖数据源支持</span>
-											<button
-												onClick={() => setDismissFreeHint(true)}
-												className="text-amber-400/50 hover:text-amber-400 shrink-0 transition-colors"
-												title="关闭提示"
-											>
-												<X className="h-2.5 w-2.5" />
-											</button>
-										</div>
-									)}
-									{isPaused && (
-										<div className="text-warning/80">数据同步运行中，实时行情已临时暂停</div>
-									)}
-								</div>
-							)}
-						{!isWatchlistMode && (!realtimeUnavailable || !!realtimeProviderName) && (
-							<SidebarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} />
-						)}
-					</div>
+					{!isWatchlistMode && (!realtimeUnavailable || !!realtimeProviderName) && (
+						<SidebarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} />
+					)}
+				</div>
 				)}
 
 				<div className={cn('border-t border-border py-3 shrink-0', railMode ? 'px-2 flex flex-col items-center gap-1' : 'px-2')}>
 					<div className={railMode ? 'flex flex-col items-center gap-1' : 'flex items-center gap-1'}>
 						<ThemeToggle />
 						<NavLink
-							to="/settings"
-							title={railMode ? '设置' : undefined}
+							to={prefs?.nav_layout ? '/settings?tab=pages&section=menus' : '/settings'}
+							title={railMode ? (prefs?.nav_layout ? '菜单管理' : '设置') : undefined}
 							className={({ isActive }) =>
 								cn(
 									'group relative flex items-center rounded-btn text-sm transition-all duration-150 ease-smooth',
@@ -1258,7 +1216,7 @@ export function Layout() {
 										)}
 									/>
 									<Settings className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
-									{!railMode && <span className="whitespace-nowrap">设置</span>}
+									{!railMode && <span className="whitespace-nowrap">{prefs?.nav_layout ? '菜单管理' : '设置'}</span>}
 									{!railMode && version && (
 										<span className="ml-auto flex items-center gap-1.5 font-mono text-[10px] text-muted/50 select-none shrink-0">
 											{version}
@@ -1299,40 +1257,40 @@ export function Layout() {
 				</div>
 			</aside>
 
-      <motion.main
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-        className="h-full overflow-auto scrollbar-gutter-stable"
-      >
-        {streamStatus === 'reconnecting' && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="fixed bottom-4 left-1/2 z-[9998] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning shadow-lg backdrop-blur-md"
-          >
-            <WifiOff className="h-3 w-3 shrink-0 animate-pulse" />
-            与服务连接已断开 · 正在重连
-          </div>
-        )}
-        <DailyDataHealthNotice />
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center py-24">
-              <Loader2 className="h-5 w-5 animate-spin text-muted" />
-            </div>
-          }
-        >
-          <Outlet />
-        </Suspense>
-      </motion.main>
-      <ToastContainer />
-      <AlertToastContainer />
-      <AiAnalysisHost />
-      <AiReportBubble />
-      <StockAnalysisHost />
-      <StockAnalysisBubble />
-      <StockPreviewHost />
+			<motion.main
+				initial={{ opacity: 0, y: 8 }}
+				animate={{ opacity: 1, y: 0 }}
+				transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+				className="h-full overflow-auto scrollbar-gutter-stable"
+			>
+				{streamStatus === 'reconnecting' && (
+					<div
+						role="status"
+						aria-live="polite"
+						className="fixed bottom-4 left-1/2 z-[9998] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning shadow-lg backdrop-blur-md"
+					>
+						<WifiOff className="h-3 w-3 shrink-0 animate-pulse" />
+						与服务连接已断开 · 正在重连
+					</div>
+				)}
+				<DailyDataHealthNotice />
+				<Suspense
+					fallback={
+						<div className="flex items-center justify-center py-24">
+							<Loader2 className="h-5 w-5 animate-spin text-muted" />
+						</div>
+					}
+				>
+					<Outlet />
+				</Suspense>
+			</motion.main>
+			<ToastContainer />
+			<AlertToastContainer />
+			<AiAnalysisHost />
+			<AiReportBubble />
+			<StockAnalysisHost />
+			<StockAnalysisBubble />
+			<StockPreviewHost />
 
 			{/* 开启实时行情 + 排队中的挖掘任务 → 冲突确认 */}
 			{miningQueuedWarning != null && (
@@ -1347,10 +1305,7 @@ export function Layout() {
 						</p>
 						<div className="mt-4 flex justify-end gap-2">
 							<button type="button" onClick={() => setMiningQueuedWarning(null)} className="h-8 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated">取消</button>
-							<button type="button" onClick={() => {
-								setMiningQueuedWarning(null);
-								void doEnableRealtime()
-							}} className="h-8 rounded-btn bg-accent px-3 text-xs font-semibold text-white hover:opacity-90">仍要开启</button>
+							<button type="button" onClick={() => { setMiningQueuedWarning(null); void doEnableRealtime() }} className="h-8 rounded-btn bg-accent px-3 text-xs font-semibold text-white hover:opacity-90">仍要开启</button>
 						</div>
 					</div>
 				</div>
