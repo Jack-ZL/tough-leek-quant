@@ -70,6 +70,7 @@ Before changing anything, check the upstream and downstream along this chain. It
 | `backend/app/data_providers/` | Data source interfaces, normalized models, and custom data sources | Define the dataset contract first for any new data capability, then implement it in a provider |
 | `backend/app/plugins/` | Plugin discovery, loading, and plugin protocol | Plugin failure must not break main flows when the plugin is not enabled |
 | `backend/app/indicators/` | Indicator computation and the enriched pipeline | Keep it vectorized; be explicit about raw price, adjusted price, and output units |
+| `backend/app/market.py` | Per-market trading rules (sessions, lot size, currency, price-limit capability, probe basket, time zone) and the symbol-format contract | The **single source of truth** for market differences. Adding a market = adding a row here, never adding an `if market == ...` branch elsewhere (enforced by `tests/test_market_architecture_guard.py`) |
 | `backend/app/strategy/` | Strategy registration, execution, monitoring, and AI strategies | Built-in and custom strategies should share the execution contract as much as possible; do not create divergent semantics |
 | `backend/app/backtest/` | Backtesting, optimization, walk-forward optimization, and workers | Strictly isolate signal generation from fill simulation to prevent look-ahead bias |
 | `frontend/src/lib/api.ts` | Frontend API requests and type contracts | Backend contract changes must be reflected in types and callers |
@@ -108,10 +109,14 @@ The `bid_volumes` / `ask_volumes` of the five-level order book follow the existi
 ### 3.3 Dates, Trading Days, and Time Zones
 
 - Windows, N-day lookbacks, and batch recomputation all follow actual trading days. Natural days must never be substituted directly.
-- A-share trading sessions are handled uniformly in Beijing time. The server time zone must not become an implicit input to business logic.
+- Trading sessions, half-days, and the time zone are **per-market rules** read from `backend/app/market.py` (`MarketTradingRules`), not module constants. A-share sessions remain Beijing wall-clock time; the server time zone must not become an implicit input to business logic.
+- Every session/trading-day helper takes a keyword-only `market` argument that **defaults to `Market.CN`**. Callers that do not pass it get exactly the pre-multi-market behavior — this default is the mechanism by which A-share paths stay untouched. Never add a positional `market` parameter to these helpers.
+- Time-zone offsets are fixed `UTC+8` for both CN and HK (deliberately not `ZoneInfo`: the container TZ is already documented as unreliable, and `ZoneInfo` would additionally require `tzdata` in the image — an avoidable failure mode). `iana_timezone` on the rules table is display/documentation only.
+- Helpers in `backend/app/market_time.py` perform **no implicit time-zone conversion**: a naive or UTC `datetime` is taken at face value as market-local wall-clock time. Only `trading_minutes_elapsed_from_ts` converts (it builds a `datetime` from a Unix-ms timestamp using `rules.tz`). Do not "helpfully" add `astimezone` — it would shift every existing call site by 8 hours.
 - The `datetime` of minute bars is uniformly Beijing wall-clock time (naive, e.g. `09:35:00`); data source entries (`_normalize_minute` / `_try_custom_minute` in `kline_sync`) must enforce normalization. UTC semantics must never be stored or emitted.
 - Daily bars, minute bars, and realtime snapshots must have an explicit trading-date attribution, especially around the lunch break, after close, and across-day restarts.
 - Minute bars for stocks, ETFs, and indices are stored and routed separately. Never guess the asset type from the code format alone.
+- Trading-day probes are **cached and single-flighted per market**. CN and HK holidays do not overlap (National Day: CN closes a week, HK only Oct 1; Lunar New Year: HK closes longer; Christmas/Easter: HK closes, CN does not), so a shared cache bucket or a market-less single-flight key silently hands one market the other's verdict. It never raises — it just makes HK spin-poll on holidays, or misjudge a trading day as closed and **not pull quotes all day**.
 
 ### 3.4 Historical Share Capital and Turnover Rate
 
@@ -120,6 +125,32 @@ The `bid_volumes` / `ask_volumes` of the five-level order book follow the existi
 - The current-day dimension table, the financial announcement date, and the reporting period are different concepts. A reporting period must never leak data that has not been announced yet.
 - When modifying share-capital completion or enriched recomputation, both paths must be covered: "historical share capital available" and "fallback without historical share capital".
 
+### 3.5 Market Dimension (A-share / HK)
+
+Market differences are data, not control flow. `backend/app/market.py` holds a frozen `MarketTradingRules` row per market (sessions, half-days, lot size, currency, `has_price_limit`, probe basket, time zone, stale-buffer window). Adding a market means adding a row — **never** scattering `if market == "HK":` through the codebase.
+
+- **Enforced, not merely recommended.** `tests/test_market_architecture_guard.py` parses every file under `backend/app/` with `ast` and fails on any comparison between a `market` expression and a market literal (`"HK"`, `Market.HK`, `market in ("HK", "US")`, …). It is an AST test rather than a CI `grep` because `grep` also hits the docstrings that quote this anti-pattern as a warning. The allowlist is empty and should stay near-empty; if a violation appears, the fix is to add a field to `MarketTradingRules` and read `rules.<field>`.
+- **Declare capabilities as booleans/parameters.** Consumers read `rules.has_price_limit`, `rules.lot_size`, `rules.sessions`. A market that lacks a capability must degrade through the rules table, not through a branch at each call site.
+- **`rules_for(None)` raises.** It does *not* default to CN. Silently defaulting would compute HK with A-share rules (±10% limits, T+1, 100-share lots) and produce plausible-looking wrong numbers with no signal. A caller that genuinely wants a default must write `rules_for(market or Market.CN)` so the decision is greppable.
+- **No price limit means `None` / `null`, never `0` and never a large number.** `price_limit_pct(...) -> float | None` returns `None` for HK; `polars_price_limit_pct` returns an all-null `Float64` expression whose **length follows the symbol column** (a bare `pl.lit(None)` is a length-1 scalar: it broadcasts inside `with_columns` so the bug hides, then silently yields one row if a caller switches to `select`). Downstream `limit_up_price` / `limit_down_price` fall to `null`, consistent with §3.2.
+- **A-share-only rules must fail closed at the entry.** `board_limit_pct`, `no_limit_window_days`, `no_limit_window_margin_days`, and `is_no_limit_day` call `assert_symbol_market(symbol, Market.CN)`. Without it, `board_limit_pct("00700.HK")` returns `0.10` — i.e. "HK has a 10% price limit". The guard sits on `board_limit_pct` alone and is inherited for free by the whole numpy chain (`numpy_limit_pct_vectors` → `write_numpy_price_limit_matrix` → `numpy_price_limit_matrix`), so mixed-market input raises without any extra traversal.
+- **The guard must be ordered before any early return.** In `price_limit_pct`, `assert_symbol_market` runs *before* the `has_price_limit` check; the reverse order lets an A-share symbol declared as `market="HK"` silently return `None` (limit prices uncomputable, limit detection dead, no error).
+- **Three-tier symbol strictness — deliberately different, do not unify.**
+
+  | Function | Strictness | Why |
+  | --- | --- | --- |
+  | `is_valid_symbol` | **Strict**: no `.strip()`, no `.upper()`, `fullmatch` | Storage/API boundary. Accepting `"600519.SH "` lets a non-canonical symbol enter storage and coexist as a duplicate row with `"600519.SH"`, breaking joins and dedup |
+  | `infer_market` | **Lenient**: `.strip().upper()`, unknown → CN | Routing only. Misrouting HK data into the CN pipeline is worse than routing a non-canonical HK symbol |
+  | `assert_symbol_market` | **Lenient on case and on unmatched codes**; raises only when the symbol *positively matches another market* | It guards against the wrong **market**, not the wrong **case** or **format**. Being strict on case would let `"00700.hk"` pass the CN guard (judged "not HK") — exactly what it must catch. Being strict on format breaks the many internal paths that use bare 6-digit codes (`"000001"`, `"300001"`) mixed in the same column as suffixed ones |
+
+  Known blind spot: a **bare** other-market code (`"00700"` without `.HK`) is not caught. Acceptable — HK data is normalized to `00700.HK` by the provider layer before it reaches internal paths.
+- **One symbol judgment, two carriers.** The Python regex and the SQL regex are generated from the same body string (`_SYMBOL_PATTERN_BODY`). `tests/test_market.py` asserts the two carriers are character-identical **and** runs a dual-carrier parity check against a real DuckDB table. Two divergences were caught this way and both were real bugs: `.strip()` (DuckDB does not strip) and `.match()` with a `$` anchor (Python's `$` also matches just before a trailing newline; DuckDB RE2's does not). Always use `fullmatch`, never `match`, with these patterns.
+- **Resolution direction is "make Python strict", not "make SQL lenient".** Adding `trim()` in SQL would have hidden the whitespace divergence instead of fixing it.
+- **The half-day (半日市) table ships empty.** This is deliberate, because the risk is asymmetric: missing a half-day degrades to a full day (volume ratio underestimated ~2.2×, `330/150`, but no data lost, and it self-heals once the date is registered); wrongly marking a full day as a half-day **loses the entire afternoon session, unrecoverably**. HKEX announces half-day dates annually with no free API, and several are lunar and cannot be computed without a lunar-calendar library. Register dates from the HKEX announcement; until then HK volume ratio is understated on roughly three days a year.
+- **`Market` is a `StrEnum`, not `(str, Enum)`.** With `(str, Enum)`, `str(Market.CN)` and f-string interpolation both yield `"Market.CN"`, so `f"{market}" == "CN"` is always false and `cache[f"{market}"]` and `cache["CN"]` become two different keys — silent branch failure and silent cache misses, with no exception. This is the same shape as QuantMind's `str(OrderSide.SELL) == "OrderSide.SELL"` bug that zeroed HK stamp duty. `tests/test_market.py` pins `str()` / f-string / `%s` behavior.
+
+**Checklist for adding a market:** add the `Market` member → add its `_SYMBOL_PATTERN_BODY` entry → add a `MarketTradingRules` row → add its probe chain to `_PROBE_CHAIN_NAMES` (exclude probes whose endpoints are market-specific *by construction*, not by an in-function market check) → confirm `test_market_architecture_guard.py` and the dual-carrier parity test still pass → confirm the full backend suite is green without editing existing A-share tests.
+
 ## 4. Data Source Plugin Requirements
 
 Data sources are already pluginized. Any general feature must access data through provider capabilities and normalized datasets. TickFlow SDK calls must never be hardcoded into strategies, monitoring, backtests, APIs, or frontend flows.
@@ -127,6 +158,7 @@ Data sources are already pluginized. Any general feature must access data throug
 - Use the existing `get_provider()`, `provider_has_dataset()`, and preferences-based routing capabilities.
 - Supported datasets include but are not limited to `daily`, `adj_factor`, `minute`, `full_minute` (intraday full-market minute persistence), `realtime`, `depth5`, and `financial`. New datasets must first define a clear input/output contract.
 - Providers are responsible for converting vendor fields, units, dates, and symbol formats into the internal standard format.
+- Symbol format specifically means the **canonical** form (`600519.SH`, `00700.HK`). Normalization is the provider's job, not the consumer's: `is_valid_symbol` at the storage/API boundary is deliberately strict (no strip, no case folding, `fullmatch`) so a non-canonical symbol cannot enter storage and coexist as a duplicate row with the canonical one. Internal guards are deliberately lenient about *format* and reject only symbols that positively match another market — the split is intentional, see §3.5.
 - Upper-layer services depend on standard fields and capability declarations, not on vendor response structures.
 - Only features explicitly marked as TickFlow-exclusive may depend on TickFlow directly, and they must not affect other providers.
 - When a provider lacks a capability, the system must clearly indicate it, skip the feature, or fail closed. Silently switching to wrong data or wrong semantics is forbidden.
@@ -236,6 +268,7 @@ Execute the minimum sufficient verification based on the scope of the change. Th
 | API contracts | Service tests + API tests; check success, no-data, and error responses |
 | Data sources or plugins | Provider contract tests, missing capability, empty data, field/unit normalization tests |
 | Indicators, adjustment, turnover rate, limit-up/limit-down | Numeric assertions on fixed samples, covering historical boundaries and degradation paths |
+| Market dimension (new market; session / half-day / lot-size / price-limit rules; symbol format) | `tests/test_market.py`, `test_market_time.py`, `test_market_architecture_guard.py`, `test_trading_day.py`, `test_price_limits.py`, **then the full backend suite**. The "A-share zero impact" claim is only provable against the whole suite, and existing A-share tests must pass **without edits** — if an existing test needs changing, the default-to-CN contract has been broken |
 | Strategies or monitoring | Parameter changes, cache invalidation, asset switching, restart/concurrency paths |
 | Backtesting | Signal day vs. fill day, T+1, fees, slippage, non-fillable cases, data gaps |
 | Caching or performance | Hit/invalidation tests, concurrent snapshot tests; before/after benchmarks when necessary |

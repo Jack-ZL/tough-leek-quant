@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
@@ -9,6 +9,7 @@ import pytest
 from app.api import kline
 from app.backtest.matrix import load_market_data_matrix_from_parquet
 from app.indicators import pipeline
+from app.market import Market
 from app.price_limits import (
     numpy_limit_price,
     numpy_price_limit_matrix,
@@ -496,3 +497,174 @@ def test_chinext_302_no_limit_window_follows_gem_registration_date():
 
     # 2023-02-17 主板注册制之前、2020-08-24 创业板注册制之后上市
     assert no_limit_window_days("302001.SZ", date(2021, 6, 1)) == 5
+
+
+# ---- 港股 (PR1 地基): 无涨跌停市场 + A 股专属函数的护栏 ----
+#
+# 港股没有涨跌幅限制, 因此 limit_pct 必须是 **None / null**, 不是 0 也不是一个
+# 很大的数: 0 会让涨停价 == 跌停价 == 昨收, 大数会让涨停判定永不触发。两者都
+# 不报错, 只是产出一个看起来合理的错误数字。
+# A 股专属规则 (板块涨跌幅、注册制新股无涨跌幅窗口) 对港股无意义, 必须在入口
+# 当场报错, 而不是静默套用 A 股规则。
+
+HK_SYMBOL = "00700.HK"
+HK_TRADE_DATE = date(2026, 10, 16)
+
+
+@pytest.mark.parametrize(
+    ("fn_name", "args"),
+    [
+        ("board_limit_pct", (HK_SYMBOL,)),
+        ("no_limit_window_days", (HK_SYMBOL, date(2020, 1, 1))),
+        ("no_limit_window_margin_days", (HK_SYMBOL,)),
+        ("is_no_limit_day", (HK_SYMBOL, date(2020, 1, 1), HK_TRADE_DATE)),
+    ],
+)
+def test_a_share_only_functions_reject_hk_symbols(fn_name, args):
+    """A 股专属函数拿到港股代码必须抛错。
+
+    ``is_no_limit_day`` 自身没有护栏, 靠内部调 ``no_limit_window_days`` 间接触达
+    —— 一并参数化, 免得日后有人把它改成不走那条路而静默失去护栏。
+    """
+    from app import price_limits as price_limits_mod
+    from app.market import SymbolMarketMismatchError
+
+    with pytest.raises(SymbolMarketMismatchError):
+        getattr(price_limits_mod, fn_name)(*args)
+
+
+@pytest.mark.parametrize("market_arg", ["HK", "hk", Market.HK])
+def test_price_limit_pct_is_none_for_hk(market_arg):
+    """港股 limit_pct = None; market 接受枚举与字符串别名 (API query 天然是字符串)。"""
+    assert price_limit_pct(HK_SYMBOL, HK_TRADE_DATE, market=market_arg) is None
+
+
+def test_cross_market_declaration_raises_instead_of_returning_none():
+    """⭐ 护栏必须在 ``has_price_limit`` 提前返回**之前**。
+
+    顺序反了的话, A 股代码配上 market=HK 会静默拿到 None (「该市场无涨跌停」):
+    涨停价算不出来、涨停判定静默失效, 且没有任何报错。反向 (港股代码配 A 股
+    市场) 同样必须报错 —— 默认市场就是 CN, 漏传 market 是最常见的失误。
+    """
+    from app.market import SymbolMarketMismatchError
+
+    with pytest.raises(SymbolMarketMismatchError):
+        price_limit_pct("600519.SH", HK_TRADE_DATE, market="HK")
+    with pytest.raises(SymbolMarketMismatchError):
+        price_limit_pct(HK_SYMBOL, HK_TRADE_DATE)                 # 默认 market=CN
+    with pytest.raises(SymbolMarketMismatchError):
+        price_limit_pct(HK_SYMBOL, HK_TRADE_DATE, market="CN")
+
+
+def test_polars_hk_branch_is_null_and_full_length_in_both_contexts():
+    """⭐ 港股分支必须恒 null **且长度跟随 symbol 列**, 在 select 与 with_columns 下都对。
+
+    裸 ``pl.lit(None, dtype=pl.Float64)`` 是长度 1 的标量: 在 ``with_columns``
+    里会广播到帧高所以看不出问题, 一旦调用方改用 ``select`` 就静默只出 1 行
+    (本文件上方的 A 股用例正是 select 写法, 说明这是活的调用形态)。
+    """
+    df = pl.DataFrame({
+        "symbol": [HK_SYMBOL, "00005.HK", "09988.HK"],
+        "trade_date": [HK_TRADE_DATE] * 3,
+        "is_risk_warning": [False] * 3,
+    })
+    expr = polars_price_limit_pct(
+        pl.col("symbol"), pl.col("trade_date"), pl.col("is_risk_warning"), market="HK"
+    )
+
+    selected = df.select(expr).to_series()
+    assert len(selected) == 3, "select 上下文长度塌成 1 就是裸 pl.lit(None) 回归"
+    assert selected.to_list() == [None, None, None]
+    assert selected.dtype == pl.Float64, "null 列必须仍是 Float64, 否则下游算术会炸类型"
+
+    joined = df.with_columns(expr.alias("pct"))
+    assert joined.height == 3
+    assert joined["pct"].to_list() == [None, None, None]
+
+
+def test_polars_hk_null_propagates_to_limit_prices():
+    """null limit_pct 必须让 limit_up/down 落 null, 而不是 0 或昨收本身。
+
+    ⚠️ 必须显式 ``.alias()``: ``polars_limit_price`` 返回的表达式根名是
+    ``prev_close``, 位置传进 ``with_columns`` 会按根名自动命名 → **静默覆盖
+    昨收列**。这不是港股专属陷阱, 但港股分支产出 null, 覆盖后整列昨收变 null,
+    下游算术全废, 所以这里顺带钉住。
+    """
+    df = pl.DataFrame({
+        "symbol": [HK_SYMBOL, "00005.HK"],
+        "trade_date": [HK_TRADE_DATE] * 2,
+        "is_risk_warning": [False] * 2,
+        "prev_close": [500.0, 100.0],
+    })
+    pct = polars_price_limit_pct(
+        pl.col("symbol"), pl.col("trade_date"), pl.col("is_risk_warning"), market="HK"
+    )
+    out = df.with_columns(
+        polars_limit_price(pl.col("prev_close"), pct, up=True).alias("limit_up_price"),
+        polars_limit_price(pl.col("prev_close"), pct, up=False).alias("limit_down_price"),
+    )
+
+    assert out["prev_close"].to_list() == [500.0, 100.0], "昨收不得被改写"
+    for col in ("limit_up_price", "limit_down_price"):
+        assert out[col].to_list() == [None, None]
+        assert out[col].dtype == pl.Float64, f"{col} 必须仍是 Float64, 否则下游算术炸类型"
+
+
+def test_a_share_polars_path_is_unchanged():
+    """A 股默认路径零回归: 不传 market 时行为与改造前逐位一致。"""
+    df = pl.DataFrame({
+        "symbol": ["600519.SH", "300750.SZ"],
+        "trade_date": [HK_TRADE_DATE] * 2,
+        "is_risk_warning": [False] * 2,
+        "prev_close": [100.0, 100.0],
+    })
+    pct = polars_price_limit_pct(pl.col("symbol"), pl.col("trade_date"), pl.col("is_risk_warning"))
+    out = df.with_columns(
+        pct.alias("pct"),
+        polars_limit_price(pl.col("prev_close"), pct, up=True).alias("limit_up_price"),
+    )
+    assert out["pct"].to_list() == pytest.approx([0.10, 0.20])
+    assert out["limit_up_price"].to_list() == pytest.approx([110.0, 120.0])
+
+
+def test_numpy_chain_rejects_mixed_market_input():
+    """numpy 链经 ``board_limit_pct`` 免费继承护栏: 混合市场输入当场报错。
+
+    护栏只加在 ``board_limit_pct`` 一处, 就覆盖了
+    numpy_limit_pct_vectors → write_numpy_price_limit_matrix → numpy_price_limit_matrix
+    整条链 (它们都逐 symbol 调它), 无需新增遍历。
+    """
+    from app.market import SymbolMarketMismatchError
+    from app.price_limits import numpy_limit_pct_vectors
+
+    names = ["贵州茅台", "腾讯控股"]
+    with pytest.raises(SymbolMarketMismatchError):
+        numpy_limit_pct_vectors(["600519.SH", HK_SYMBOL], names)
+    with pytest.raises(SymbolMarketMismatchError):
+        numpy_price_limit_matrix([HK_TRADE_DATE], ["600519.SH", HK_SYMBOL], names)
+
+
+def test_numpy_matrix_a_share_date_semantics_unchanged():
+    """A 股矩阵的三段日期语义零回归 (创业板注册制前回落主板 / ST 改限日前 5%)。"""
+    from app.price_limits import (
+        GEM_20PCT_LIMIT_START_DATE,
+        MAIN_BOARD_ST_LIMIT_CHANGE_DATE,
+    )
+
+    symbols = ["600519.SH", "300750.SZ", "832000.BJ", "600519.SH"]
+    names = ["贵州茅台", "宁德时代", "北交所票", "ST邯郸"]
+    dates = [
+        GEM_20PCT_LIMIT_START_DATE - timedelta(days=1),   # 创业板注册制前
+        MAIN_BOARD_ST_LIMIT_CHANGE_DATE - timedelta(days=1),  # ST 改限前
+        MAIN_BOARD_ST_LIMIT_CHANGE_DATE,                  # ST 改限当日
+    ]
+    matrix = numpy_price_limit_matrix(dates, symbols, names)
+
+    assert matrix.shape == (3, 4)
+    assert matrix.dtype == np.float32
+    # 注册制前: 创业板回落主板 10%; 主板 ST 5%; 北交所 30%
+    assert list(matrix[0]) == pytest.approx([0.10, 0.10, 0.30, 0.05])
+    # 注册制后、ST 改限前: 创业板 20%; ST 仍 5%
+    assert list(matrix[1]) == pytest.approx([0.10, 0.20, 0.30, 0.05])
+    # ST 改限日起: 主板 ST 回到 10%
+    assert list(matrix[2]) == pytest.approx([0.10, 0.20, 0.30, 0.10])

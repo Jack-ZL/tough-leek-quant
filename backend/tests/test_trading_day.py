@@ -8,10 +8,11 @@ tickflow 戳的 OR 语义与开盘缓冲窗、失败/无权限 → None、TTL �
 
 from __future__ import annotations
 
-from datetime import date, datetime, time as dt_time, timezone, timedelta
+from datetime import date, datetime, time as dt_time, timezone, timedelta, UTC
 
 import pytest
 
+from app.market import CN_RULES, HK_RULES, Market, rules_for
 from app.services import trading_day
 from app.services.trading_day import is_trading_day, reset_cache
 
@@ -348,3 +349,338 @@ def test_next_trading_day_from_weekend_is_monday():
 def test_next_trading_day_from_weekday_is_next_weekday():
     thu = datetime(2026, 10, 15, 20, 0, tzinfo=CN)  # 周四 (节假日近似)
     assert trading_day.next_trading_day(thu) == date(2026, 10, 16)
+
+
+# ---- 多市场隔离 (PR1 地基: A 股零影响 + 港股不串桶) ----
+#
+# 这里钉住两个曾经的「串市场」隐患, 两者都**不报错**, 只静默给出错市场的结论:
+#   1. 缓存曾是单个模块级 _Cache 实例 → CN 先探得 True, 同日 HK 直接读走 CN 的
+#      结论。CN/HK 节假日并不重合 (国庆 CN 休一周、HK 只休 10/1; 农历新年 HK
+#      休得更长; 圣诞/复活节 HK 休而 CN 不休), 于是港股要么在假日空转轮询,
+#      要么把交易日误判为休市而**整天不拉行情**。
+#   2. 单飞键曾是 (now.date(), epoch) 不含市场 → 同日两市场共用一个条目,
+#      后到的市场拿走先到市场的结论。
+
+HK_TZ = CN  # 港股同为 UTC+8 固定偏移 (app/market.py: 刻意不用 ZoneInfo)
+MONDAY = datetime(2026, 9, 7, 10, 0, tzinfo=CN)
+
+
+def _stub(monkeypatch, name, verdict):
+    """把探针换成「记录调用并返回固定结论」的桩, 返回调用记录列表。"""
+    calls: list[datetime] = []
+
+    def _probe(now):
+        calls.append(now)
+        return verdict
+
+    monkeypatch.setattr(trading_day, name, _probe)
+    return calls
+
+
+def _boom(monkeypatch, name):
+    """把探针换成爆炸桩 — 用于验证该市场的链**不含**它。"""
+    def _probe(now):
+        raise AssertionError(f"{name} 不应被调用")
+
+    monkeypatch.setattr(trading_day, name, _probe)
+
+
+def test_default_market_is_cn(monkeypatch):
+    """不传 market 必须等价于传 CN, 且走 A 股探测链 —— 这是「A 股零影响」的实现方式。"""
+    fuyao = _stub(monkeypatch, "_probe_fuyao", True)
+    _boom(monkeypatch, "_probe_tickflow_hk")
+
+    assert is_trading_day(MONDAY) is True
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert len(fuyao) == 1, "第二次应命中缓存, 且默认市场就是 CN"
+
+
+def test_cn_and_hk_verdicts_do_not_contaminate_each_other(monkeypatch):
+    """⭐ 核心回归: 同一天 CN=True / HK=False 必须能共存。"""
+    _stub(monkeypatch, "_probe_fuyao", None)      # fuyao 未配置 → 落到 tickflow
+    _stub(monkeypatch, "_probe_tickflow", True)   # A 股在交易
+    _stub(monkeypatch, "_probe_tickflow_hk", False)  # 港股休市 (如 10/1)
+
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+    # 反向顺序也要成立 (缓存写入顺序不应影响结论)
+    reset_cache()
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+
+
+def test_cache_hit_does_not_reprobe_per_market(monkeypatch):
+    """每个市场各自缓存: 重复调用不重探, 且两市场互不顶掉对方的缓存。"""
+    cn = _stub(monkeypatch, "_probe_fuyao", True)
+    hk = _stub(monkeypatch, "_probe_tickflow_hk", False)
+
+    for _ in range(3):
+        assert is_trading_day(MONDAY, market=Market.CN) is True
+        assert is_trading_day(MONDAY, market=Market.HK) is False
+    assert len(cn) == 1
+    assert len(hk) == 1
+
+
+def test_reset_cache_scoped_to_one_market(monkeypatch):
+    """``reset_cache(market)`` 只清该市场, 另一市场的结论仍走缓存。"""
+    cn = _stub(monkeypatch, "_probe_fuyao", True)
+    hk = _stub(monkeypatch, "_probe_tickflow_hk", False)
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+
+    reset_cache(Market.CN)
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+    assert len(cn) == 2, "CN 被清了, 应重探一次"
+    assert len(hk) == 1, "HK 未被清, 不得重探"
+
+
+def test_reset_cache_without_market_clears_all(monkeypatch):
+    """``reset_cache()`` 清所有市场 (autouse fixture 依赖此语义做用例间隔离)。"""
+    cn = _stub(monkeypatch, "_probe_fuyao", True)
+    hk = _stub(monkeypatch, "_probe_tickflow_hk", False)
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+
+    reset_cache()
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+    assert len(cn) == 2
+    assert len(hk) == 2
+
+
+def test_hk_chain_excludes_fuyao(monkeypatch):
+    """港股链**不含** fuyao: 其日历端点是 /api/a-share/calendar/trading-days, A 股专属。
+
+    用「不入链」而不是「入链后判市场」—— 后者每加一个市场都要改函数体。
+    """
+    _boom(monkeypatch, "_probe_fuyao")
+    hk = _stub(monkeypatch, "_probe_tickflow_hk", True)
+
+    assert is_trading_day(MONDAY, market=Market.HK) is True
+    assert len(hk) == 1
+
+
+def test_cn_chain_tries_fuyao_before_tickflow(monkeypatch):
+    """A 股链保持原有优先级: fuyao 日历权威, 给出结论后不再打 tickflow。"""
+    _stub(monkeypatch, "_probe_fuyao", False)
+    _boom(monkeypatch, "_probe_tickflow")
+
+    assert is_trading_day(MONDAY, market=Market.CN) is False
+
+
+def test_probe_chain_registry_covers_every_market():
+    """每个市场都必须有链, 且链上的名字都真实存在 (拼错会在运行时才炸)。"""
+    import sys
+
+    module = sys.modules[trading_day.__name__]
+    assert set(trading_day._PROBE_CHAIN_NAMES) == set(Market)
+    for market, names in trading_day._PROBE_CHAIN_NAMES.items():
+        assert names, f"{market} 的探测链为空"
+        for name in names:
+            assert callable(getattr(module, name, None)), f"{market} 链上的 {name} 不存在"
+
+
+@pytest.mark.parametrize("bad", ["US", "us", None, 123, "", "CN.HK"])
+def test_unknown_market_raises_value_error(bad):
+    """未知市场必须报错, 不得静默回落到 A 股规则。
+
+    静默回落的后果是用 ±10% 涨跌停 / T+1 / 100 股一手去算港股, 每个数字都
+    「看起来合理」, 没有任何信号。
+    """
+    with pytest.raises(ValueError):
+        is_trading_day(MONDAY, market=bad)
+    with pytest.raises(ValueError):
+        trading_day.cached_verdict(MONDAY, market=bad)
+    with pytest.raises(ValueError):
+        trading_day.next_trading_day(MONDAY, market=bad)
+
+
+@pytest.mark.parametrize("alias", ["cn", "CN", Market.CN, "hk", "HK", Market.HK])
+def test_market_argument_accepts_str_and_enum(alias, monkeypatch):
+    """``market`` 同时接受枚举与字符串 (API query 参数天然是字符串)。"""
+    expected = Market.HK if str(alias).lower() == "hk" else Market.CN
+    assert rules_for(alias).market is expected
+
+    # 端到端: 传字符串别名必须走到对应市场的探针, 而不是默认 A 股。
+    probed: list[str] = []
+    monkeypatch.setattr(trading_day, "_probe_fuyao", lambda now: probed.append("cn") or True)
+    monkeypatch.setattr(trading_day, "_probe_tickflow_hk", lambda now: probed.append("hk") or False)
+    assert is_trading_day(MONDAY, market=alias) is (expected is Market.CN)
+    assert probed == ["hk" if expected is Market.HK else "cn"]
+
+
+def test_cache_alias_points_at_live_cn_bucket():
+    """``_CACHE`` 是 A 股桶的别名, 且 ``reset_cache`` 后仍指向同一个活对象。
+
+    本文件多处直接拨 ``trading_day._CACHE.probed_at``; 若 reset_cache 改成
+    重新绑定字典值 (``_CACHES[m] = _Cache()``), 别名就会指向已被丢弃的实例,
+    那些用例会静默失去作用。
+    """
+    assert trading_day._CACHE is trading_day._CACHES[Market.CN]
+    reset_cache()
+    assert trading_day._CACHE is trading_day._CACHES[Market.CN]
+    assert trading_day._CACHE.day is None
+
+
+def test_hk_weekend_returns_false_without_probing(monkeypatch):
+    """港股周末同样零成本直判, 且用的是港股桶。"""
+    _boom(monkeypatch, "_probe_tickflow_hk")
+    sat = datetime(2026, 8, 29, 10, 0, tzinfo=HK_TZ)
+    assert is_trading_day(sat, market=Market.HK) is False
+    assert trading_day.cached_verdict(sat, market=Market.HK) is False
+
+
+def test_cached_verdict_is_market_scoped(monkeypatch):
+    """只读接口用的 ``cached_verdict`` 也必须分市场, 否则 API 会读到别市场的结论。"""
+    _stub(monkeypatch, "_probe_fuyao", True)
+    _stub(monkeypatch, "_probe_tickflow_hk", False)
+    assert trading_day.cached_verdict(MONDAY, market=Market.CN) is None  # 尚未探测
+    assert is_trading_day(MONDAY, market=Market.CN) is True
+    assert is_trading_day(MONDAY, market=Market.HK) is False
+
+    assert trading_day.cached_verdict(MONDAY, market=Market.CN) is True
+    assert trading_day.cached_verdict(MONDAY, market=Market.HK) is False
+
+
+# ---- tickflow 探针的市场属性 (篮子 / 时区 / 缓冲窗都取自 rules) ----
+
+class _FakeQuotes:
+    def __init__(self, rows, sink):
+        self._rows = rows
+        self._sink = sink
+
+    def get(self, symbols):
+        self._sink.extend(symbols)
+        return self._rows
+
+
+class _FakeClient:
+    def __init__(self, rows, sink):
+        self.quotes = _FakeQuotes(rows, sink)
+
+
+def _fake_tickflow(monkeypatch, rows):
+    """替换 tickflow client (探针内部是延迟 import, 打模块属性即可), 返回被请求的 symbols。"""
+    import app.tickflow.client as tf_client
+
+    sink: list[str] = []
+    monkeypatch.setattr(tf_client, "get_client", lambda: _FakeClient(rows, sink))
+    return sink
+
+
+def test_tickflow_probe_uses_its_own_market_basket(monkeypatch):
+    """⭐ 探针篮子必须是**该市场**的流动性票。
+
+    拿 A 股票探港股: 港股休市日 A 股照常交易, 时间戳永远是今天 → 恒判 True,
+    港股节假日门控彻底失效 (且失效方向是「以为在交易」, 最难发现)。
+    """
+    stamp = int(MONDAY.timestamp() * 1000)
+    cn_sink = _fake_tickflow(monkeypatch, [{"timestamp": stamp}])
+    assert trading_day._probe_tickflow(MONDAY) is True
+    assert tuple(cn_sink) == CN_RULES.probe_basket
+
+    reset_cache()
+    hk_sink = _fake_tickflow(monkeypatch, [{"timestamp": stamp}])
+    assert trading_day._probe_tickflow_hk(MONDAY) is True
+    assert tuple(hk_sink) == HK_RULES.probe_basket
+    assert not (set(hk_sink) & set(cn_sink)), "两市场篮子不得重叠"
+
+
+def test_tickflow_probe_interprets_stamp_in_market_timezone(monkeypatch):
+    """时间戳按 ``rules.tz`` (UTC+8) 解释, 不是 UTC / 不是 naive。
+
+    16:30Z = 次日 00:30 (UTC+8)。若误用 UTC, 日期会算成前一天, 结论从 True
+    变成 None (落在开盘缓冲窗内), 门控静默失效。
+    """
+    utc_stamp = int(datetime(2026, 9, 7, 16, 30, tzinfo=UTC).timestamp() * 1000)
+    _fake_tickflow(monkeypatch, [{"timestamp": utc_stamp}])
+    next_day = datetime(2026, 9, 8, 0, 30, tzinfo=CN)
+    assert trading_day._probe_tickflow(next_day) is True
+
+
+def test_tickflow_probe_stale_stamp_respects_buffer_window(monkeypatch):
+    """戳停在上一交易日: 缓冲窗内 → None (可能只是竞价未翻新), 窗后 → False。"""
+    prev_stamp = int(datetime(2026, 9, 4, 15, 0, tzinfo=CN).timestamp() * 1000)
+    _fake_tickflow(monkeypatch, [{"timestamp": prev_stamp}])
+
+    in_buffer = datetime(2026, 9, 7, 9, 35, tzinfo=CN)   # < 09:40
+    after_buffer = datetime(2026, 9, 7, 9, 45, tzinfo=CN)  # > 09:40
+    assert trading_day._probe_tickflow(in_buffer) is None
+    assert trading_day._probe_tickflow(after_buffer) is False
+
+
+def test_tickflow_probe_without_permission_returns_none(monkeypatch):
+    """无实时权限 / 空响应 / 无有效戳 → None (退回周几近似), 不得抛异常。"""
+    for rows in ([], [{}], [{"timestamp": None}], [{"timestamp": 0}]):
+        _fake_tickflow(monkeypatch, rows)
+        assert trading_day._probe_tickflow_hk(MONDAY) is None
+
+
+def test_hk_tickflow_probe_currently_returns_none(monkeypatch):
+    """现状钉住: tickflow 尚无港股实时权限 → 港股退回周几近似。
+
+    接入港股行情源后本用例会失败, 那时应把它改成断言真实结论 —— 失败即提醒,
+    这正是钉住现状的目的。
+    """
+    import types
+
+    import app.tickflow.client as tf_client
+
+    def _deny(symbols):
+        raise PermissionError("no hk realtime entitlement")
+
+    fake = types.SimpleNamespace(quotes=types.SimpleNamespace(get=_deny))
+    monkeypatch.setattr(tf_client, "get_client", lambda: fake)
+    assert trading_day._probe_tickflow_hk(MONDAY) is None
+
+
+def test_concurrent_cn_and_hk_probes_stay_isolated(monkeypatch):
+    """⭐ 单飞键含市场: 两市场同日并发探测必须各跑各的, 不得共用条目。
+
+    两个探针都在 barrier 上会合 —— 若键不含市场, 后到者会等在前到者的条目上
+    而不是执行自己的探针, barrier 凑不齐 → 超时破碎 → 用例失败。
+    """
+    import threading
+    import time as stdlib_time
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    def _make(verdict):
+        def _probe(now):
+            barrier.wait()
+            stdlib_time.sleep(0.02)
+            return verdict
+        return _probe
+
+    monkeypatch.setattr(trading_day, "_probe_fuyao", lambda now: None)
+    monkeypatch.setattr(trading_day, "_probe_tickflow", _make(True))
+    monkeypatch.setattr(trading_day, "_probe_tickflow_hk", _make(False))
+
+    out: dict[str, object] = {}
+
+    def _worker(key, market):
+        try:
+            out[key] = is_trading_day(MONDAY, market=market)
+        except BaseException as exc:  # noqa: BLE001 — 失败原因交给断言呈现
+            out[key] = exc
+
+    threads = [
+        threading.Thread(target=_worker, args=("cn", Market.CN)),
+        threading.Thread(target=_worker, args=("hk", Market.HK)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not any(t.is_alive() for t in threads), "探测未结束 (单飞等待/死锁)"
+    assert out["cn"] is True, f"CN 结论被污染: {out['cn']!r}"
+    assert out["hk"] is False, f"HK 结论被污染: {out['hk']!r}"
+
+
+def test_next_trading_day_accepts_market():
+    """``next_trading_day`` 也按市场取规则 (周几近似阶段两市场周末相同)。"""
+    friday = datetime(2026, 10, 16, 20, 0, tzinfo=CN)
+    assert trading_day.next_trading_day(friday, market=Market.HK) == date(2026, 10, 19)
+    assert trading_day.next_trading_day(friday, market=Market.CN) == date(2026, 10, 19)

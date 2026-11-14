@@ -93,6 +93,11 @@ docs/zhihu/
 data/strategies/custom/
 
 # ===== 临时 / 调试产物 =====
+# 临时验证脚本 / 基线对比副本一律放这里, 不要放 /tmp:
+# ruff / pytest / tsc / eslint 等工具链的配置发现依赖「文件在仓库树内」。
+# 放仓库外会静默退回默认配置 (如 ruff 读不到 pyproject.toml 就用默认规则集),
+# 不报错, 只给出看起来合理的错误结论。
+backend/_scratch/
 backend._recheck*.py
 backend/_verify*.py
 backend/_desktop_run.log

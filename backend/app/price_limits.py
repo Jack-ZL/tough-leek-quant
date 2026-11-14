@@ -1,4 +1,26 @@
-"""A-share price-limit rules shared by indicators, backtests, and APIs."""
+"""A-share price-limit rules shared by indicators, backtests, and APIs.
+
+多市场
+------
+本模块回答的是**A 股专属**问题 (板块涨跌幅、注册制上市初期无涨跌幅窗口)。
+港股无涨跌停, 这些概念不存在, 因此:
+
+- ``price_limit_pct`` / ``polars_price_limit_pct`` 接受 ``market`` 参数,
+  市场无涨跌停时返回 ``None`` (→ enriched 的 ``limit_up_price`` /
+  ``limit_down_price`` 恒 null, 符合 CONTRIBUTING §3.2「运行时判定列」语义)。
+- 其余函数是 A 股专属, 传入非 A 股 symbol 会**当场抛
+  :class:`~app.market.SymbolMarketMismatchError`**。
+
+⚠️ 护栏不是洁癖。改造前 ``board_limit_pct("00700.HK")`` 会走到主板分支
+**静默返回 0.10** —— 即「港股有 10% 涨跌停」, 下游据此算出的涨停价、
+涨停信号、连板数全是错的, 且没有任何一处会报错。这正是 CONTRIBUTING §3
+反复警告的「不报错但结果错」。
+
+性能: 向量化路径 (``numpy_limit_pct_vectors`` → ``write_numpy_price_limit_matrix``)
+内部本就逐 symbol 调 ``board_limit_pct``, 因此护栏**免费覆盖整条链**,
+没有新增遍历。``polars_price_limit_pct`` 是表达式级的, 无法逐行抛错,
+用 ``market`` 参数在构造期决定。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +29,8 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 import polars as pl
+
+from app.market import Market, assert_symbol_market, rules_for
 
 MAIN_BOARD_ST_LIMIT_CHANGE_DATE = date(2026, 7, 6)
 # 创业板注册制改革首日: 此前创业板与主板同为 ±10% (风险警示股 ±5%), 当日起 ±20%。
@@ -26,6 +50,12 @@ _GEM_PREFIXES = ("300", "301", "302")
 
 
 def board_limit_pct(symbol: str) -> float:
+    """A 股板块涨跌幅 (不含注册制日期与风险警示修正)。
+
+    **A 股专属**: 非 A 股 symbol 抛 :class:`~app.market.SymbolMarketMismatchError`。
+    需要按市场取「有无涨跌停」请用 :func:`price_limit_pct`。
+    """
+    assert_symbol_market(symbol, Market.CN)
     if symbol.endswith(".BJ"):
         return BEIJING_BOARD_LIMIT
     if symbol.startswith((*_GEM_PREFIXES, "688", "689")):
@@ -42,7 +72,23 @@ def price_limit_pct(
     trade_date: date,
     *,
     is_risk_warning: bool = False,
-) -> float:
+    market: object = Market.CN,
+) -> float | None:
+    """该标的在 ``trade_date`` 的日涨跌幅限制 (小数比率)。
+
+    Returns:
+        A 股: 0.05 / 0.10 / 0.20 / 0.30。
+        **无涨跌停的市场 (港股): ``None``** —— 不是 0, 也不是一个很大的数。
+        消费方必须把 ``None`` 理解为「该市场无此约束」, 并让
+        ``limit_up_price`` / ``limit_down_price`` 落 null。
+    """
+    rules = rules_for(market)
+    # 护栏必须在 has_price_limit 提前返回**之前**: 否则 A 股代码配上 market=HK
+    # 会静默拿到 None (「该市场无涨跌停」) —— 涨停价算不出来、涨停判定静默失效,
+    # 正是护栏要挡的那类「看起来合理的错误答案」。
+    assert_symbol_market(symbol, rules.market)
+    if not rules.has_price_limit:
+        return None
     base = board_limit_pct(symbol)
     if _is_gem(symbol) and trade_date < GEM_20PCT_LIMIT_START_DATE:
         base = MAIN_BOARD_LIMIT
@@ -85,7 +131,12 @@ NO_LIMIT_CALENDAR_MARGIN_DAYS_BJ = 3
 
 
 def no_limit_window_days(symbol: str, listing_date: date | None) -> int:
-    """上市初期无涨跌幅限制的交易日窗口数; 0 = 不适用 (老股/无上市日)。"""
+    """上市初期无涨跌幅限制的交易日窗口数; 0 = 不适用 (老股/无上市日)。
+
+    **A 股专属概念** (注册制改革的产物): 港股本来就无涨跌停, 不存在「窗口」。
+    非 A 股 symbol 抛 :class:`~app.market.SymbolMarketMismatchError`。
+    """
+    assert_symbol_market(symbol, Market.CN)
     if listing_date is None:
         return 0
     if symbol.endswith(".BJ"):
@@ -98,7 +149,8 @@ def no_limit_window_days(symbol: str, listing_date: date | None) -> int:
 
 
 def no_limit_window_margin_days(symbol: str) -> int:
-    """窗口的日历天安全边际 (北交所 3 天, 其余 15 天)。"""
+    """窗口的日历天安全边际 (北交所 3 天, 其余 15 天)。**A 股专属**。"""
+    assert_symbol_market(symbol, Market.CN)
     return NO_LIMIT_CALENDAR_MARGIN_DAYS_BJ if symbol.endswith(".BJ") else NO_LIMIT_CALENDAR_MARGIN_DAYS
 
 
@@ -127,6 +179,9 @@ def is_no_limit_day(
 
     day_rank 提供时 (该 symbol 日K按日期升序的序号, 上市首日=1) 精确按
     交易日数判定; 否则退化为 listing_date + 保守日历天边际的近似。
+
+    **A 股专属**: 经 :func:`no_limit_window_days` 的护栏, 非 A 股 symbol 抛
+    :class:`~app.market.SymbolMarketMismatchError`。
     """
     days = no_limit_window_days(symbol, listing_date)
     if days == 0 or listing_date is None or trade_date < listing_date:
@@ -141,8 +196,25 @@ def polars_price_limit_pct(
     symbol: pl.Expr,
     trade_date: pl.Expr,
     is_risk_warning: pl.Expr,
+    market: object = Market.CN,
 ) -> pl.Expr:
-    """Return a vectorized Polars expression for the effective daily limit."""
+    """Return a vectorized Polars expression for the effective daily limit.
+
+    无涨跌停的市场 (港股) 返回恒 ``null`` 的 Float64 表达式 —— 表达式级无法
+    逐行抛错, 因此在**构造期**按 market 决定。下游 ``polars_limit_price``
+    拿到 null 会自然产出 null 的 ``limit_up_price`` / ``limit_down_price``,
+    符合 CONTRIBUTING §3.2 的运行时判定列语义。
+    """
+    if not rules_for(market).has_price_limit:
+        # 恒 null, 但**长度必须跟随 symbol 列**。裸 pl.lit(None) 是长度 1 的标量:
+        # with_columns 里会广播所以看不出问题, 一旦调用方改用 select 就静默只出 1 行。
+        # 用 when(symbol...) 建立逐元素长度, 两种上下文都正确。
+        return (
+            pl.when(symbol.is_not_null() | symbol.is_null())
+            .then(None)
+            .otherwise(None)
+            .cast(pl.Float64)
+        )
     is_growth = (
         symbol.str.starts_with("300")
         | symbol.str.starts_with("301")
