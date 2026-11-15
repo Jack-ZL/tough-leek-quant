@@ -48,6 +48,10 @@ SNAPSHOT_BATCH = 300
 # m1 分钟K单请求根数上限(实测请求 1400 仍只返回 320)
 MKLINE_M1_MAX = 320
 
+# 日K单请求根数: 实测 900 根正常返回(hkHSI 回溯到 2023-03-17), 与 m1 的 320 硬顶
+# 不同, 未见低上限。取 800 覆盖「365 天默认窗口 + 长假余量」并留一倍冗余。
+KLINE_DAILY_MAX = 800
+
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Referer": "https://gu.qq.com/",
@@ -291,6 +295,40 @@ class TencentClient:
             raise TencentError(f"mkline 返回 code={payload.get('code')}: {payload.get('msg')}")
         node = (payload.get("data") or {}).get(code) or {}
         rows = node.get("m1") or []
+        return rows if isinstance(rows, list) else []
+
+    def kline_daily(self, code: str, count: int = KLINE_DAILY_MAX) -> list[list]:
+        """单标的日K → 原始行列表 ``[date, 开, 收, 高, 低, 量]``。
+
+        真机实测 (2026-11-16, ``hkHSI``): ``ifzq.gtimg.cn`` 与 ``web.ifzq.gtimg.cn``
+        返回逐字节相同, 统一用既有 ``IFZQ_BASE`` 裸域 (与 :meth:`kline_m1` 一致)。
+
+        🔴 **列序是 开/收/高/低 —— 收盘在第 3 列 (index 2), 不是常见的 OHLC 序**。
+        与 :meth:`kline_m1` 同款反直觉排列, 按 ``row[2]`` 当最高价会让上下影线全错。
+
+        🔴 第 6 列「量」的**单位口径与新浪不一致且不可折算**: 同一交易日
+        (HSI 2026-11-13) 本端点给 ``195857007140``, 新浪快照给 ``195857007``,
+        恰好 ×1000; 而新浪自己的 额/量 = 58.84, 与指数点位 23637 也对不上。
+        两源对「这个数是什么单位」各执一词 → **原样透传, 严禁乘除折算**。
+        指数的量额在本仓唯一功能作用是 :func:`filter_halt_days` 的停牌判据
+        (指数无流通股本 → 无换手率, MA/MACD 只用 close), 不参与任何定量计算。
+
+        code: 带市场前缀的腾讯代码 (港股指数为 ``hkHSI`` 这种 ``hk`` + 大写代码)。
+        """
+        count = max(1, min(int(count), KLINE_DAILY_MAX))
+        text = self._get_text(
+            IFZQ_BASE,
+            "/appstock/app/kline/kline",
+            {"param": f"{code},day,,,{count}"},
+        )
+        try:
+            payload = json.loads(text)
+        except ValueError as e:
+            raise TencentError(f"kline 响应非 JSON: {e}") from e
+        if payload.get("code") != 0:
+            raise TencentError(f"kline 返回 code={payload.get('code')}: {payload.get('msg')}")
+        node = (payload.get("data") or {}).get(code) or {}
+        rows = node.get("day") or []
         return rows if isinstance(rows, list) else []
 
     # ---- 分时逐笔成交 (P1-13 第三批) ----

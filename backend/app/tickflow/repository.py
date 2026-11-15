@@ -195,6 +195,8 @@ class DataStore:
             "instruments_hk",
             "kline_hk_daily",
             "kline_hk_enriched",
+            "kline_hk_index_daily",
+            "kline_hk_index_enriched",
             "adj_factor_hk",
             "financials_hk",
         ):
@@ -265,6 +267,10 @@ class DataStore:
                 SELECT * FROM read_parquet('{d}/kline_hk_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_hk_enriched AS
                 SELECT * FROM read_parquet('{d}/kline_hk_enriched/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_hk_index_daily AS
+                SELECT * FROM read_parquet('{d}/kline_hk_index_daily/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_hk_index_enriched AS
+                SELECT * FROM read_parquet('{d}/kline_hk_index_enriched/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW adj_factor_hk AS
                 SELECT * FROM read_parquet('{d}/adj_factor_hk/**/*.parquet', union_by_name=true)""",
             # 财务数据视图
@@ -2617,6 +2623,25 @@ class KlineRepository:
         df_storage = df.select(storage_cols)
         self._write_daily_partition(df_storage, enriched_dirname("stock", market=Market.HK))
 
+    def append_hk_index_enriched(self, df: pl.DataFrame) -> None:
+        """按日分区写入**港股指数** enriched → ``kline_hk_index_enriched/``。
+
+        与 :meth:`append_hk_enriched` 同款: 磁盘仅写 ``ENRICHED_STORAGE_COLS`` 窄表,
+        其余列读时重算。目录名经 :func:`enriched_dirname` 查 ``_DIRNAMES`` 得出,
+        不写字面量。
+
+        ⚠️ 港股指数 enriched **必须**由 ``compute_enriched(..., market=Market.HK)``
+        产出后再传进来 (换手率 volume 单位系数按市场取值)。指数无流通股本,
+        调用方应传 ``instruments=None`` → 不产换手率/涨跌停信号列。
+        """
+        if df.is_empty():
+            return
+        from app.indicators.pipeline import ENRICHED_STORAGE_COLS
+
+        storage_cols = [c for c in ENRICHED_STORAGE_COLS if c in df.columns]
+        df_storage = df.select(storage_cols)
+        self._write_daily_partition(df_storage, enriched_dirname("index", market=Market.HK))
+
     def append_daily_asset(
         self, asset_type: str, df: pl.DataFrame, *, market: object = Market.CN
     ) -> None:
@@ -2897,6 +2922,25 @@ class KlineRepository:
             finally:
                 cursor.close()
 
+    def refresh_hk_index_views(self) -> None:
+        """刷新**港股指数**两张 DuckDB 视图 (日K + enriched)。
+
+        刻意**不**重挂 unified 视图: unified 是 A 股跨资产口径, 港股按方案 §4 闸3
+        与 A 股物理/逻辑双隔离, 不参与 UNION。因此这里只刷自己那两张。
+
+        目录名经 :func:`daily_dirname` / :func:`enriched_dirname` 查 ``_DIRNAMES``,
+        不写字面量 (与 :meth:`refresh_index_views` 的内联 glob 不同 —— 那份是存量,
+        不顺手重构; 新增的一律走查表)。港股「视图名 == 目录名」是既有约定
+        (见 ``DataStore._register_views`` 港股段注释: A 股有 kline_daily_enriched→
+        kline_enriched 的历史改名特例, 港股刻意不沿用), 故名字与路径同源。
+        """
+        d = self.store.data_dir.as_posix()
+        for sub in (
+            daily_dirname("index", market=Market.HK),
+            enriched_dirname("index", market=Market.HK),
+        ):
+            self.refresh_view(sub, f"{d}/{sub}/**/*.parquet")
+
     def rebuild_views(self) -> None:
         """重建全部 16 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
 
@@ -2906,8 +2950,9 @@ class KlineRepository:
 
         ⚠️ 新增数据目录时**必须同时**改这里和 :meth:`DataStore._register_views`。
         只改启动那份的后果是: 视图在启动时存在, 但盘后管道跑完不刷新 → 读到旧数据,
-        即 CONTRIBUTING §「写入后存在已知缓存不一致」的拒收情形。港股四张视图
-        (instruments_hk / kline_hk_daily / kline_hk_enriched / adj_factor_hk) 已按此登记。
+        即 CONTRIBUTING §「写入后存在已知缓存不一致」的拒收情形。港股六张视图
+        (instruments_hk / kline_hk_daily / kline_hk_enriched / kline_hk_index_daily /
+        kline_hk_index_enriched / adj_factor_hk) 已按此登记。
         """
         d = self.store.data_dir.as_posix()
         views = {
@@ -2928,6 +2973,8 @@ class KlineRepository:
             "instruments_hk": f"{d}/instruments_hk/**/*.parquet",
             "kline_hk_daily": f"{d}/kline_hk_daily/**/*.parquet",
             "kline_hk_enriched": f"{d}/kline_hk_enriched/**/*.parquet",
+            "kline_hk_index_daily": f"{d}/kline_hk_index_daily/**/*.parquet",
+            "kline_hk_index_enriched": f"{d}/kline_hk_index_enriched/**/*.parquet",
             "adj_factor_hk": f"{d}/adj_factor_hk/**/*.parquet",
         }
         for name, path in views.items():

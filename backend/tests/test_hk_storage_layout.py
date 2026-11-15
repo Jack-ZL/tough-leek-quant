@@ -29,7 +29,13 @@ from app.tickflow.repository import (
 )
 
 #: 方案 §4 闸3 约定的港股目录名。改名即破坏隔离契约, 必须同步改这里。
-HK_DIRS = ("instruments_hk", "kline_hk_daily", "kline_hk_enriched")
+HK_DIRS = (
+    "instruments_hk",
+    "kline_hk_daily",
+    "kline_hk_enriched",
+    "kline_hk_index_daily",
+    "kline_hk_index_enriched",
+)
 
 
 # ---------------------------------------------------------------------------

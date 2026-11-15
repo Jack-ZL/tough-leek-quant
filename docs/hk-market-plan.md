@@ -365,7 +365,7 @@ ex_factor = P / ref                # 单次事件的前后比价，不是累计�
 
 > M14/M15 是**写测试时才发现的实现漏洞**：最初无事件时不落任何文件，导致「全市场都没有除权事件」这种合法状态下 enriched 会永久 fail closed。测试先于文档暴露了它。
 
-**已知局限**：① 单源（东财 F10），无兜底，已登记进 §3.3；② 3% 的事件拿不到港币数值，复权链在这些日前后会有偏差，每次同步都会 warn；③ 未接调度，目前只能经 API 触发。
+**已知局限**：① 单源（东财 F10），无兜底，已登记进 §3.3；② 3% 的事件拿不到港币数值，复权链在这些日前后会有偏差，每次同步都会 warn；③ ~~未接调度~~ → **PR2e 已接入**（独立 job `hk_daily_sync`，默认关闭），但**部分失败时因子库非空却不完整**这个服务层缺陷仍待决，见 §14「PR2e 完成情况」。
 
 ## 4. 存储与隔离：五道闸
 
@@ -761,7 +761,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 ### PR2 完成情况（数据通路 + 财务）
 
-**状态：PR2a / PR2b / PR2c / PR2d 代码与测试均已完成，未提交。** 后端全量 **6869 passed / 8 skipped / 1 xfailed / 0 failed**（PR1 后基线 6586 → PR2a/b 6787 → PR2c 6807 → PR2d 6869，新增 62 项与实测增量精确吻合），存量 A 股测试**一行未改**即全绿。Ruff 新增告警 **0**（`pre-existing: 670` 与 HEAD 基线逐条一致）。8 个港股测试文件共 **515 项**，全部离线可跑（无网络依赖）。
+**状态：PR2a / PR2b / PR2c / PR2d 已提交（`3996ac5a` + `04d42888`）；PR2e（调度接线）代码与测试已完成，未提交。** 后端全量 **6920 passed / 8 skipped / 1 xfailed / 0 failed**（PR1 后基线 6586 → PR2a/b 6787 → PR2c 6807 → PR2d 6869 → PR2e 6920，新增 51 项与实测增量精确吻合），存量 A 股测试**一行未改**即全绿。Ruff 新增告警 **0**（`pre-existing: 670` 与 HEAD 基线逐条一致）。9 个港股测试文件共 **566 项**，全部离线可跑（无网络依赖）。
 
 | 文件 | 用例 | 覆盖 |
 |---|---|---|
@@ -773,6 +773,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | `tests/test_hk_kline_sync.py` | 34 | 日线同步：universe / 增量 / `fqt != 0` 拒绝；**enriched 生成**：换手率单位 / 大涨不判涨停 / 限价恒 null / 目录隔离 / 拒绝降级 / 进度 |
 | `tests/test_hk_instrument_sync.py` | 16 | 维表同步：字段补全 / `_MIN_FRESH_RATIO` / 保留字段 |
 | `tests/test_hk_adj_factor.py` | 62 | **复权因子链**：方案文本解析（11 种真实句式 + 9 种不可解析 + 4 个具名陷阱）/ 因子数值与四道闸门 / `load_hk_adj_factors` 三态 / fail-closed / 端到端复权 vs 原始 / 同步语义（**变异检验 17/17**） |
+| `tests/test_hk_scheduler.py` | 51 | **调度接线**：单向让路 / 不进 `job_store` 不占执行槽 / 因子部分失败跳过 enriched / 阶段依赖与软失败 / client 必定 close / 视图必定重建 / 注册与 `replace_existing` / `start_scheduler` 隔离、settings API 契约（**变异检验 28/28**） |
 
 **PR2a（数据通路）交付**：`app/plugins/eastmoney/hk.py`（467 行，数据边界）、`app/services/instrument_sync_hk.py`、`app/services/kline_sync_hk.py`、`app/api/hk.py`、`repository.py` 的 `_DIRNAMES` / `daily_dirname()` / `enriched_dirname()` / `append_hk_daily` / `append_hk_enriched`、`provider.symbol_to_secid` 的 `.HK→116.` 纯增量分支。
 
@@ -870,15 +871,130 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 > 第 3 条是 `test_sync_no_events_writes_empty_store` 变红才暴露的。它说明 fail-closed 设计有个容易漏的对偶面：**「拒绝在数据不全时出数」与「允许在确认无数据时出数」必须同时成立**，只做前者会把一个合法状态永久锁死。
 
+### PR2e 完成情况（港股同步接入调度）
+
+**交付**：`app/jobs/hk_pipeline.py`（新增）、`preferences.get/set_hk_sync_schedule()`、`PUT /api/settings/preferences/hk-sync-schedule`、`start_scheduler` 中一处隔离注册。测试 `tests/test_hk_scheduler.py` **51 项**，变异检验 **28/28**。
+
+#### 决策：独立 job，而不是并入盘前/盘后
+
+方案原本留的是「待决策」。选**独立 job**，理由是「不能危及 A 股关键路径」这条要求在本仓库里有个**不显然的坑** —— `pipeline_jobs` 的两道并发闸都是**全局**的：
+
+| 闸 | 语义 | 港股若复用会怎样 |
+|---|---|---|
+| `job_store.create()` 单飞 | 已有 pending/running 任务时返回 `is_new=False`，调用方跳过本轮 | 港股任务一旦登记，**A 股盘后管道会误判「已有活跃任务」而整轮跳过** |
+| `try_acquire_run_slot()` 执行槽 | 全局互斥、非阻塞抢占 | 港股持槽期间 A 股抢不到 → 同样被跳过 |
+
+也就是说，「顺手复用 `_run_tracked`」这个最自然的写法，恰好会造成方案明令禁止的后果。因此港股 job 刻意：
+
+- **不进 `job_store`**、**不占执行槽** —— 对 A 股完全不可见，A 股的单飞判定永远不会因港股触发。代价是港股进度不出现在 `/api/pipeline/jobs`，只进日志。
+- **单向让路** —— 港股开跑前只读 `job_store.active_id()`，有活跃任务就本轮跳过。让路只发生在港股这一侧。
+- **异常全吞** —— 任何失败只记日志，绝不向 APScheduler 上抛；`start_scheduler` 里的注册调用也整体兜底，港股注册失败不影响 A 股调度启动。
+
+并发写盘本身是安全的：港股四张表与 A 股目录物理隔离（闸3），`rebuild_views()` 内部走 `_ddl_lock`(RLock)，共享的 `EastmoneyClient` 令牌桶按 host 统一排队（是保护而非危害），且默认时刻 16:40 HKT 与 A 股盘后 15:35 本就错开。
+
+#### 默认关闭，且刻意不设时间下限
+
+- **默认 `enabled=False`**：港股是增量功能，且维表口径 `FS_HK_EQUITY` 的各 `t:` 子类语义仍待联网复测（见下表「待复测」）。默认开启会让每天 ~2900 标的的拉取在口径确认前就跑起来，白耗 push2 配额。
+- **不设 15:00 下限**（与 `set_review_schedule` 的刻意差异）：港股有半日市（12:00 收盘），用户也可能只想盘中拉一次快照。已有测试 `test_hk_schedule_has_no_time_floor_unlike_review` 同时断言「港股 09:30 被保留」与「复盘 09:30 被抬到 15:00」，防止后人照抄下限逻辑。
+- 时区挂 `Asia/Hong_Kong` 而非 `Asia/Shanghai`：两者同为 UTC+8 且均无夏令时，偏移一致，但语义上港股 job 该挂港股时区。
+
+#### 🔴 实施中发现的服务层缺陷（已在 job 层挡住，服务层待决）
+
+`sync_hk_adj_factor` 是**逐批 merge** 落盘的：即使有标的拉取失败，成功那部分也已写进 `adj_factor_hk`。`failed` 只用于决定「要不要落空库当凭据」，**并不回滚已 merge 的行**。于是因子库**非空但不完整**，`load_hk_adj_factors` 的三态闸门判定为「非空」而放行，失败标的在 `_apply_adj_factor` 里拿到 `cum_factor.fill_null(1.0)`，被当成「该股从无分红」—— **前复权静默偏高、指标静默失真**。
+
+这正是 CONTRIBUTING §4「fail closed，绝不静默切换到错误数据或错误语义」要拦的情形。PR2e 的处理：
+
+- **job 层已挡**：`run_hk_sync` 在因子阶段报失败时跳过 enriched 并记 error，宁可本轮不出数，等下一轮补齐。
+- ⚠️ **服务层未改**：手动 API 路径（`POST /api/hk/sync_enriched`）仍会踩到同一个洞。修法有两种（因子库按轮次原子替换 / `load_hk_adj_factors` 增加「完整性凭据」维度），涉及 PR2d 已提交代码的口径变更，**留待单独决策**，不在本 PR 顺手改。
+
+#### 阶段依赖
+
+维表失败 → **软失败**，沿用上一份维表继续（`sync_instruments_hk` 拉取失败本就返回 0 且不写盘）；维表为空 → **硬中止**；日K失败 → 中止 enriched；因子失败 → 中止 enriched（见上）；末尾**无条件** `rebuild_views()` —— `sync_hk_daily` 只落 parquet 不刷视图、`sync_hk_enriched` 仅在 `written>0` 时刷，漏了就是 CONTRIBUTING 明列的拒收情形「写入后存在已知缓存不一致」。
+
 **PR2 未做（明确留待后续，不是遗漏）**：
 
 | 项 | 状态 | 归属 |
 |---|---|---|
 | **能力矩阵 market 维** | 刻意延后：港股 kline 绕过偏好路由直连，矩阵暂无消费方。**在此登记以免被误读为漏做** | PR3 |
 | ~~**复权两源互验**~~ | **已取消**：腾讯 `hkfqkline` 的 qfq 实测是**等差**投影，与东财 `fqt=1` 的乘性口径不可能数值一致，该互验前提不成立（§3.6）。复权正确性改由「F10 分红额 ↔ 加性偏移逐位吻合」锚定，已 hermetic 化，不再需要真实网络 | — |
-| **调度接线** | 港股同步目前**只能经 API 触发**。是否并入盘前/盘后 job 需先决策：港股交易时段不同，且**不能危及 A 股关键路径** | 待决策 |
+| ~~**调度接线**~~ | **已完成（PR2e）**：独立 job `hk_daily_sync`，默认关闭，与 A 股盘后管道**单向让路**。实现与隔离理由见下方「PR2e 完成情况」 | — |
 | **成交量单位余量** | `pipeline.py:813,2422` 已修；`strategy/scoring.py:179`、`backtest/engine.py:1979`、`strategy/intraday_features.py:106`、`api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` **暂缓**，明细见 §3.1.2。港股进打分/回测链路的那个 PR 必须一并改，否则 VWAP 低 100 倍会让港股永远打不出分 | PR4+ |
 | **待复测（需网络）** | 港股 `pz` 上限（疑为 100）；全列表代码前缀分布（纯净性护栏用）；**`t:3=主板 / t:4=GEM / t:1=REITs / t:2=债券` 的语义**（`FS_HK_EQUITY` 目前只靠单次早期探针支撑）；东财港股 kline 的 **amount 单位**（元 vs 万元，腾讯侧疑似万元） | PR3 前 |
+
+> 🔴 **复测当前被硬阻塞（2026-11 实测）**：`push2.eastmoney.com` 及其全部镜像（`82.push2` / `17.push2` / `push2delay` / `push2his`）对本机 IP 施加**应用层封禁** —— DNS 解析正常（`14.103.191.91`）、TCP 可连、**TLS 1.3 握手成功且证书有效**，随后服务端在**不返回任何 HTTP 响应**的情况下直接断开（`curl: (52) Empty reply`，`http=000`，耗时 0.12–0.19s）。加浏览器 UA + Referer 无变化。同期 `datacenter-web.eastmoney.com`（F10 报表）、`www.eastmoney.com`、腾讯 `web.ifzq.gtimg.cn`、新浪 `hq.sinajs.cn` **全部 200 正常**，故非本机网络/DNS/TLS 问题，而是 push2 集群的 IP 级反爬封禁（本会话早先 push2 尚可用，是密集探测触发）。
+>
+> **影响面**：一切经 push2 的读取（A 股与港股的列表 / 实时快照 / 日K）当前均不可用，只有 `datacenter-web` 的 F10 报表（分红、财务）仍可访问。上表前三项**都是 push2 独有问题**，其他数据源无法替代验证 —— `t:N` 的语义只有东财自己知道。
+>
+> **风险是有界的**：`FS_HK_EQUITY` 已取保守口径（只要 `t:3` 主板 + `t:4` GEM，刻意排除 `t:1` REITs / `t:2` 债券，避免污染股票宇宙的各类分母），且第二道防线 `partition_hk_derivatives` + `_HK_EQUITY_CODE_PREFIXES = ("0", "8")` 仍在。`hk.py:73-76` 的 ⚠️「改动前必须重新实测」注释保持有效。探针脚本 `backend/_scratch/probe_hk_fs.py` 已写好（gitignored），封禁解除后可直接复跑。**在复测完成前不要修改 `FS_HK_*` 任一常量。**
+
+### PR3 完成情况（只读看盘 + 指数）—— 后端指数栈
+
+**状态：后端指数通路已完成并真机验证；前端未开始。** 本节只登记已完成的后端部分。
+
+#### 落地文件
+
+| 文件 | 变更 |
+|---|---|
+| `backend/app/services/index_const.py` | 改为 **per-market**：`core_index_names(market)` / `core_index_symbols(market)`；未登记市场抛 `ValueError`，**不回退 CN** |
+| `backend/app/plugins/sina/client.py` | `_get_text(base, path, params=None, *, encoding=None, referer=None)` + `HQ_BASE`（原实现写死 A 股端点与 UTF-8） |
+| `backend/app/plugins/sina/hk_index.py` | **新增**。27 只显式白名单 + 19 字段快照解析 + 斜杠/横杠日期容错 + `map_hk_index_quote` / `fetch_hk_index_spot` |
+| `backend/app/plugins/tencent/client.py` | `KLINE_DAILY_MAX = 800` + `kline_daily(code, count)`（复用既有 `IFZQ_BASE`，实测与 `web.ifzq.gtimg.cn` 字节一致） |
+| `backend/app/services/index_sync_hk.py` | **新增**。`sync_hk_index_daily` / `iter_hk_index_daily_frames` / `fetch_hk_index_quotes` / `hk_index_universe`，**三态分类**（ok / no_coverage / error） |
+| `backend/app/tickflow/repository.py` | mkdir 元组 + `_register_views` + `rebuild_views` 三处同步加 2 个指数目录；新增 `append_hk_index_enriched` / `refresh_hk_index_views` |
+| `backend/app/api/hk.py` | 新增 `GET /api/hk/indices`、`GET /api/hk/index_daily`、`POST /api/hk/sync_index_daily` + 2 个私有辅助 |
+| `backend/tests/test_hk_index.py` | **新增 54 例**（白名单契约 / 快照字段口径 / 腾讯列序 / 同步三态与市场隔离 / API 契约 / 降级路径），全离线 |
+| `backend/tests/test_hk_storage_layout.py` | `HK_DIRS` 3 → 5（加两个指数目录） |
+| `CONTRIBUTING.md` | §4 指数契约**中英两处**同步为 per-market，并新增港股指数端点条目 |
+
+真机验证（2026-11）：`sync_hk_index_daily` 写入 **1680 行 / 14 只**，区间 2020-10-27 → 2026-11-13，`failed=[]`、`no_coverage=13`；HSI 2026-11-13 OHLC 与新浪**逐位吻合**；enriched 全表 `close == raw_close`（指数无复权因子，符合预期）；A 股 `kline_index_daily` 保持空（闸3 未破）。API 8 项手工检查全绿，其中**降级路径的 `change_pct`（-0.01545）与实时路径完全一致** —— 两条独立链路（新浪字段 8 vs 腾讯相邻收盘价）互验，证明「÷100 口径」与「列序」都对。
+
+#### 与原方案的偏差（均为实测后修正）
+
+| 方案原文 | 实测结论 | 处理 |
+|---|---|---|
+| 「`index_hk_spot_sina` 实测返回 **43** 个指数」 | 实测宇宙为 **42**：真港股 27 + 纯 A 股污染 12 + **前缀像港股但实为跨市场 3**（`HSCASI` 恒生**A股**软件开发 / `CESA80` 中华**A80** / `CES300` 中华**沪深港**300） | 白名单取 **27**；🔴 那 3 只证明**前缀规则会说谎**，故用显式白名单，绝不用前缀判定或黑名单 |
+| 指数复用 `kline_sync_hk.py` | 该模块文档字符串明写「行情/K线直连东财」，复用清单全是东财专属；港股**指数**走新浪+腾讯 | 按仓库既有配对惯例（`kline_sync`/`kline_sync_hk`、`instrument_sync`/`instrument_sync_hk`）**新建** `index_sync_hk.py`，不污染东财模块 |
+| 在 `/api/index` 上加 `market` 参数 | `hk.py` 模块文档字符串已明写既有教义：「刻意独立成 `/api/hk/*` …… 分叉会漏 —— 目录级/路由级隔离比 `if market == HK` 可靠」；且 `/api/intraday/indices` 绑全局 QuoteService 缓存、兜底读 A 股目录 | 新增独立路由；**响应形状与 A 股一致**（`rows`/`count`/`source`），前端换端点即可复用渲染 |
+
+#### 为什么指数不用东财（三源选型）
+
+| 源 | 结论 |
+|---|---|
+| 东财 push2 | 🔴 **应用层 IP 封禁**（详见上方 PR2 遗留项），且港股指数需 `py_mini_racer` 执行 JS 解密不可逆参数 —— 该包在 **aarch64 上无 wheel**，属已知陷阱 |
+| 新浪 `hq.sinajs.cn` | ✅ 快照可用，**27 只全覆盖**，但只有实时值、无历史日K |
+| 腾讯 `ifzq.gtimg.cn` | ✅ 日K可用，OHLC 与新浪**逐位吻合**，但**只覆盖 14 只** |
+
+⇒ 快照走新浪、日K走腾讯。🔴 **腾讯日K列序为 `[date, open, CLOSE, high, low, volume]`，收盘在 index 2**（不是 index 4），且所有值以**字符串**下发。
+
+#### 🔴 成交量单位：存原值，绝不换算
+
+HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`；腾讯日K 第 6 列 `195857007140` = 新浪成交量 × **恰好 1000**，且 ≠ 新浪成交额。新浪自身的 成交额/成交量 = **58.84**（一个合理的港股均价），而腾讯那个数按成交额读（1958 亿港币）对恒指全成份也合理。**两种读法都站得住 ⇒ 任何换算都是编造。**
+
+处理：日K存储**根本没有 `amount` 列**，`GET /api/hk/index_daily` 返回 **`"volume_unit": None`**。指数从不做量的定量运算（无流通股本 → 无换手率；MA/MACD 只用 close）。
+
+#### 🔴 三态分类（不是两态）
+
+腾讯无覆盖的 13 只若记为「失败」，调度器会**每轮都告警**并把部分失败误判 —— 正是 PR2 `sync_hk_adj_factor` 那个缺陷的翻版（「部分失败但存储非空 → 下游三态闸门误判完整」）。故 `iter_hk_index_daily_frames` 对**每只**都 yield `(symbol, frame, status)`，`failed` 只装真错误，无覆盖记 INFO 并注明**实时快照对 27 只全部可用**。
+
+无日K的 13 只：`CSHK100 CSHKDIV CSHKLC CSHKLRE CSHKMCS CSHKME CSHKPE CSHKSE CSRHK50 HKL HSIDI HSSCID HSSCPB`。
+有日K的 14 只：`HSI HSCEI HSTECH HSCCI VHSI HSMBI HSMOGI HSMPI CES100 CES120 CES280 CESG10 CESHKM GEM`。
+⚠️ 另实测 `HKL` 快照返回**过期日期 2026/10/30**（两周前）—— 源确实会下发陈旧行，前端不得假定快照日期就是今天。
+
+#### 🔴 `filter_halt_days` 的 null 成交量陷阱
+
+`app/indicators/pipeline.py:1074-1088` 用 `(volume == 0) & (amount == 0)` 判停牌；polars 里 `null == 0` → `null`，`~null` → `null` → **该行被过滤掉**。实测 58 行 null 成交量 ⇒ `compute_enriched` 返回 **0 行（静默全量丢数）**；把 volume 填 `1.0` 后 58→58、enriched `(58, 64)`、`ma20` 正常。**完全省略 `amount` 列是安全的**（第二个谓词被跳过），**null 成交量不安全**。
+
+#### PR3 剩余（未开始）
+
+| 项 | 状态 |
+|---|---|
+| 前端共享层 + `marketContent.ts` | ❌ 仓库中**不存在** `Market` 类型、`market=HK` 参数或市场切换器；⚠️ `Market*` 命名空间已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用，新名须避撞 |
+| K线 / 自选 / 详情 | ❌ `lib/kline.ts:16-30` 是唯一权威 options 工厂且只指向 `/api/kline/daily`；🔴 `lib/stockPreviewStore.ts:17-18` 的正则 `/^\d{6}\.(SH\|SZ\|BJ)$/` **直接拒掉 5 位 `.HK`**，详情抽屉打不开（第一道硬墙） |
+| 15 分钟延时标注 | 🟡 后端已在两个新路由暴露 `quote_delay_minutes`；前端**零锚点**（全仓无「延时」二字），且 `QuoteFreshness.state='delayed'` 语义是**异常**（文案「请检查数据源与连接」）→ **不可复用**，需新建独立徽章 |
+| 空态契约文案 | ❌ 组件齐备（`EmptyState`/`ErrorState`/`MissingCapChip`），但「港股无概念板块数据源」文案不存在 |
+| 能力矩阵 market 维（`:918`） | ❌ PR2 刻意延后至此，仍未做 |
+| 指数同步接调度 | ❌ 未接线（当前只有手动 `POST /api/hk/sync_index_daily`） |
+| 前端三份硬编码指数副本 | ❌ `Layout.tsx:71-77` / `Indices.tsx:58-63` / `review/Page.tsx:787-801`；且 `review/Page.tsx:793` 的缩写表把**恒生科技指数**和**恒生中国企业指数**都压成「恒生」 |
 
 ## 15. 风险
 
@@ -890,7 +1006,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **交易日历** | 最阴险的不是崩，而是**把节假日当交易日**（港股复活节/圣诞/农历与 A 股完全不同） | oracle + provenance + **半日市表**；实盘/告警路径拒绝 weekday_fallback |
 | **报告货币** | 股价港元 × 财报人民币 → PE/PB/市值错 | `CURRENCY`/`IS_CNY_CODE` 显式判定 + 折算或标注 |
 | **东财单源（财务/分钟/行业/每手股数）** | 这几类**只有东财一家**，断供即无数据 | 直连走 `eastmoney/client.py` 既有每主机令牌桶+熔断+封禁池（**我们自己退避重试**，不像 akshare `#7465` 起限流直接失败）；再加 last-good 快照 + 新鲜度标记 + 显式降级 |
-| **直连爬虫接口的固有风险** | 东财/新浪/腾讯的接口**无契约保证**，改字段、改市场码、加加密都会静默断 | 双源互备（日K/实时/指数/AH 均有两源）+ 插件隔离测试 + 能力矩阵 `usable` 门控 + **每个接口落地时活体验证并记录真实端点**（照抄 akshare 函数名当结论是本次已犯过的错） |
+| **直连爬虫接口的固有风险** | 东财/新浪/腾讯的接口**无契约保证**，改字段、改市场码、加加密都会静默断 | 双源互备（日K/实时/指数/AH 均有两源）+ 插件隔离测试 + 能力矩阵 `usable` 门控 + **每个接口落地时活体验证并记录真实端点**（照抄 akshare 函数名当结论是本次已犯过的错）。⚠️ 该风险**已实证发生**：2026-11 `push2.eastmoney.com` 全集群对本机 IP 应用层封禁（TLS 握手成功但不返回 HTTP 响应），同期 `datacenter-web` / 腾讯 / 新浪均正常 —— 说明封禁是**按集群**而非按域名整体，多源互备确实救回了部分能力。实测细节见 §14「待复测」 |
 | **（条件性）akshare 版本下限** | *仅在 §3.5 决定启用该 extra 时适用*：解析到 ≤1.20.24 会拉进 Linux 专用 `py-mini-racer` 0.6.0，该包**无 aarch64 wheel** → ARM64 Linux 源码编译 V8，部署炸 | **pyproject 钉 `akshare>=1.20.25`**（该版起统一为无标记的 `mini-racer>=0.13.0`，双架构 + musl 均有 wheel）。详见 §3.5 |
 | **（条件性）Docker 默认不装 extra** | *同上，仅在启用 extra 时适用*：`BACKEND_EXTRAS` 默认空 → 财务类在容器里不可用，用户只看到置灰卡片 | 需明确决策：保持可选（UI 带安装按钮）还是进默认 extras（镜像 +21 MB） |
 | **串市场** | 港股页面显示 A 股数据（QuantMind 出过此事故） | 五道闸 + 串市场回归测试 + **AST 架构守卫**（`tests/test_market_architecture_guard.py`，PR1 已落地；原计划的 CI grep 会命中我们自己引用反模式的 docstring，已弃用） |

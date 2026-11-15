@@ -23,8 +23,17 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.api.pipeline import _submit_job
+from app.market import Market, rules_for
 from app.plugins.eastmoney.hk_financials import HK_DATE_TYPE_ANNUAL
-from app.services import financial_sync_hk, instrument_sync_hk, kline_sync_hk
+from app.plugins.sina import hk_index as sina_hk_index
+from app.plugins.sina.client import SinaError
+from app.services import (
+    financial_sync_hk,
+    index_const,
+    index_sync_hk,
+    instrument_sync_hk,
+    kline_sync_hk,
+)
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
 
 logger = logging.getLogger(__name__)
@@ -299,6 +308,254 @@ def get_hk_daily(
             for r in rows
         ],
     }
+
+
+# ── 指数 (PR3, 方案 §11) ──────────────────────────────────────────
+def _resolve_hk_index_symbols(raw: str | None) -> list[str]:
+    """解析指数代码入参 → 白名单内的代码列表 (保持调用方给的顺序)。
+
+    缺省 = **核心四指数** (``index_const.core_index_symbols(Market.HK)``), 与
+    CONTRIBUTING §指数契约「展示层固定为核心指数, ``index_const.py`` 是唯一真源」
+    一致; 要全 27 个 (指数页) 必须显式传。
+
+    🔴 校验用**指数白名单**而不是 ``is_hk_symbol``: 后者是股票契约
+    (``[0-9]{5}\\.HK``), ``HSI`` 这类指数代码必然不匹配 —— 用错校验器会让所有
+    合法请求 400。白名单外的代码 400 而非静默丢弃 (fail closed)。
+    """
+    if not raw or not raw.strip():
+        return list(index_const.core_index_symbols(Market.HK))
+    wanted = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    unknown = [s for s in wanted if s not in sina_hk_index.HK_INDEX_WHITELIST]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"非港股指数代码: {unknown[:5]} (共 {len(unknown)} 个)。"
+            "允许的代码见 app/plugins/sina/hk_index.py 白名单",
+        )
+    return wanted
+
+
+def _hk_index_quotes_from_daily(repo, wanted: list[str]) -> list[dict]:
+    """新浪不可用时的降级: 从 ``kline_hk_index_daily`` 取每个代码最近两根算涨跌。
+
+    取**两根**而不是一根: 只有一根算不出 ``change_pct``, 而前端侧栏/总览的核心
+    展示就是涨跌幅 —— 缺了它会渲染成 0.00% (看起来像「今天没动」), 那是假数据。
+    前收缺失 (只有一根历史) 时 ``change_pct`` 留 ``None``, 由前端显示占位符。
+    """
+    if not wanted:
+        return []
+    placeholders = ",".join("?" * len(wanted))
+    sql = (
+        "SELECT symbol, date, open, high, low, close, volume FROM ("
+        "  SELECT *, row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn"
+        f"  FROM kline_hk_index_daily WHERE symbol IN ({placeholders})"
+        ") WHERE rn <= 2 ORDER BY symbol, date DESC"
+    )
+    try:
+        rows = repo.execute_all(sql, wanted)
+    except Exception as e:  # noqa: BLE001
+        # 视图未注册 = 从未同步过港股指数, 如实返回空 (由调用方标注 source)
+        logger.debug("kline_hk_index_daily 查询失败 (可能尚未同步): %s", e)
+        return []
+
+    by_symbol: dict[str, list[tuple]] = {}
+    for r in rows:
+        by_symbol.setdefault(r[0], []).append(r)
+
+    names = index_const.core_index_names(Market.HK)
+    out: list[dict] = []
+    for symbol in wanted:  # 按调用方顺序, 而非 SQL 返回顺序
+        bars = by_symbol.get(symbol)
+        if not bars:
+            continue
+        latest = bars[0]
+        prev_close = bars[1][5] if len(bars) > 1 else None
+        close = latest[5]
+        change_pct = None
+        change_amount = None
+        if prev_close:
+            change_amount = close - prev_close
+            change_pct = change_amount / prev_close  # 小数口径, 与实时快照一致
+        high, low = latest[3], latest[4]
+        out.append(
+            {
+                "symbol": symbol,
+                "name": names.get(symbol),
+                "last_price": close,
+                "prev_close": prev_close,
+                "open": latest[2],
+                "high": high,
+                "low": low,
+                "volume": latest[6],
+                # amount 刻意不产出: 腾讯日K不提供成交额, 填 0 会被前端当成
+                # 「成交额为零」的真实读数 (见 index_sync_hk 模块 docstring)
+                "change_pct": change_pct,
+                "change_amount": change_amount,
+                "amplitude": (high - low) / prev_close if high is not None and low is not None and prev_close else None,
+                "timestamp": None,  # 日K只有日期没有时刻, 不伪造成 00:00 的毫秒时间戳
+                "trade_date": latest[1].isoformat() if isinstance(latest[1], date) else str(latest[1]),
+            }
+        )
+    return out
+
+
+@router.get("/indices")
+def get_hk_indices(
+    request: Request,
+    symbols: Annotated[
+        str | None,
+        Query(description="逗号分隔的港股指数代码, 如 HSI,HSTECH; 缺省=核心四指数"),
+    ] = None,
+) -> dict:
+    """港股指数实时快照 (新浪, **15 分钟延时**)。
+
+    响应形状与 ``GET /api/intraday/indices`` 对齐 (``rows/count/source``), 前端共享层
+    可按市场切端点而不必分叉渲染逻辑。额外两个字段是港股专属语义:
+
+    - ``quote_delay_minutes``: 取自 ``rules_for(Market.HK)``, 是前端「延时」标注的
+      **唯一来源** (方案 §13 PR3 第 5 项)。不得在前端硬编码 15。
+    - ``currency``: 港股指数以 HKD 计, 与 A 股 CNY 不同, 供金额类展示标注。
+
+    新浪不可用时降级读日K最新一根 (``source="index_daily"``), 与 A 股同款语义:
+    宁可给上一交易日收盘也不给空白, 但**必须如实标注来源**, 不伪装成实时。
+    """
+    wanted = _resolve_hk_index_symbols(symbols)
+    repo = request.app.state.repo
+    delay = rules_for(Market.HK).quote_delay_minutes
+
+    try:
+        rows = index_sync_hk.fetch_hk_index_quotes(symbols=wanted)
+    except SinaError as e:
+        logger.warning("港股指数快照拉取失败, 降级读日K: %s", e)
+        rows = []
+    # 兜住所有异常降级到日K: 快照是「锦上添花」的实时层, 任何未预期错误都不该
+    # 让侧栏指数条整块 500。logger.exception 保留完整栈, 不静默。
+    except Exception:
+        logger.exception("港股指数快照出现未预期错误, 降级读日K")
+        rows = []
+
+    if rows:
+        # 新浪可能返回白名单外的代码 (源变更), 也可能漏返回 → 按请求集过滤并保序
+        by_symbol = {r["symbol"]: r for r in rows}
+        ordered = [by_symbol[s] for s in wanted if s in by_symbol]
+        missing = [s for s in wanted if s not in by_symbol]
+        if missing:
+            logger.warning("港股指数快照缺 %d 个请求代码: %s", len(missing), missing[:8])
+        if ordered:
+            return {
+                "rows": ordered,
+                "count": len(ordered),
+                "source": "realtime",
+                "market": Market.HK.value,
+                "quote_delay_minutes": delay,
+                "currency": "HKD",
+            }
+
+    fallback = _hk_index_quotes_from_daily(repo, wanted)
+    return {
+        "rows": fallback,
+        "count": len(fallback),
+        "source": "index_daily",
+        "market": Market.HK.value,
+        "quote_delay_minutes": delay,
+        "currency": "HKD",
+    }
+
+
+@router.get("/index_daily")
+def get_hk_index_daily(
+    request: Request,
+    symbol: Annotated[str, Query(description="港股指数代码, 如 HSI")],
+    start: Annotated[date | None, Query()] = None,
+    end: Annotated[date | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+) -> dict:
+    """读港股指数日K → ``kline_hk_index_daily/`` (原始值, 未复权 —— 指数无复权概念)。
+
+    🔴 ``volume_unit`` 返回 ``None`` 而**不是**某个具体单位: 两个源对同一个量的
+    口径互相矛盾 (新浪 HSI 2026-11-13 成交量 195857007, 腾讯同日 195857007140,
+    恰好 ×1000; 而新浪自带的成交额/成交量 = 58.84, 与指数点位 23637.6 也不自洽)。
+    既然无法判定真值, 就**不断言** —— 编一个单位会让前端把量能用错 1000 倍。
+    指数场景下量能只做定性参考 (MA/MACD 只用 close), 不影响指标正确性。
+
+    与 ``GET /api/hk/daily`` 一样**不含** enriched 指标列: 磁盘只存窄表,
+    MA/MACD 等由读时重算 (``ENRICHED_STORAGE_COLS`` 契约)。
+    """
+    wanted = _resolve_hk_index_symbols(symbol)  # 复用白名单校验 (单代码也走同一口径)
+    repo = request.app.state.repo
+
+    sql = (
+        "SELECT symbol, date, open, high, low, close, volume "
+        "FROM kline_hk_index_daily WHERE symbol = ?"
+    )
+    params: list = [wanted[0]]
+    if start:
+        sql += " AND date >= ?"
+        params.append(start)
+    if end:
+        sql += " AND date <= ?"
+        params.append(end)
+    sql += " ORDER BY date DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = repo.execute_all(sql, params)
+    except Exception as e:  # noqa: BLE001
+        # 视图未注册 = 还没同步过港股指数日K, 如实返回空而不是 500
+        logger.debug("kline_hk_index_daily 查询失败 (可能尚未同步): %s", e)
+        rows = []
+
+    return {
+        "symbol": wanted[0],
+        "name": index_const.core_index_names(Market.HK).get(wanted[0]),
+        "volume_unit": None,
+        "currency": "HKD",
+        "quote_delay_minutes": rules_for(Market.HK).quote_delay_minutes,
+        "rows": [
+            {
+                "symbol": r[0],
+                "date": r[1].isoformat() if isinstance(r[1], date) else str(r[1]),
+                "open": r[2], "high": r[3], "low": r[4], "close": r[5],
+                "volume": r[6],
+            }
+            for r in rows
+        ],
+    }
+
+
+class HkIndexSyncRequest(BaseModel):
+    """港股指数日K同步请求。
+
+    ``symbols`` 为空 = 白名单全集 (27 个)。``count`` 为单标的回填根数,
+    缺省 :data:`~app.services.index_sync_hk.HK_INDEX_DAILY_COUNT`。
+    """
+
+    symbols: list[str] | None = None
+    count: int | None = None
+
+
+@router.post("/sync_index_daily")
+def sync_hk_index_daily_route(request: Request, req: HkIndexSyncRequest) -> dict:
+    """同步港股指数日K + enriched → ``kline_hk_index_daily/``。
+
+    27 个单标的请求 (腾讯日K无批量端点), 秒级 → 同步执行, 不必任务化
+    (与 ``sync_hk_instruments`` 同款判断)。视图刷新在 service 内部完成。
+
+    ``status`` 三态: ``ok`` 有写入且无失败 / ``partial`` 有写入但有真失败 /
+    ``empty`` 零写入。**腾讯无覆盖的代码不算失败** (27 个中仅 14 个有日K,
+    详见 :mod:`app.services.index_sync_hk`), 单独在 ``no_coverage`` 里如实返回。
+    """
+    repo = request.app.state.repo
+    try:
+        written, failed = index_sync_hk.sync_hk_index_daily(
+            repo, symbols=req.symbols, count=req.count
+        )
+    except ValueError as e:
+        # 白名单校验失败 (hk_index_universe 抛出) → 400 而不是 500
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    status = "empty" if not written else ("partial" if failed else "ok")
+    return {"status": status, "count": written, "failed": failed}
 
 
 # ── 财务 (PR2b) ───────────────────────────────────────────────────
