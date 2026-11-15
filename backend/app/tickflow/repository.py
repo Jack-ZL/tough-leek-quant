@@ -39,7 +39,7 @@ from app.enriched_generation import (
 )
 from app.market import Market, parse_market
 from app.market_time import CN_TZ, cn_today
-from app.parquet import scan_enriched_parquet
+from app.parquet import scan_daily_parquet, scan_enriched_parquet
 from app.polars_guard import guarded_collect
 from app.services.minute_adjust import apply_minute_adjustment, minute_basis_is_raw
 from app.startup_diagnostics import startup_phase
@@ -439,6 +439,10 @@ class KlineRepository:
         self._name_map_cache: dict[str, str] | None = None
         self._historical_shares_cache: pl.DataFrame | None = None
         self._historical_shares_mtime_ns: int | None = None
+        # 港股维表缓存 (mtime 失效, 与 historical_shares 同款)。读时重算换手率要用,
+        # 而详情抽屉每个行情 tick 调一次日K接口 —— 不做缓存会把轮询变成磁盘 IO 热点。
+        self._hk_instruments_cache: pl.DataFrame | None = None
+        self._hk_instruments_mtime_ns: int | None = None
         # 完整 enriched 历史 (含所有指标, 供 filter_history 策略使用)
         self._enriched_history_cache: pl.DataFrame | None = None  # ~100万行
         self._enriched_history_start: date | None = None
@@ -479,6 +483,14 @@ class KlineRepository:
         self._inst_glob = str(store.data_dir / "instruments" / "**" / "*.parquet")
         self._index_inst_glob = str(store.data_dir / "instruments_index" / "**" / "*.parquet")
         self._etf_inst_glob = str(store.data_dir / "instruments_etf" / "**" / "*.parquet")
+        # 港股 glob 经 enriched_dirname/daily_dirname 查 _DIRNAMES 得出, **不写字面量**
+        # —— 「港股落哪个目录」只允许 _DIRNAMES 一处定义 (见该表注释)。
+        self._hk_enriched_glob = str(
+            store.data_dir / enriched_dirname("stock", market=Market.HK) / "**" / "*.parquet"
+        )
+        self._hk_daily_glob = str(
+            store.data_dir / daily_dirname("stock", market=Market.HK) / "**" / "*.parquet"
+        )
 
     def _new_cursor(self):
         """从根连接复制一个独立连接 (共享同一库实例, 创建开销极低)。"""
@@ -1739,6 +1751,27 @@ class KlineRepository:
             self._historical_shares_mtime_ns = mtime_ns
         return self._historical_shares_cache
 
+    def get_hk_instruments(self) -> pl.DataFrame:
+        """港股维表 (``instruments_hk``), mtime 失效缓存。缺失/损坏 → **空帧**。
+
+        复用服务层的 :func:`hk_enriched_instruments` 而不是自己再读一遍 parquet:
+        读时重算的换手率必须与 :func:`sync_hk_enriched` 落盘时用**同一份**维表口径,
+        两处各读各的会在 float_shares 上静默漂移。
+
+        空帧不猜默认股本 —— 猜出来的换手率「看起来对但错」(CONTRIBUTING §3);
+        ``compute_all`` 在 instruments 为空时跳过涨跌停/换手率那一步, 存储列
+        ``turnover_rate`` 原样保留, 即降级为「用落盘值」而不是「编一个值」。
+        """
+        from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
+        from app.services.kline_sync_hk import hk_enriched_instruments
+
+        path = self.store.data_dir / HK_INSTRUMENT_RELPATH
+        mtime_ns = path.stat().st_mtime_ns if path.exists() else None
+        if self._hk_instruments_cache is None or mtime_ns != self._hk_instruments_mtime_ns:
+            self._hk_instruments_cache = hk_enriched_instruments(self.store.data_dir)
+            self._hk_instruments_mtime_ns = mtime_ns
+        return self._hk_instruments_cache
+
     def get_index_instruments(self) -> pl.DataFrame:
         """返回缓存的指数 instruments DataFrame。如无缓存则懒加载。"""
         if self._index_instruments_cache is None:
@@ -2246,6 +2279,108 @@ class KlineRepository:
         except Exception as e:  # noqa: BLE001
             logger.warning("index on-demand compute failed: %s", e)
         return df
+
+    def _scan_hk_enriched_symbol(self, symbol: str, start: date, end: date) -> pl.DataFrame:
+        """扫 ``kline_hk_enriched`` 单标的 → **14 列存储窄表** (指标读时重算)。
+
+        与 :meth:`_scan_daily_symbol` 同构, 只差 glob。``scan_enriched_parquet`` 钉了
+        ``ENRICHED_STORAGE_SCHEMA``, 所以返回列集是稳定的, 不会因某次落盘多带一列
+        而让下游 schema 漂移。
+        """
+        try:
+            lf = (
+                scan_enriched_parquet(
+                    self._hk_enriched_glob,
+                    cast_options=pl.ScanCastOptions(integer_cast="allow-float"),
+                )
+                .filter(
+                    (pl.col("symbol") == symbol)
+                    & (pl.col("date") >= start)
+                    & (pl.col("date") <= end)
+                )
+                .sort("date")
+            )
+            return guarded_collect(lf)
+        except Exception as e:  # noqa: BLE001
+            # glob 无匹配文件 = 从未同步过港股 enriched, 是正常状态而非故障 (与
+            # api.hk 里 kline_hk_daily / kline_hk_index_daily 的查询失败同口径)。
+            # 返回空帧由调用方如实报「无数据」, 不抛 500。
+            logger.debug("港股 enriched 扫描失败 (可能尚未同步): %s", e)
+            return pl.DataFrame()
+
+    def _compute_hk_enriched_range(self, df: pl.DataFrame) -> pl.DataFrame:
+        """港股 enriched 窄表 → 全套指标。与 :meth:`_compute_enriched_range` 同构。
+
+        🔴 两处差别都是**市场差异住在数据里**而不是分支里 (架构守卫):
+        ① 维表取 ``instruments_hk`` 而非 ``instruments``;
+        ② ``market=Market.HK`` → 换手率的 volume 单位系数按「股」(A 股是「手」,
+           差 100 倍), 且港股 ``has_price_limit=False`` → 限价列恒 null、大涨大跌
+           都不记连板 (见 ``compute_limit_signals`` docstring)。
+        ``historical_shares`` 恒 None: 港股没有财务股本历史链路, 换手率用维表当期
+        ``float_shares`` —— 与 :func:`sync_hk_enriched` 落盘时完全同口径。
+        """
+        from app.indicators.pipeline import compute_all, filter_halt_days
+
+        if df.is_empty() or df.height < 2:
+            return df
+        # 兜底过滤停牌日: 落盘前 compute_enriched 已滤过, 这里防历史脏数据。
+        df = filter_halt_days(df)
+        if df.is_empty() or df.height < 2:
+            return df
+        try:
+            df = compute_all(
+                df,
+                self.get_hk_instruments(),
+                historical_shares=None,
+                market=Market.HK,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("港股 enriched 读时重算失败: %s", e)
+        return df
+
+    def get_hk_daily(self, symbol: str, start: date, end: date) -> pl.DataFrame:
+        """单只港股日K (前复权 OHLC + 全套指标), 按 date **升序**。
+
+        🔴 **只读 ``kline_hk_enriched``, 绝不回退 ``kline_hk_daily``**: 原始价没有
+        前复权, 跨除净日的 MA/MACD 会失真, 而图表上看不出任何异常 —— 正是
+        CONTRIBUTING §3 的「看起来对但错」。enriched 为空就返回空帧, 由 API 层如实
+        报「未生成」(并用 :meth:`hk_daily_row_count` 归因), 而不是拿原始价充数。
+        原始价并没有丢: 每行都带 ``raw_close`` / ``raw_high`` / ``raw_low``。
+
+        与 A 股 :meth:`get_daily` 的差异 (刻意的, 见 ``services/kline_sync_hk`` 模块
+        docstring): 无实时蜡烛注入、无 enriched_latest 缓存、无 daily_bootstrap
+        补齐 —— 港股没有实时行情链路, 只有显式同步落盘的数据, 编不出「最新一根」。
+
+        指标需要预热 (MA60 ≈ 60 交易日 ≈ 150 日历日), 故扫描窗口左端外扩 150 天,
+        重算后再裁回 ``[start, end]`` —— 与 A 股同款, 否则区间头 60 根均线全空。
+        """
+        from datetime import timedelta
+
+        df = self._scan_hk_enriched_symbol(symbol, start - timedelta(days=150), end)
+        if df.is_empty():
+            return df
+        df = self._compute_hk_enriched_range(df)
+        return (
+            df.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+            .sort("date")
+        )
+
+    def hk_daily_row_count(self, symbol: str) -> int:
+        """``kline_hk_daily`` 里该标的的行数 (0 = 从未同步过原始日K)。
+
+        **只用于空态归因**: enriched 为空时区分「日K都没有」与「日K有但 enriched
+        没算出来 / 被复权因子完整性凭据闸门拒算」—— 两者给用户的动作完全不同
+        (前者去同步日K, 后者去重算 enriched)。不参与任何数值计算。
+
+        走 polars 而不是 ``SELECT count(*)``: 只投影 ``symbol`` 一列 + 谓词下推,
+        不必让 DuckDB 扫全表所有列。
+        """
+        try:
+            lf = scan_daily_parquet(self._hk_daily_glob).filter(pl.col("symbol") == symbol)
+            return int(guarded_collect(lf.select(pl.len())).item())
+        except Exception as e:  # noqa: BLE001
+            logger.debug("港股原始日K计数失败 (可能尚未同步): %s", e)
+            return 0
 
     def _filter_cached(
         self, cached: pl.DataFrame, symbol: str, columns: list[str] | None

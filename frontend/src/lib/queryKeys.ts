@@ -157,6 +157,11 @@ export const QK = {
 	// 港股指数只有日K(无分钟端点)。start/end/limit 均影响结果 ⇒ 全部入 key。
 	hkIndexDaily: (symbol: string, start: string, end: string, limit: number) =>
 		['hk-index-daily', symbol, start, end, limit] as const,
+	// 港股**个股**日K(前复权 + 指标)。🔴 前缀 `hk-daily` 与 A 股 `kline` 互斥,
+	// 不得共用: 两个市场排序/单位/指标列都不同, 共用 key 会让切市场时短暂显示
+	// 上一个市场的数字(方案 §8「标题改了、口径没改, 比不切换更误导」)。
+	hkDaily: (symbol: string, start: string, end: string, limit: number) =>
+		['hk-daily', symbol, start, end, limit] as const,
 
 	// Schema
 	extDataSchemaAll: ['ext-data-schema-all'] as const,

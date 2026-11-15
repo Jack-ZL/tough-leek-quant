@@ -280,46 +280,67 @@ def get_hk_daily(
     end: Annotated[date | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=5000)] = 500,
 ) -> dict:
-    """读港股日K (原始价, volume 单位为**股**)。
+    """读港股日K (**前复权** OHLC + 全套技术指标), 按日期**升序**。
 
-    ⚠️ 调用方不得假定 volume 是手: 港股内部单位是股, 换算系数见
-    ``app.market.shares_per_volume_unit``。响应里带 ``volume_unit`` 明示, 避免
-    前端按 A 股习惯乘 100。
+    🔴 数据源是 ``kline_hk_enriched`` 而**不是** ``kline_hk_daily``, 且**不回退**:
+    原始价跨除净日算出的 MA/MACD 会失真, 而图表上看不出任何异常 —— 正是
+    CONTRIBUTING §3 的「看起来对但错」。enriched 缺失时返回空 ``rows`` 加
+    ``empty_reason`` 归因, 由前端出空态文案与对应动作, 绝不拿原始价充数。
+    原始价并没有丢: 每行都带 ``raw_close`` / ``raw_high`` / ``raw_low``。
+
+    ⚠️ 升序与 A 股 ``/api/kline/daily`` 对齐, 但**与本端点旧行为 (倒序) 相反**, 且
+    ``/api/hk/index_daily`` 仍是倒序 —— 调用方不得假定港股两个端点同序 (指数页
+    适配器已显式排序, 见 ``frontend/src/lib/index-market-adapter.ts``)。
+
+    ⚠️ ``volume`` 单位是**股**不是手 (A 股是手), 换算系数见
+    ``app.market.shares_per_volume_unit``; 响应带 ``volume_unit`` 明示, 避免前端按
+    A 股习惯乘 100。港股 ``has_price_limit=False`` → ``limit_*`` / ``signal_limit_*``
+    列恒 null, 图表不画涨跌停标记是**正确**行为而不是缺数据。
+
+    ``limit`` 截取区间内**最近** N 根 (升序后的尾部)。``end`` 缺省 = 港股时区今天,
+    ``start`` 缺省 = ``end`` 往前 365 天 (≈250 交易日)。指标预热由
+    :meth:`KlineRepository.get_hk_daily` 内部外扩 150 天处理, 调用方无需多要数据。
     """
     from app.market import is_hk_symbol
+    from app.market_time import market_today
 
     if not is_hk_symbol(symbol):
         raise HTTPException(status_code=400, detail=f"非港股代码格式: {symbol}")
 
     repo = request.app.state.repo
-    sql = "SELECT symbol, date, open, high, low, close, volume, amount FROM kline_hk_daily WHERE symbol = ?"
-    params: list = [symbol]
-    if start:
-        sql += " AND date >= ?"
-        params.append(start)
-    if end:
-        sql += " AND date <= ?"
-        params.append(end)
-    sql += " ORDER BY date DESC LIMIT ?"
-    params.append(limit)
+    rules = rules_for(Market.HK)
+    end = end or market_today(Market.HK)
+    start = start or (end - timedelta(days=365))
 
-    try:
-        rows = repo.execute_all(sql, params)
-    except Exception as e:  # noqa: BLE001
-        # 视图未注册 = 还没同步过任何港股日K, 如实返回空而不是 500
-        logger.debug("kline_hk_daily 查询失败 (可能尚未同步): %s", e)
-        rows = []
+    df = repo.get_hk_daily(symbol, start, end)
+    if df.height > limit:
+        df = df.tail(limit)
+    rows = df.to_dicts()
+
+    empty_reason = None
+    if not rows:
+        # 空态归因: 「日K都没有」与「日K有但 enriched 没算出来」要给用户完全不同的
+        # 动作 —— 前者去同步日K, 后者去重算 enriched (而重算又可能被复权因子完整性
+        # 凭据判成 uncovered 而拒算, 见 services/kline_sync_hk 的 coverage.json)。
+        # 合成一句「暂无数据」会把用户指向错误的按钮。
+        empty_reason = "no_enriched" if repo.hk_daily_row_count(symbol) else "no_daily"
+
+    instruments = repo.get_hk_instruments()
+    name = None
+    if not instruments.is_empty() and "name" in instruments.columns:
+        hit = instruments.filter(pl.col("symbol") == symbol)["name"]
+        name = hit[0] if len(hit) else None
 
     return {
         "symbol": symbol,
+        "name": name,
+        "market": Market.HK.value,
         "volume_unit": "shares",
-        "currency": "HKD",
+        "currency": rules.currency,
+        "quote_delay_minutes": rules.quote_delay_minutes,
+        "empty_reason": empty_reason,
         "rows": [
-            {
-                "symbol": r[0], "date": r[1].isoformat() if isinstance(r[1], date) else str(r[1]),
-                "open": r[2], "high": r[3], "low": r[4], "close": r[5],
-                "volume": r[6], "amount": r[7],
-            }
+            {**r, "date": r["date"].isoformat() if isinstance(r["date"], date) else str(r["date"])}
             for r in rows
         ],
     }

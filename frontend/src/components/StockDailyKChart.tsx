@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { type KlineRow } from '@/lib/api'
-import { klineDailyQueryOptions, klineDateRange } from '@/lib/kline'
+import { klineDailyQueryOptions, klineDateRange, type KlineDailyQueryOptions } from '@/lib/kline'
 import { storage } from '@/lib/storage'
 import type {
 	ChartMarker,
@@ -52,6 +52,19 @@ interface Props {
 	extColumns?: string
 	/** 加入自选日 (北京时间 YYYY-MM-DD); 有值时日K主图绘制「自选」竖虚线 */
 	addedDate?: string | null
+	/**
+	 * 日K查询配置注入点。缺省 = A 股 `klineDailyQueryOptions`。
+	 *
+	 * 🔴 市场差异住在 `lib/kline-market-adapter.ts`, 本组件**不认市场**(方案 §8 规则 2):
+	 * 港股详情把 `/api/hk/daily` 的 options 从这里注进来, 图表本体两个市场共用。
+	 * 注入的 options 必须自带 `placeholderData` 守卫(跨市场不得沿用缓存)。
+	 */
+	queryOptions?: KlineDailyQueryOptions
+	/**
+	 * `rows` 为空时的文案(空态即契约, 方案 §8 规则 3: 解释为什么空 + 给出出路)。
+	 * 缺省 `undefined` 时保持旧行为 —— 不渲染任何提示。
+	 */
+	emptyHint?: string
 }
 
 function isValidRow(r: any): boolean {
@@ -174,6 +187,8 @@ export function StockDailyKChart({
 	onPriceDoubleClick,
 	extColumns,
 	addedDate,
+	queryOptions,
+	emptyHint,
 }: Props) {
 	const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
 	const [showMarkers, setShowMarkers] = useState(true)
@@ -189,7 +204,11 @@ export function StockDailyKChart({
 	const dateRange = externalDateRange ?? getDefaultRange()
 
 	// 查询配置统一来自 klineDailyQueryOptions, 与 StockPanel 信息条/邻近预取共享同一 cache key (只发一次请求)
-	const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol })
+	// 注入 queryOptions 时以注入值为准(港股详情走 /api/hk/daily), 缺省仍是 A 股端点。
+	// 显式标注类型: 让 useQuery 的 TData 稳定为最小消费面, 不随「注入与否」漂移成联合类型。
+	const dailyOptions: KlineDailyQueryOptions =
+		queryOptions ?? klineDailyQueryOptions(symbol, dateRange, extColumns)
+	const kline = useQuery({ ...dailyOptions, enabled: !!symbol })
 
 	const rows = useMemo(() => toOHLC(kline.data?.rows ?? []), [kline.data?.rows])
 	const stockInfo = kline.data?.stock_info
@@ -322,6 +341,11 @@ export function StockDailyKChart({
 			{kline.isError && <div className="text-sm text-danger py-2">日K加载失败</div>}
 			{!kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) > 0 && rows.length === 0 && (
 				<div className="text-sm text-danger py-2">数据格式异常，请刷新页面</div>
+			)}
+			{/* 空态即契约(方案 §8 规则 3): 有 emptyHint 才渲染 —— 缺省调用方(A 股)保持旧行为。
+			    与上面「数据格式异常」互斥: 那条是「有原始行但全部无效」, 这条是「一行都没有」。 */}
+			{emptyHint && !kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) === 0 && (
+				<div className="text-sm text-muted py-4 max-w-[60ch] leading-relaxed">{emptyHint}</div>
 			)}
 			{rows.length > 0 && (
 				<Suspense fallback={

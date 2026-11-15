@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { KlineRow } from '@/lib/api'
+import { klineDailyQueryOptions } from '@/lib/kline'
 import { StockDailyKChart } from './StockDailyKChart'
 
 const fixture = vi.hoisted(() => ({ rows: [
@@ -116,4 +117,29 @@ it('hides the style selector wherever the existing event toggle is unavailable',
   expect(host.querySelector('[aria-label="异动显示方式"]')).toBeNull()
   await render({ showLimitMarkers: false })
   expect(host.querySelector('[aria-label="异动显示方式"]')).toBeNull()
+})
+
+// ===== 市场适配注入点(方案 §8 规则 3/4): 图表本身不认识市场 =====
+
+it('空态即契约: 只有调用方给了 emptyHint 才渲染, 缺省的 A 股调用方保持旧行为', async () => {
+  fixture.rows = []
+  await render({ emptyHint: '港股尚未同步日K。' })
+  expect(host.textContent).toContain('港股尚未同步日K。')
+  // 不给 emptyHint → 一行都不渲染空态(旧行为), 也不会误显示「数据格式异常」
+  await render({})
+  expect(host.textContent).not.toContain('港股尚未同步日K。')
+  expect(host.textContent).not.toContain('数据格式异常')
+})
+
+it('注入 queryOptions 时不再走 A 股的 klineDailyQueryOptions(港股有自己的端点)', async () => {
+  const spy = vi.mocked(klineDailyQueryOptions)
+  spy.mockClear()
+  await render()
+  expect(spy).toHaveBeenCalled()
+  spy.mockClear()
+  await render({ queryOptions: {
+    queryKey: ['hk-daily', '00700.HK'],
+    queryFn: async () => ({ rows: [] }),
+  } })
+  expect(spy).not.toHaveBeenCalled()
 })

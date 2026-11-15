@@ -794,7 +794,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | `tests/test_hk_eastmoney.py` | 154 | 插件层：secid / 列表 fs / 双柜台 / tick_size 11 档 / spot 与 kline 映射 |
 | `tests/test_hk_financial_sync.py` | 96 | 财务服务层：合并语义 / 规范化投影 / align / lot_size 回填 |
 | `tests/test_hk_financials.py` | 74 | 财务插件层：报表名 / filter 语法 / 分页上限 / 字段映射（**已做变异检验**） |
-| `tests/test_hk_api.py` | 54 | 10 条路由的契约、参数校验、串市场护栏、enriched 阶段接线、**拒算清单回报**（`uncovered` / `enriched_uncovered`） |
+| `tests/test_hk_api.py` | 62 | 10 条路由的契约、参数校验、串市场护栏、enriched 阶段接线、**拒算清单回报**（`uncovered` / `enriched_uncovered`）、**`GET /daily` 的 enriched 读取契约**（升序 / `empty_reason` 三态 / 不回退原始价 / 维表未同步时 `name` 为 null，**已做变异检验**） |
 | `tests/test_hk_storage_layout.py` | 27 | 五道闸：目录隔离 / 视图不串市场 / `_DIRNAMES` 无 etf |
 | `tests/test_hk_kline_sync.py` | 34 | 日线同步：universe / 增量 / `fqt != 0` 拒绝；**enriched 生成**：换手率单位 / 大涨不判涨停 / 限价恒 null / 目录隔离 / 拒绝降级 / 进度 |
 | `tests/test_hk_instrument_sync.py` | 16 | 维表同步：字段补全 / `_MIN_FRESH_RATIO` / 保留字段 |
@@ -1013,7 +1013,7 @@ HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`�
 
 ### PR3 完成情况（只读看盘 + 指数）—— 前端市场共享层 + 指数页
 
-**状态：已完成。** 指数页 CN/HK 共用一套组件，市场差异全部收敛在适配器文件里（方案 §8 规则 2：组件内禁止 `if (market === 'HK')`）。K线 / 自选 / 详情仍未开始。
+**状态：已完成。** 指数页 CN/HK 共用一套组件，市场差异全部收敛在适配器文件里（方案 §8 规则 2：组件内禁止 `if (market === 'HK')`）。K线 / 详情见下一节；自选仍未开始。
 
 #### 落地文件
 
@@ -1048,14 +1048,83 @@ HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`�
 - **`shortName` 是唯一例外**：港股全名长达 10 字（「恒生香港中资企业指数」），侧栏预算按 A 股 4 字名设计（**85px**），不缩写会截断。回归测试守住「恒生科技」与「恒生国企」不得压成同一个词（`review/Page.tsx` 曾双双压成「恒生」）。
 - **`indexPageParams` 在 `market === DEFAULT_MARKET` 时省略 `market` 参数**：保住侧栏既有的 `/indices?symbol=…` 链接不被改写。
 
+### PR3 完成情况（K线 / 详情抽屉）—— 后端 enriched 读取 + 前端市场适配层
+
+**状态：代码与测试已完成。** 后端全量 **6995 passed / 8 skipped / 1 xfailed**（PR2e 后基线 6987 → +8，与 `test_hk_api.py` 增量精确吻合），ruff 新增告警 0，**3 组变异实验全部被杀**（详见下文）。前端全量 **130 文件 / 1013 例全绿**（指数轮基线 127 / 929 → 本轮 **+3 文件 / +84 例**），`tsc -b` 与 `pnpm build` 均 EXIT=0。
+
+#### 后端：`GET /api/hk/daily` 从「原始价」改成「enriched 升序 + 空态归因」
+
+| 文件 | 变更 |
+|---|---|
+| `app/tickflow/repository.py` | **+136/-1**：4 个港股读取方法 + `get_hk_instruments` + 2 个缓存属性 + 2 个 glob + `scan_daily_parquet` 导入 |
+| `app/api/hk.py` | `GET /daily` 重写：raw → **enriched**，**升序**返回；响应新增 `name` / `currency` / `volume_unit` / `quote_delay_minutes` / **`empty_reason`** |
+| `tests/test_hk_api.py` | 54 → 62（+8：enriched 读取契约） |
+
+`empty_reason` 是**三态**而不是「有没有数据」两态：`null` = 有数据；`no_daily` = 原始日K都没有（引导「同步港股日K」）；`no_enriched` = 日K有但 enriched 没算出来（引导「重算 enriched」，也可能是复权因子完整性凭据把该标的判成 `uncovered` 而**拒算**）。判定式是 `repo.hk_daily_row_count(symbol)` —— 用**原始日K行数**区分两态，而不是猜。
+
+🔴 **enriched 缺失时不回退原始价**：原始价跨除净日算出的 MA/MACD 会**静默失真**（CONTRIBUTING §3 的「看起来对但错」）。所以空 `rows` 是如实报告，前端必须给文案而不是画一张空图。
+
+🔴 **三个日K端点的排序不一致**（本轮最易踩的坑，已登记在 `lib/kline-market-adapter.ts` 文件头）：
+
+| 端点 | 排序 |
+|---|---|
+| `GET /api/kline/daily`（A 股） | 升序（靠 parquet 升序扫描，无显式 `ORDER BY`） |
+| `GET /api/hk/daily` | 升序（**本轮改成**） |
+| `GET /api/hk/index_daily` | **降序**（`ORDER BY date DESC`，由指数适配器在 `fetchDaily` 内显式翻正） |
+
+#### 前端：K线 / 详情的市场适配层
+
+延续指数轮的做法（方案 §8 规则 2：**组件内禁止 `if (market === 'HK')`**），市场差异全部收敛到一张查表里。
+
+| 文件 | 变更 |
+|---|---|
+| `frontend/src/lib/kline-market-adapter.ts` | **新增（本轮核心）**。`KlineMarketSource` 接口 + CN/HK 两个实现 + `klineSource()`。**纯数据、不 import 任何组件**（否则会与被它引用的组件形成循环 import）。一处收敛：端点选择、query key、`placeholderData` 跨市场守卫、能力开关、板块小标、刷新 key、空态文案、市场各自的「今天」 |
+| `frontend/src/components/StockDetailBody.tsx` | **新增**。`BODIES: Record<Market, ComponentType>` 注册表，弹窗因此不必写市场分支。🔴 与 `KLINE_SOURCES` **同为 `Record<Market, …>`**：少一个市场直接编译失败，不会静默漂移成「切到美股渲染 A 股页面」 |
+| `frontend/src/components/HkStockDailyPanel.tsx` | **新增**。港股详情主体，与 `StockPanel` **并列**而非其内部分支。`source` 走 **props** 而不是内部 `klineSource('HK')`（后者会与注册表形成「适配器 ↔ 组件」循环 import） |
+| `frontend/src/components/StockDailyKChart.tsx` | +`queryOptions?` / `emptyHint?` 两个注入点。图表本体两个市场共用（日K行字段都是 `KlineRow`），**它自己不认识市场** |
+| `frontend/src/lib/kline.ts` | +`KlineDailyQueryOptions` / `KlineChartPayload` 两个**手写最小消费面**接口 |
+| `frontend/src/components/StockPreviewDialogContent.tsx` | 13 处改动：能力开关驱动 tab 过滤 / 三个 query 的 `enabled` / 自选与加监控按钮显隐 / `today` / 刷新 key / 板块小标 / 主体换成 `StockDetailBody` |
+| `frontend/src/lib/marketContent.ts` | +`timeZone` / `symbolPattern` / `symbolMarket()` / `marketToday()` |
+| `frontend/src/lib/stockPreviewStore.ts` | 🔴 **第一道硬墙拆掉**：写死的 `/^\d{6}\.(SH\|SZ\|BJ)$/` 改为 `symbolMarket(symbol) === null` 才拒 |
+| `frontend/src/lib/api.ts` / `queryKeys.ts` | +`HkDailyResponse` / `api.hkDaily` / `QK.hkDaily` |
+| 7 个测试文件 | **+84 例**：新增 `kline-market-adapter` 30 / `HkStockDailyPanel` 5 / `StockDetailBody` 3；扩充 `marketContent` 22→54 / `stockPreview` 15→22 / `StockPreviewDialogContent` 3→8 / `StockDailyKChart` 19→21 |
+
+#### 🔴 五个必须记住的陷阱
+
+| 陷阱 | 后果 | 处理 |
+|---|---|---|
+| `KlineDailyResponse.name?: string` 与 `HkDailyResponse.name: string \| null` **不兼容**（`null` 不能赋给 `undefined`） | 用 `ReturnType<typeof klineDailyQueryOptions>` 当注入点类型会让港股 `queryFn` **直接编译不过** | 手写 `KlineChartPayload` **最小消费面**（只 `rows` / `stock_info` / `asset_type`，经 grep 确认图表只读这三个），而不是复用 A 股的响应类型 |
+| `useQuery({...(queryOptions ?? klineDailyQueryOptions(...))})` 会让 TS 把 `TData` 推成**联合类型** | 下游 `kline.data.rows` 取值处处报错 | 先落到一个**显式标注**的局部量 `const dailyOptions: KlineDailyQueryOptions = …` 再展开 |
+| A 股板块小标 `/^[48]/` = 北交所，而**港股 8 开头是创业板** | 直接复用会给港股代码挂上「北」字标 | `boardTag` 进适配器按市场实现；港股 5 位代码前缀不承载板块语义 → **如实返回 `null`**（隐藏入口，不编一个） |
+| React Query `placeholderData: prev => prev` 把**上一个 key** 的数据带到新 key | 切股瞬间渲染上一只股票的K线 | 守卫同时校验 `prevKey[0] === 'hk-daily'` **和** `prevKey[1] === symbol`（指数轮只校验了前者，因为那时不按 symbol 切） |
+| `klineSource(null)` 若兜底 CN | 拿认不出的代码去打 A 股端点，返回一张空图 —— 比抛错难发现得多 | **返回 `null`**，与 `indexSource`（展示层，兜底 CN 不白屏）**刻意相反**；`StockDetailBody` 收到 `null` 就如实报错，不渲染主体 |
+
+#### 变异检验（3/3 被杀）
+
+| 变异 | 被哪个测试杀 |
+|---|---|
+| HK `refreshKeys` 改成 `[['kline', symbol]]` | `StockPreviewDialogContent.test.tsx` 「🔴 港股刷新失效 hk-daily 而不是 kline」 |
+| `klineSource(null)` 兜底 CN | `kline-market-adapter.test.ts` + `StockDetailBody.test.tsx` 各 1 例 |
+| tab 能力过滤改成 `.filter(() => true)` | `StockPreviewDialogContent.test.tsx` 2 例（港股详情 / 分时 tab 下切港股） |
+
+#### 刻意不做的事
+
+- **能力开关一律 `=== true` 而不是 `!== false`**（fail-closed）：新增市场时忘记声明能力 → 入口**隐藏**，而不是把 A 股专属功能漏给一个还没有数据链路的市场。
+- **港股详情没有报价条 / SSE / 分时 / 财务 / 涨跌停标记**（方案 §8 规则 4「未就绪直接隐藏入口」）：渲染一堆必然为空的 A 股区块会让用户以为数据坏了。`showLimitMarkers={false}` 是**显式**关闭而不是依赖「反正算不出标记」—— 万一将来 `buildLimitMarkers` 改成按百分比推算，那对港股就是编造。
+- **`RuleEditor` / `PriceAlertDialog` 没有单独加市场判断**：经 grep 确认它们唯一的 setter 就是已被隐藏的按钮与已按能力条件传入的 `openPriceAlert`，港股侧状态**不可达**。
+- **量纲标签只映射 `shares`→股 / `lots`→手，未知值原样透出**：港股以「股」计、A 股行情列表以「手」计，相差 100 倍，标错会让成交量被读成 100 倍（后端 `shares_per_volume_unit` 对两个市场分别返回 1.0 / 100.0）。
+- **没有顺手修 `cnBoardTag` 的 920 号段缺口**：北交所新号段 `920xxx` 不匹配 `/^[48]/`，因此没有「北」字标 —— 这是**搬迁前就有**的行为，本次只是把函数原样搬进适配器。真要补号段应当连同 Screener 列表那份副本一起改，另开一次改动（测试里已钉住现状并注明）。
+- **延时分钟数与币种都不进 `marketContent`**：只能读接口的 `quote_delay_minutes` / `currency`，写死会与后端漂移。
+
 ### PR3 剩余（未开始）
 
 | 项 | 状态 |
 |---|---|
 | ~~前端共享层 + `marketContent.ts`~~ | ✅ **已完成**（见上节）。⚠️ `Market*` 命名空间确已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用 → 新文件取小写 `lib/market.ts` 避撞 |
-| K线 / 自选 / 详情 | ❌ `lib/kline.ts:16-30` 是唯一权威 options 工厂且只指向 `/api/kline/daily`；🔴 `lib/stockPreviewStore.ts:17-18` 的正则 `/^\d{6}\.(SH\|SZ\|BJ)$/` **直接拒掉 5 位 `.HK`**，详情抽屉打不开（第一道硬墙） |
-| 15 分钟延时标注 | 🟡 **指数页已完成**：新建 `QuoteDelayBadge`（中性灰，**不复用** `QuoteFreshnessBadge` —— 其 `'delayed'` 语义是异常，文案「请检查数据源与连接」），读接口 `quote_delay_minutes`。❌ K线 / 自选 / 详情页接入仍待做 |
-| 空态契约文案 | 🟡 **指数页已完成**：空态按市场分文案，港股注明「27 只白名单中仅 14 只有日K」并给出同步动作路径。❌「港股无概念板块数据源」文案仍不存在 |
+| K线 / 详情 | ✅ **已完成**（见上节）。`lib/kline-market-adapter.ts` + `StockDetailBody.tsx` 注册表；🔴 `lib/stockPreviewStore.ts` 那道写死 `/^\d{6}\.(SH\|SZ\|BJ)$/` 的**第一道硬墙已拆**（改为 `symbolMarket(symbol) === null` 才拒），港股代码现在能打开详情抽屉 |
+| 自选（watchlist） | ❌ **仍被后端挡住**：`app/services/watchlist.py` 零市场感知，且港股**没有实时行情端点**可供自选列表取价（腾讯 spot 是单源且当前 IP 被封）。前端能力开关已就位（`capabilities.watchlist = false` → 入口隐藏），后端接通后只需把这一位翻成 `true` |
+| 15 分钟延时标注 | 🟡 **指数页 + 个股详情页已完成**：新建 `QuoteDelayBadge`（中性灰，**不复用** `QuoteFreshnessBadge` —— 其 `'delayed'` 语义是异常，文案「请检查数据源与连接」），读接口 `quote_delay_minutes`。❌ 自选列表接入仍待做（依赖上面那项） |
+| 空态契约文案 | 🟡 **指数页 + 个股日K已完成**：日K按 `empty_reason` 三态分文案，`no_enriched` 明确写出「刻意不回退原始价」与 `coverage.json` 的 `uncovered` 拒算路径。❌「港股无概念板块数据源」文案仍不存在 |
 | 能力矩阵 market 维（`:918`） | ❌ PR2 刻意延后至此，仍未做 |
 | 指数同步接调度 | ❌ 未接线（当前只有手动 `POST /api/hk/sync_index_daily`；前端指数页已提供对应同步按钮） |
 | 前端三份硬编码指数副本 | 🟡 `Layout.tsx` ✅ 改为 `coreIndexes(DEFAULT_MARKET)`、`Indices.tsx` ✅ `PINNED_INDEXES` 已删除；❌ `review/Page.tsx:787-801` 仍是第三份硬编码，且 `:793` 的缩写表把**恒生科技指数**和**恒生中国企业指数**都压成「恒生」（`marketContent.test.ts` 已加回归护栏，但**尚未修 `review/Page.tsx` 本身**） |

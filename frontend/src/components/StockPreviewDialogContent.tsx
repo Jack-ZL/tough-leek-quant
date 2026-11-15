@@ -9,6 +9,7 @@ import { cnSignal } from '@/lib/signals'
 import { useCustomSignalNames } from '@/lib/useCustomSignalNames'
 import { fmtPct, cnDateFromUtc, fmtAssetPrice } from '@/lib/format'
 import { StockPanel, getDefaultRange } from '@/components/StockPanel'
+import { StockDetailBody } from '@/components/StockDetailBody'
 import { NavPager, NavWrapToast } from '@/components/NavPager'
 import { WatchlistAddMenu } from '@/components/WatchlistAddMenu'
 import { StockMultiDayIntradayChart } from '@/components/StockMultiDayIntradayChart'
@@ -22,6 +23,8 @@ import { storage } from '@/lib/storage'
 import { navItemKey, type NavItem } from '@/lib/listNav'
 import { useListNav } from '@/lib/useListNav'
 import { DEFAULT_INTRADAY_DAYS, cnToday, klineDateRange } from '@/lib/kline'
+import { symbolMarket } from '@/lib/marketContent'
+import { klineSource } from '@/lib/kline-market-adapter'
 import { useQuoteClock } from '@/lib/useQuoteClock'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 import { ExtensionBoundary } from '@/extensions/ExtensionBoundary'
@@ -45,17 +48,23 @@ export interface Props {
 	onNavigate?: (symbol: string, name?: string) => void
 }
 
-// ===== 板块标识（与 Screener 列表一致）=====
-
 // 预设快捷范围（只保留半年和1年）
 const PRESETS: { label: string; months: number }[] = [
 	{ label: '半年', months: 6 },
 	{ label: '1年', months: 12 },
 ]
 
+/**
+ * 内置图表页签。`capability` = 该页签依赖的能力开关(见 `KlineCapabilities`),
+ * `null` 表示所有市场都有。
+ *
+ * 🔴 用能力开关过滤而不是 `market === 'HK'` 判断(方案 §8 规则 2): 港股没有分时
+ * 是因为**没有实时行情链路**(方案 §3.4), 不是因为「它是港股」。将来某个市场有
+ * 分时但没自选, 这张表一个字都不用改。
+ */
 const CHART_TABS = [
-	{ key: 'daily', label: '日 K', icon: LineChart },
-	{ key: 'intraday', label: '分时', icon: Clock },
+	{ key: 'daily', label: '日 K', icon: LineChart, capability: null },
+	{ key: 'intraday', label: '分时', icon: Clock, capability: 'minute' },
 ] as const
 type PreviewView = typeof CHART_TABS[number]['key'] | `extension:${string}`
 interface PriceAlertDraft {
@@ -72,12 +81,9 @@ function loadIntradayDays(): number {
 		: DEFAULT_INTRADAY_DAYS
 }
 
-function boardTag(symbol: string): { label: string; color: string } | null {
-	if (/^(300|301)/.test(symbol)) return { label: '创', color: 'text-[#f97316] bg-[#f97316]/12 border-[#f97316]/25' }
-	if (/^688/.test(symbol))       return { label: '科', color: 'text-purple-400 bg-purple-400/12 border-purple-400/25' }
-	if (/^[48]/.test(symbol))      return { label: '北', color: 'text-cyan-400 bg-cyan-400/12 border-cyan-400/25' }
-	return null
-}
+// 板块小标(创/科/北)已移入 `lib/kline-market-adapter.ts` 的 `boardTag`:
+// 🔴 它是**市场内容**而不是通用工具 —— A 股的 `/^[48]/`(北交所)在港股是创业板,
+// 留在弹窗里就等于让港股代码挂上「北」字标。经 `source.boardTag(symbol)` 取。
 
 // ===== 异动边缘 (与异动页同口径) =====
 
@@ -98,9 +104,16 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate }: Props) {
 	const [view, setView] = useState<PreviewView>('daily')
 	const panelId = useId()
+	// ===== 市场适配(方案 §8 规则 2: 差异只住在适配器, 本组件不认市场) =====
+	// symbol → 市场 → 数据源。🔴 认不出就是 null, **不兜底 A 股**: 本弹窗据此决定
+	// 打哪个端点(属请求层), 兜底等于拿港股代码去查 A 股, 静默返回空比报错难发现。
+	const source = klineSource(symbolMarket(symbol))
+	const capabilities = source?.capabilities
 	const extensionTabs = getFrontendSlotRegistrations('stock-preview.tabs')
+	// 按能力开关过滤页签: 未就绪的入口直接隐藏(方案 §8 规则 4), 而不是渲染一个
+	// 必然为空的 tab。capabilities 缺失时同样隐藏(fail-closed)。
 	const tabs = [
-		...CHART_TABS,
+		...CHART_TABS.filter(tab => tab.capability === null || capabilities?.[tab.capability] === true),
 		...extensionTabs.map(tab => ({ key: `extension:${tab.id}` as const, label: tab.label, icon: null })),
 	]
 	const isChartView = view === 'daily' || view === 'intraday'
@@ -110,7 +123,10 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 	const [dateRange, setDateRange] = useState(getDefaultRange)
 	const [rollingMonths, setRollingMonths] = useState<number | null>(6)
 	const clock = useQuoteClock()
-	const today = cnToday(new Date(clock))
+	// 「今天」按**市场时区**取(见 `marketContent.marketToday`)。A 股与港股都是
+	// UTC+8 属巧合而非契约: 直接沿用 cnToday 会让下一个市场(美股 UTC-5)静默继承
+	// A 股时区, 表现为「傍晚打开详情, 日期范围右端是明天」。
+	const today = source ? source.today(new Date(clock)) : cnToday(new Date(clock))
 	useEffect(() => {
 		if (rollingMonths != null) setDateRange(current => current.end === today ? current : klineDateRange(rollingMonths, today))
 	}, [today, rollingMonths])
@@ -126,22 +142,25 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 	const qc = useQueryClient()
 	const backdrop = useDialogBackdrop(onClose)
 
+	// 自选 / 监控 / 异动三套后端目前都零市场感知(只认 A 股)。能力关闭时**连请求都
+	// 不发**: 异动那条尤其重要 —— `abnormalOverview` 是全市场累计偏离计算, 为一个
+	// 港股代码触发它既拿不到结果又白烧一次重计算。
 	const watchlist = useQuery({
 		queryKey: QK.watchlist,
 		queryFn: api.watchlistList,
-		enabled: !!symbol,
+		enabled: !!symbol && capabilities?.watchlist === true,
 	})
 	const monitorRules = useQuery({
 		queryKey: QK.monitorRules,
 		queryFn: api.monitorRulesList,
-		enabled: !!symbol,
+		enabled: !!symbol && capabilities?.monitor === true,
 	})
 	// 异动边缘: 与异动页同 queryKey 共享缓存; 该股处于观察/边缘/触发状态时在图表上方显示信息条。
 	// 尊重异动页「主开关默认关闭, 关闭时零计算」的设计 — 开关关闭时弹窗不触发全市场计算
 	const abnormal = useQuery({
 		queryKey: QK.abnormalOverview(0.5, 300),
 		queryFn: () => api.abnormalOverview(0.5, 300),
-		enabled: !!symbol && storage.abnormalEnabled.get(false),
+		enabled: !!symbol && capabilities?.abnormal === true && storage.abnormalEnabled.get(false),
 	})
 	const abRow = symbol
 		? abnormal.data?.rows.find(r => r.symbol === symbol)
@@ -221,6 +240,13 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 		setPriceAlertDraft(null)
 	}, [symbol])
 
+	// 切到不支持分时的市场时把视图拉回日K: 上面那条「保留当前视图」的规则不能把
+	// 用户留在一个已经被能力开关隐藏掉的 tab 上(否则 tab 栏没有高亮项, 主体却还
+	// 渲染着 A 股分时图)。判据是能力而不是市场, 与页签过滤同一套逻辑。
+	useEffect(() => {
+		if (view === 'intraday' && capabilities?.minute !== true) setView('daily')
+	}, [view, capabilities])
+
 	// StockPanel owns the quote lease and focused SSE updates, including cleanup.
 
 	// 分时图实时轮询: 详情打开即独立轮询, 不再依赖自选列表的「分时刷新」开关
@@ -245,12 +271,12 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 	}, [dayOptions, effectiveIntradayDays, defaultIntradayDays])
 
 	const handleRefresh = () => {
-		if (!symbol) return
-		if (view === 'daily') {
-			qc.invalidateQueries({ queryKey: ['kline', symbol] })
-		} else if (view === 'intraday') {
-			qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] })
-			qc.invalidateQueries({ queryKey: ['kline-minute', symbol] })
+		if (!symbol || !source) return
+		// 🔴 失效哪些 key 由适配器给: 港股日K的 key 前缀是 `hk-daily` 而不是 `kline`,
+		// 写死在这里会让港股的刷新按钮点了没反应(缓存原样命中, 界面纹丝不动)。
+		const viewKey: 'daily' | 'intraday' = view === 'intraday' ? 'intraday' : 'daily'
+		for (const key of source.refreshKeys(symbol, viewKey)) {
+			qc.invalidateQueries({ queryKey: key })
 		}
 	}
 
@@ -296,7 +322,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 							<div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-2 pt-2.5 sm:px-5">
 							<div className="flex min-w-0 items-center gap-2">
 								{(() => {
-									const board = symbol ? boardTag(symbol) : null
+									const board = symbol ? (source?.boardTag(symbol) ?? null) : null
 									return board ? (
 										<span className={`inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>
 											{board.label}
@@ -395,8 +421,9 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 							</div>
 
 							<div className="flex shrink-0 items-center gap-1">
-								{/* 自选 */}
-								{inWatchlist ? (
+								{/* 自选 — 能力关闭时整个入口隐藏(方案 §8 规则 4): 后端 watchlist
+								    零市场感知, 港股代码加进去会被当 A 股存, 列表页永远拉不到行情 */}
+								{capabilities?.watchlist === true && (inWatchlist ? (
 									<button
 										type="button"
 										onClick={() => toggleWatchlist.mutate({ action: 'remove' })}
@@ -416,8 +443,9 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 									>
 										<Star className="h-4 w-4" />
 									</WatchlistAddMenu>
-								)}
-								{/* 加监控 */}
+								))}
+								{/* 加监控 — 监控引擎只跑 A 股信号, 港股建规则必然不触发 */}
+								{capabilities?.monitor === true && (
 								<button
 									onClick={() => setShowMonitorEditor(true)}
 									className="p-1.5 rounded-btn text-amber-400 hover:bg-amber-400/10 transition-colors cursor-pointer"
@@ -425,6 +453,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 								>
 									<RadioTower className="h-4 w-4" />
 								</button>
+								)}
 
 								{/* 刷新 */}
 								{isChartView && (
@@ -544,7 +573,10 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 
 						<div role="tabpanel" id={panelId} aria-labelledby={`${panelId}-${view}`} className="min-h-0 flex-1 overflow-auto p-3 sm:px-4 sm:py-3">
 							{view === 'daily' ? (
-								<StockPanel
+								/* 主体按市场选实现(注册表见 StockDetailBody): 本组件不写
+								   `market === 'HK' ? … : …`。source 为 null 时由注册表如实报错。 */
+								<StockDetailBody
+									source={source}
 									onAssetType={handleAssetType}
 									symbol={symbol}
 									renderer="lightweight"
@@ -553,7 +585,8 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 									showIntraday
 									dateRange={dateRange}
 									priceLines={monitorPriceLines}
-									onPriceDoubleClick={openPriceAlert}
+									// 双击 K 线建点位提醒属监控能力: 关闭时不传回调, 图表就不会挂这个手势
+									onPriceDoubleClick={capabilities?.monitor === true ? openPriceAlert : undefined}
 									refetchIntervalMs={intradayRefetchMs}
 									prefetchSymbols={prefetchSymbols}
 									intradayDays={effectiveIntradayDays}

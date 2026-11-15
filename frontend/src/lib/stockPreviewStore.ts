@@ -1,4 +1,5 @@
 import type {OpenStockPreviewOptions, StockPreviewItem, StockPreviewUi} from '@/extensions/stockPreview'
+import {symbolMarket} from '@/lib/marketContent'
 import {uniqueBy, navItemKey, type NavItem} from './listNav'
 
 interface StockPreviewRequest {
@@ -15,7 +16,11 @@ function normalizeItem(value: unknown): NavItem | null {
 	const item = value as Partial<StockPreviewItem>
 	if (typeof item.symbol !== 'string') return null
 	const symbol = item.symbol.trim().toUpperCase()
-	if (!/^\d{6}\.(SH|SZ|BJ)$/.test(symbol)) return null
+	// 🔴 市场判定只认**显式交易所后缀**(`symbolMarket` 遍历 marketContent 的表),
+	// 认不出就拒 —— 过滤层不兜底(见 `lib/market.ts` 文件头: 把港股代码当 A 股查
+	// 会静默返回空, 比报错难发现得多)。旧实现写死 A 股正则, 港股代码进不了详情
+	// 弹窗, 而弹窗是 K线/详情的唯一入口。
+	if (symbolMarket(symbol) === null) return null
 	return {symbol, name: typeof item.name === 'string' ? item.name.trim() || undefined : undefined}
 }
 

@@ -29,6 +29,30 @@ export function klineDailyQueryOptions(
 	}
 }
 
+/**
+ * 日K查询配置的形状 —— `StockDailyKChart` 的注入点与各市场适配器共用此类型。
+ *
+ * 🔴 刻意**不是** `ReturnType<typeof klineDailyQueryOptions>`: 那会把 `queryFn`
+ * 钉死成返回 `KlineDailyResponse`, 而港股的 `HkDailyResponse` 结构上不兼容
+ * (A 股 `name?: string`, 港股 `name: string | null` —— 港股维表可能没同步,
+ * 名称缺失是**如实报告**而不是可选省略)。图表只消费下面这几个字段, 所以按
+ * **最小消费面**声明, 两个市场的响应各自满足即可。
+ */
+export interface KlineDailyQueryOptions {
+	queryKey: readonly unknown[]
+	queryFn: () => Promise<KlineChartPayload>
+	/** 切股/切市场时不得沿用旧数据(见 `kline-market-adapter.ts` 文件头)。 */
+	placeholderData?: (prev: any, prevQuery: any) => any
+	enabled?: boolean
+}
+
+/** 图表消费的最小响应面(A 股 `KlineDailyResponse` 与港股 `HkDailyResponse` 都满足)。 */
+export interface KlineChartPayload {
+	rows: KlineDailyResponse['rows']
+	stock_info?: KlineDailyResponse['stock_info']
+	asset_type?: KlineDailyResponse['asset_type']
+}
+
 export function klineDailyLatestQueryOptions(symbol: string) {
 	return {
 		queryKey: QK.klineLatest(symbol),

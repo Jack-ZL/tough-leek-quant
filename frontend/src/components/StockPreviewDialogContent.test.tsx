@@ -18,9 +18,15 @@ vi.mock('./StockMultiDayIntradayChart', () => ({
     <span>分钟线 {symbol} {days}日</span>,
 }))
 vi.mock('./monitor/RuleEditor', () => ({ RuleEditor: () => null }))
+vi.mock('./HkStockDailyPanel', () => ({
+  HkStockDailyPanel: ({ symbol, source }: {
+    symbol: string; source: { content: { label: string } }
+  }) => <span>港股日线 {symbol} {source.content.label}</span>,
+}))
 
 const first = { symbol: '600000.SH', name: '浦发银行' }
 const second = { symbol: '000001.SZ' }
+const hkFirst = { symbol: '00700.HK', name: '腾讯控股' }
 let host: HTMLDivElement, root: Root, client: QueryClient
 
 beforeEach(() => {
@@ -155,4 +161,71 @@ it('单个懒加载扩展的加载和渲染失败局限于面板，仍能切回�
   expect(log).toHaveBeenCalled()
   click('分时')
   expect(panel().textContent).toContain('分钟线 600000.SH')
+})
+
+// ===== 港股详情: 能力开关驱动, 弹窗内没有一处 `market === 'HK'` =====
+
+/** 自选 / 加监控 / 异动条这三个 A 股专属入口是否渲染。 */
+function aShareOnlyAffordances() {
+  return {
+    watchlist: host.querySelector('[aria-label*="自选"]'),
+    monitor: host.querySelector('[title="加监控"]'),
+    abnormalBar: [...host.querySelectorAll('span')].find(el => el.textContent === '异动') ?? null,
+  }
+}
+
+it('A 股详情保留自选与加监控入口(能力全开时的对照)', async () => {
+  await setup()
+  const affordances = aShareOnlyAffordances()
+  expect(affordances.watchlist).not.toBeNull()
+  expect(affordances.monitor).not.toBeNull()
+  expect(tabs()).toEqual(['日 K', '分时'])
+})
+
+it('港股详情: 分时/自选/加监控入口全部隐藏, 主体走港股实现', async () => {
+  const render = await setup()
+  await render(hkFirst)
+  // 分时 tab 被能力开关过滤掉(未就绪直接隐藏入口, 方案 §8 规则 4)
+  expect(tabs()).toEqual(['日 K'])
+  const affordances = aShareOnlyAffordances()
+  expect(affordances.watchlist).toBeNull()
+  expect(affordances.monitor).toBeNull()
+  expect(affordances.abnormalBar).toBeNull()
+  // 主体由 StockDetailBody 的注册表选中港股实现; A 股 StockPanel 的 mock 会把
+  // getDefaultRange 的 start 渲染出来, 据此确认它没被挂载
+  expect(panel().textContent).toContain('港股日线 00700.HK 港股')
+  expect(panel().textContent).not.toContain('2025-01-01')
+})
+
+it('🔴 港股刷新失效 hk-daily 而不是 kline(写死 A 股 key 会点了没反应)', async () => {
+  const render = await setup()
+  await render(hkFirst)
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  click('刷新')
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['hk-daily', hkFirst.symbol] })
+  for (const call of invalidate.mock.calls) {
+    expect((call[0] as { queryKey: readonly unknown[] }).queryKey[0]).not.toBe('kline')
+  }
+})
+
+it('在分时 tab 下切到港股会拉回日 K(该 tab 已被能力开关隐藏)', async () => {
+  const render = await setup()
+  click('分时')
+  expect(panel().textContent).toContain('分钟线 600000.SH')
+  await render(hkFirst)
+  expect(tabs()).toEqual(['日 K'])
+  expect(button('日 K').getAttribute('aria-selected')).toBe('true')
+  expect(panel().textContent).toContain('港股日线 00700.HK')
+  // 再切回 A 股, 分时 tab 与「保留当前视图」的规则都恢复
+  await render(first)
+  expect(tabs()).toEqual(['日 K', '分时'])
+})
+
+it('🔴 港股代码不挂 A 股板块小标(8 开头在港股是创业板, 不是北交所)', async () => {
+  const render = await setup()
+  await render({ symbol: '80001.HK' })
+  expect(host.textContent).not.toContain('北')
+  // 对照: 同样 4/8 开头的北交所代码在 A 股侧照旧挂「北」
+  await render({ symbol: '430047.BJ' })
+  expect(host.textContent).toContain('北')
 })

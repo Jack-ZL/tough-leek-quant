@@ -674,6 +674,43 @@ export interface HkIndexSyncResponse {
 	failed: string[]
 }
 
+/**
+ * `GET /api/hk/daily` —— 港股**个股**日K(前复权 + 全套指标)。
+ *
+ * 🔴 与 `/api/hk/index_daily` 是两回事, 三处口径刻意不同, 别互相套用:
+ *
+ * | | 个股 `/api/hk/daily` | 指数 `/api/hk/index_daily` |
+ * |---|---|---|
+ * | 排序 | **升序**(与 A 股 `/api/kline/daily` 一致) | 倒序(`ORDER BY date DESC`) |
+ * | `volume_unit` | `'shares'`(东财原生单位, 已交叉验证) | `null`(新浪/腾讯互相矛盾, 后端拒绝断言) |
+ * | 指标列 | 有(读时重算 MA/MACD/BOLL/KDJ…) | 无 |
+ *
+ * 行类型直接复用 `KlineRow`: 它带 `[key: string]: any` 且指标列全为可选, 港股行
+ * 天然满足; 涨跌停相关列(`limit_*` / `signal_limit_*`)恒 null —— 港股无涨跌停,
+ * 图表不画涨跌停标记是**正确**行为而不是缺数据。
+ */
+export interface HkDailyResponse {
+	symbol: string
+	/** 取自 `instruments_hk`; 维表未同步或该标的不在维表内 → null, 展示回退代码。 */
+	name: string | null
+	market: 'HK'
+	volume_unit: 'shares'
+	currency: string
+	/** 🔴 「延时」标注的唯一来源, 前端不得写死 15(见 `QuoteDelayBadge`)。 */
+	quote_delay_minutes: number | null
+	/**
+	 * 空态归因。`null` = 有数据。
+	 * - `no_daily`: 原始日K都没有 → 引导去「同步港股日K」
+	 * - `no_enriched`: 日K有但 enriched 没算出来 → 引导去「重算 enriched」
+	 *   (也可能是复权因子完整性凭据把该标的判成 uncovered 而**拒算**)
+	 *
+	 * 🔴 后端 enriched 缺失时**不回退**原始价(原始价跨除净日的 MA/MACD 会静默失真),
+	 * 所以空 rows 是如实报告, 前端必须给文案而不是画一张空图。
+	 */
+	empty_reason: 'no_daily' | 'no_enriched' | null
+	rows: KlineRow[]
+}
+
 // ===== Screener =====
 export interface ScreenerStrategy {
 	id: string
@@ -4191,6 +4228,13 @@ export const api = {
 		request<HkIndexQuotesResponse>(
 			`/api/hk/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
 		),
+	hkDaily: (symbol: string, opts?: { start?: string; end?: string; limit?: number }) => {
+		const q = new URLSearchParams({ symbol })
+		if (opts?.start) q.set('start', opts.start)
+		if (opts?.end) q.set('end', opts.end)
+		if (opts?.limit != null) q.set('limit', String(opts.limit))
+		return request<HkDailyResponse>(`/api/hk/daily?${q.toString()}`)
+	},
 	hkIndexDaily: (symbol: string, opts?: { start?: string; end?: string; limit?: number }) => {
 		const q = new URLSearchParams({ symbol })
 		if (opts?.start) q.set('start', opts.start)

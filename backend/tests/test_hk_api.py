@@ -134,6 +134,46 @@ def test_sync_instruments_reports_empty_status(env, monkeypatch):
 # GET /api/hk/daily
 # ---------------------------------------------------------------------------
 
+def _enriched_frame(
+    symbol: str, dates: list[dt.date], closes: list[float], *, volumes: list[float] | None = None
+) -> pl.DataFrame:
+    """造一份**存储窄表** enriched (与 :meth:`append_hk_enriched` 落盘的 14 列同 dtype)。
+
+    dtype 必须与 ``ENRICHED_STORAGE_SCHEMA`` 对齐: 读取端 ``scan_enriched_parquet``
+    钉了 schema, 类型不符会让扫描抛错 (被 ``_scan_hk_enriched_symbol`` 吞成空帧),
+    测试就会「通过」在一个根本没读到数据的路径上。
+    """
+    n = len(dates)
+    vols = volumes or [1_000_000.0] * n
+    return pl.DataFrame({
+        "symbol": [symbol] * n,
+        "date": dates,
+        "open": closes, "high": closes, "low": closes, "close": closes,
+        "volume": vols,
+        "amount": [c * v for c, v in zip(closes, vols, strict=True)],
+        "raw_close": closes, "raw_high": closes, "raw_low": closes,
+        "turnover_rate": [None] * n,
+        "consecutive_limit_ups": [0] * n,
+        "consecutive_limit_downs": [0] * n,
+        "quote_ts": [0] * n,
+    }).with_columns(
+        pl.col("turnover_rate").cast(pl.Float64),
+        pl.col("consecutive_limit_ups").cast(pl.UInt32),
+        pl.col("consecutive_limit_downs").cast(pl.UInt32),
+        pl.col("quote_ts").cast(pl.Int64),
+    )
+
+
+def _dates(n: int, end: dt.date) -> list[dt.date]:
+    """``end`` 往前 n 个**日历日** (升序)。指标只关心顺序与根数, 不关心是否交易日。"""
+    return [end - dt.timedelta(days=i) for i in range(n - 1, -1, -1)]
+
+
+def _ramp(n: int, start_price: float = 100.0, step: float = 0.5) -> list[float]:
+    """单调递增价格序列: 让 MA/MACD 有非平凡值, 全平序列会让「指标算没算」看不出来。"""
+    return [start_price + i * step for i in range(n)]
+
+
 def test_daily_rejects_non_hk_symbol(env):
     """A 股代码打到港股端点 → 400, 不静默返回空 (静默空会让前端以为「没数据」)。"""
     client, _, _ = env
@@ -145,7 +185,78 @@ def test_daily_declares_volume_unit_and_currency(env):
     """🔴 响应必须明示 volume 单位是股、币种是 HKD。
 
     前端与 A 股共用组件时最容易按「手」的习惯乘 100 —— 把单位写进契约里,
-    比指望调用方记住文档可靠。
+    比指望调用方记住文档可靠。币种与延迟分钟数取自 ``rules_for(Market.HK)``,
+    不是端点里的字面量。
+    """
+    client, repo, _ = env
+    repo.append_hk_enriched(_enriched_frame(
+        "00700.HK", [dt.date(2026, 11, 13)], [386.6], volumes=[31493353.0]
+    ))
+    repo.rebuild_views()
+
+    body = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()
+    assert body["volume_unit"] == "shares"
+    assert body["currency"] == "HKD"
+    assert body["market"] == "HK"
+    assert body["quote_delay_minutes"] == 15, "港股行情延迟 15 分钟必须进契约 (前端要出角标)"
+    assert body["rows"][0]["volume"] == 31493353.0, "volume 被换算过"
+    assert body["rows"][0]["date"] == "2026-11-13"
+
+
+def test_daily_is_empty_before_sync_not_500(env):
+    """从未同步 → 200 + 空 rows + ``empty_reason="no_daily"``, 不是 500。"""
+    client, _, _ = env
+    r = client.get("/api/hk/daily", params={"symbol": "00700.HK"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["rows"] == []
+    assert body["empty_reason"] == "no_daily"
+
+
+def test_daily_respects_date_bounds_and_order(env):
+    """🔴 **升序** —— 与 A 股 ``/api/kline/daily`` 对齐。
+
+    本端点旧行为是倒序, ``/api/hk/index_daily`` 至今仍是倒序。倒序喂给 ECharts
+    会画出**左右镜像**的 K 线 (指数页接线时已踩过), 所以顺序必须写进断言。
+    """
+    client, repo, _ = env
+    dates = [dt.date(2026, 11, 11), dt.date(2026, 11, 12), dt.date(2026, 11, 13)]
+    repo.append_hk_enriched(_enriched_frame("00700.HK", dates, [1.0, 2.0, 3.0]))
+    repo.rebuild_views()
+
+    rows = client.get("/api/hk/daily", params={
+        "symbol": "00700.HK", "start": "2026-11-12", "end": "2026-11-13"
+    }).json()["rows"]
+    assert [r["date"] for r in rows] == ["2026-11-12", "2026-11-13"], "应按日期升序"
+
+
+def test_daily_serves_enriched_never_raw(env):
+    """🔴 同一标的同时有原始日K和 enriched → 必须返回 **enriched** 的价。
+
+    两份数据故意给不同收盘价: 若端点读错表, 断言立刻炸。这是「前复权 vs 原始价」
+    的唯一可观测差别 —— 图表上看不出来 (CONTRIBUTING §3「看起来对但错」)。
+    """
+    client, repo, _ = env
+    d = dt.date(2026, 11, 13)
+    repo.append_hk_daily(pl.DataFrame({
+        "symbol": ["00700.HK"], "date": [d],
+        "open": [393.0], "high": [395.2], "low": [385.6], "close": [386.6],
+        "volume": [31493353.0], "amount": [12251162810.0],
+    }))
+    repo.append_hk_enriched(_enriched_frame("00700.HK", [d], [300.0]))
+    repo.rebuild_views()
+
+    row = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()["rows"][0]
+    assert row["close"] == 300.0, "读到了 kline_hk_daily 的原始价"
+    assert row["raw_close"] == 300.0, "enriched 窄表自带 raw_* 列, 原始价并未丢失"
+
+
+def test_daily_never_falls_back_to_raw(env):
+    """🔴 只有原始日K、没有 enriched → **空 rows** + ``empty_reason="no_enriched"``。
+
+    回退到原始价会让跨除净日的 MA/MACD 静默失真, 而用户看到的是一条「正常」的
+    曲线。宁可如实说没有, 也不给一个看起来对但错的数。归因字段让前端能把用户
+    指向「重算 enriched」而不是「同步日K」。
     """
     client, repo, _ = env
     repo.append_hk_daily(pl.DataFrame({
@@ -156,33 +267,131 @@ def test_daily_declares_volume_unit_and_currency(env):
     repo.rebuild_views()
 
     body = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()
-    assert body["volume_unit"] == "shares"
-    assert body["currency"] == "HKD"
-    assert body["rows"][0]["volume"] == 31493353.0, "volume 被换算过"
-    assert body["rows"][0]["date"] == "2026-11-13"
+    assert body["rows"] == [], "不得用原始价冒充前复权"
+    assert body["empty_reason"] == "no_enriched"
 
 
-def test_daily_is_empty_before_sync_not_500(env):
-    client, _, _ = env
-    r = client.get("/api/hk/daily", params={"symbol": "00700.HK"})
-    assert r.status_code == 200
-    assert r.json()["rows"] == []
+def test_daily_recomputes_indicators_on_read(env):
+    """磁盘只有 14 列窄表 → MA/MACD 必须**读时重算**出来 (与 A 股同款)。
 
-
-def test_daily_respects_date_bounds_and_order(env):
+    前端 ``StockDailyKChart`` 直接吃 ma5/ma10/ma20/ma60/macd_*; 少了这些列
+    图表会静默不画均线, 而不是报错。
+    """
     client, repo, _ = env
-    repo.append_hk_daily(pl.DataFrame({
-        "symbol": ["00700.HK"] * 3,
-        "date": [dt.date(2026, 11, 11), dt.date(2026, 11, 12), dt.date(2026, 11, 13)],
-        "open": [1.0] * 3, "high": [1.0] * 3, "low": [1.0] * 3, "close": [1.0] * 3,
-        "volume": [1.0] * 3, "amount": [1.0] * 3,
-    }))
+    end = dt.date(2026, 11, 13)
+    repo.append_hk_enriched(_enriched_frame("00700.HK", _dates(80, end), _ramp(80)))
+    repo.rebuild_views()
+
+    row = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()["rows"][-1]
+    for col in ("ma5", "ma10", "ma20", "ma60", "macd_dif", "macd_dea", "macd_hist"):
+        assert col in row, f"缺指标列 {col}"
+        assert row[col] is not None, f"{col} 未算出"
+    written = pl.read_parquet(
+        next((repo.store.data_dir / "kline_hk_enriched").rglob("*.parquet"))
+    )
+    assert "ma5" not in written.columns, "窄表契约被破坏: 指标不该落盘"
+
+
+def test_daily_warmup_feeds_ma_across_start_boundary(env):
+    """🔴 ``start`` 左端必须外扩预热窗口, 否则区间头几根均线全空。
+
+    只请求最后 3 天, 但 ma5 仍要有值 —— 证明扫描窗口向左多取了数据再裁回来。
+    这是 A 股 ``get_daily`` 早已有的行为, 港股漏掉的话用户一缩小日期范围
+    就会看到均线「断头」, 且不会有任何报错。
+    """
+    client, repo, _ = env
+    end = dt.date(2026, 11, 13)
+    repo.append_hk_enriched(_enriched_frame("00700.HK", _dates(200, end), _ramp(200)))
     repo.rebuild_views()
 
     rows = client.get("/api/hk/daily", params={
-        "symbol": "00700.HK", "start": "2026-11-12", "end": "2026-11-13"
+        "symbol": "00700.HK", "start": "2026-11-11", "end": "2026-11-13"
     }).json()["rows"]
-    assert [r["date"] for r in rows] == ["2026-11-13", "2026-11-12"], "应按日期倒序"
+    assert len(rows) == 3, "裁剪回区间失败"
+    assert rows[0]["ma5"] is not None, "预热窗口没生效, 区间首根均线为空"
+    assert rows[0]["ma20"] is not None
+
+
+def test_daily_turnover_uses_hk_share_unit_not_lot(env):
+    """🔴 换手率必须按**股**算 (系数 1), 不能按 A 股的**手** (系数 100)。
+
+    ``volume=1e6`` 股 / ``float_shares=1e8`` 股 → 1.0%。若 ``market=Market.HK``
+    没有一路传到 ``compute_limit_signals``, 结果会是 100.0% —— 差整整 100 倍,
+    而数字本身「看起来像个换手率」, 是最难发现的一类错。
+    """
+    client, repo, tmp_path = env
+    _seed_dim(tmp_path, [{
+        "symbol": "00700.HK", "name": "腾讯控股", "is_cny_counter": False,
+        "hkd_counter": None, "listing_date": None, "industry": None,
+        "float_shares": 100_000_000.0, "limit_up": 10000.0, "limit_down": 10000.0,
+    }])
+    end = dt.date(2026, 11, 13)
+    repo.append_hk_enriched(_enriched_frame(
+        "00700.HK", _dates(30, end), _ramp(30), volumes=[1_000_000.0] * 30
+    ))
+    repo.rebuild_views()
+
+    row = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()["rows"][-1]
+    assert row["turnover_rate"] == pytest.approx(1.0, rel=1e-6), (
+        f"换手率 {row['turnover_rate']}% != 1.0%, market=HK 未传到 compute_limit_signals"
+    )
+
+
+def test_daily_limit_columns_are_null_for_hk(env):
+    """港股 ``has_price_limit=False`` → 涨跌停判定价恒 null。
+
+    这不是缺数据: 图表不画涨跌停标记是**正确**行为。写成断言是为了防止将来
+    有人给港股套 A 股 ±10% 规则 (那会凭空造出不存在的涨停价)。
+    """
+    client, repo, tmp_path = env
+    _seed_dim(tmp_path, [{
+        "symbol": "00700.HK", "name": "腾讯控股", "is_cny_counter": False,
+        "hkd_counter": None, "listing_date": None, "industry": None,
+        "float_shares": 100_000_000.0, "limit_up": 10000.0, "limit_down": 10000.0,
+    }])
+    end = dt.date(2026, 11, 13)
+    repo.append_hk_enriched(_enriched_frame("00700.HK", _dates(30, end), _ramp(30, step=3.0)))
+    repo.rebuild_views()
+
+    row = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()["rows"][-1]
+    assert row["limit_up_price"] is None
+    assert row["limit_down_price"] is None
+    assert not row.get("consecutive_limit_ups"), "港股不该记连板"
+
+
+def test_daily_limit_caps_most_recent_tail(env):
+    """``limit`` 截**最近** N 根 (升序后的尾部), 不是头部。
+
+    截头部会返回最老的 N 根 —— 图表画出来是几年前的行情, 而日期轴看着完全正常。
+    """
+    client, repo, _ = env
+    end = dt.date(2026, 11, 13)
+    dates = _dates(10, end)
+    repo.append_hk_enriched(_enriched_frame("00700.HK", dates, _ramp(10)))
+    repo.rebuild_views()
+
+    rows = client.get("/api/hk/daily", params={
+        "symbol": "00700.HK", "start": "2026-11-01", "limit": 3
+    }).json()["rows"]
+    assert [r["date"] for r in rows] == [d.isoformat() for d in dates[-3:]]
+
+
+def test_daily_exposes_name_from_hk_dim(env):
+    """标的名称取自 ``instruments_hk``; 维表缺失时 ``name=None`` 而不是 500。"""
+    client, repo, tmp_path = env
+    _seed_dim(tmp_path, [{
+        "symbol": "00700.HK", "name": "腾讯控股", "is_cny_counter": False,
+        "hkd_counter": None, "listing_date": None, "industry": None,
+    }])
+    repo.append_hk_enriched(_enriched_frame("00700.HK", [dt.date(2026, 11, 13)], [386.6]))
+    repo.rebuild_views()
+
+    body = client.get("/api/hk/daily", params={"symbol": "00700.HK"}).json()
+    assert body["name"] == "腾讯控股"
+
+    unknown = client.get("/api/hk/daily", params={"symbol": "09988.HK"}).json()
+    assert unknown["name"] is None
+    assert unknown["rows"] == []
 
 
 # ---------------------------------------------------------------------------
