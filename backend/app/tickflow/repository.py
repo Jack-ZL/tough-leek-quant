@@ -195,6 +195,7 @@ class DataStore:
             "instruments_hk",
             "kline_hk_daily",
             "kline_hk_enriched",
+            "adj_factor_hk",
             "financials_hk",
         ):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -264,6 +265,8 @@ class DataStore:
                 SELECT * FROM read_parquet('{d}/kline_hk_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_hk_enriched AS
                 SELECT * FROM read_parquet('{d}/kline_hk_enriched/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW adj_factor_hk AS
+                SELECT * FROM read_parquet('{d}/adj_factor_hk/**/*.parquet', union_by_name=true)""",
             # 财务数据视图
             f"""CREATE OR REPLACE VIEW financials_metrics AS
                 SELECT * FROM read_parquet('{d}/financials/metrics/*.parquet', union_by_name=true)""",
@@ -2899,12 +2902,12 @@ class KlineRepository:
 
         原先 daily_pipeline._refresh_views(盘后管道) 与 /api/data/clear(清库) 各自
         内联了同一份视图重建 SQL, 清库那份还漏了几张视图导致漂移。此处收敛为单一入口:
-        覆盖全部 16 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
+        覆盖全部 17 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
 
         ⚠️ 新增数据目录时**必须同时**改这里和 :meth:`DataStore._register_views`。
         只改启动那份的后果是: 视图在启动时存在, 但盘后管道跑完不刷新 → 读到旧数据,
-        即 CONTRIBUTING §「写入后存在已知缓存不一致」的拒收情形。港股三张视图
-        (instruments_hk / kline_hk_daily / kline_hk_enriched) 已按此登记。
+        即 CONTRIBUTING §「写入后存在已知缓存不一致」的拒收情形。港股四张视图
+        (instruments_hk / kline_hk_daily / kline_hk_enriched / adj_factor_hk) 已按此登记。
         """
         d = self.store.data_dir.as_posix()
         views = {
@@ -2925,6 +2928,7 @@ class KlineRepository:
             "instruments_hk": f"{d}/instruments_hk/**/*.parquet",
             "kline_hk_daily": f"{d}/kline_hk_daily/**/*.parquet",
             "kline_hk_enriched": f"{d}/kline_hk_enriched/**/*.parquet",
+            "adj_factor_hk": f"{d}/adj_factor_hk/**/*.parquet",
         }
         for name, path in views.items():
             self.refresh_view(name, path)

@@ -278,6 +278,29 @@ def test_progress_callback_fires_per_symbol(tmp_path):
 # 全都就位, 但**没有任何调用方**, 目录恒空 → §3.1.2 的换手率单位修复在实践中走不到。
 # ---------------------------------------------------------------------------
 
+def _seed_hk_adj_factor(data_dir, rows: list[dict] | None = None) -> None:
+    """写入港股复权因子库 ``adj_factor_hk/all.parquet``。
+
+    ``rows=None`` → **空库**, 语义是「因子同步跑过了, 这些标的从未除权」。这不是
+    测试专用的假状态: 真实部署里绝大多数港股在某段时间窗内确实没有除净事件。
+
+    为什么必须播: ``sync_hk_enriched`` 默认 ``require_adj_factor=True``, 因子库
+    **不存在**即中止 (fail closed)。空库与「不存在」是两回事 —— 前者是已确认无事件,
+    后者是未知, 未知时静默用原始价算 MA/MACD 会产出失真指标 (方案 §13)。
+    """
+    out = data_dir / sync_hk.HK_ADJ_FACTOR_RELPATH
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if rows:
+        df = pl.DataFrame(rows).with_columns(pl.col("trade_date").cast(pl.Date))
+    else:
+        df = pl.DataFrame(schema={
+            "symbol": pl.String, "trade_date": pl.Date, "ex_factor": pl.Float64,
+            "dividend": pl.Float64, "bonus": pl.Float64, "allot": pl.Float64,
+            "allot_price": pl.Float64, "prev_close": pl.Float64,
+        })
+    atomic_write_parquet(df, out)
+
+
 def _seed_hk_instruments(data_dir, symbol: str, *, float_shares: int,
                          name: str = "腾讯控股") -> None:
     out = data_dir / HK_INSTRUMENT_RELPATH
@@ -289,6 +312,8 @@ def _seed_hk_instruments(data_dir, symbol: str, *, float_shares: int,
         "limit_up": None, "limit_down": None,
         "listing_date": None, "is_cny_counter": False,
     }]), out)
+    # enriched 的前置条件之一: 因子库必须存在 (见 _seed_hk_adj_factor 文档)。
+    _seed_hk_adj_factor(data_dir)
 
 
 def _seed_hk_daily(repo, symbol: str, *, days: int = 30, volume: float = 1_000_000.0,

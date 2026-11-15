@@ -1,4 +1,4 @@
-"""港股日K同步 → ``data/kline_hk_daily/``。
+"""港股日K同步 → ``data/kline_hk_daily/``, 及复权因子 → ``data/adj_factor_hk/``。
 
 与 A 股 :mod:`app.services.kline_sync` **物理与代码双隔离** (方案 §4 闸3):
 A 股那条链路深度耦合能力路由/偏好档位/TickFlow 补齐, 港股按用户决策是「行情/K线
@@ -10,6 +10,8 @@ A 股那条链路深度耦合能力路由/偏好档位/TickFlow 补齐, 港股�
 - ``provider._map_kline_row`` CSV 行 → 内部日K契约 (港股行格式与 A 股实测一致)
 - ``kline_sync._normalize_daily`` 规范化 + 停牌日过滤 + canonical 列裁剪
 - ``repo.append_hk_daily``   按日分区 merge-upsert 落库
+- ``hk_dividend.*``          F10 分红事件 → 复权因子 (港股无 TickFlow 因子源)
+- ``kline_sync._merge_adj_factor_store`` 因子库 merge-upsert, 与 A 股**同一个函数**
 
 ⚠️ **成交量单位**: 港股东财原生单位是「股」, A 股是「手」。本模块按原样落库
 (不做单位换算), 下游经 :func:`app.market.shares_per_volume_unit` 换算。落库前
@@ -26,11 +28,11 @@ from pathlib import Path
 import polars as pl
 
 from app.market import Market, SymbolMarketMismatchError
-from app.plugins.eastmoney import hk
+from app.plugins.eastmoney import hk, hk_dividend
 from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
 from app.plugins.eastmoney.provider import _map_kline_row
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
-from app.services.kline_sync import _normalize_daily
+from app.services.kline_sync import _merge_adj_factor_store, _normalize_daily
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,167 @@ def hk_enriched_instruments(data_dir: Path) -> pl.DataFrame:
         return pl.DataFrame()
 
 
+#: 港股复权因子库 (单文件 merge-upsert, 与 A 股 ``adj_factor/all.parquet`` 同构)。
+HK_ADJ_FACTOR_RELPATH = "adj_factor_hk/all.parquet"
+
+
+def hk_adj_factor_path(data_dir: Path) -> Path:
+    """港股复权因子库的绝对路径。"""
+    return data_dir / HK_ADJ_FACTOR_RELPATH
+
+
+def load_hk_adj_factors(
+    data_dir: Path, symbols: Sequence[str] | None = None
+) -> pl.DataFrame | None:
+    """读港股复权因子库, 返回值**三态**, 调用方必须区分 (fail-closed 的关键):
+
+    - ``None``   —— 因子库不存在或读取失败, 即 :func:`sync_hk_adj_factor` 从未
+      成功跑过。此时「没有因子」意味着 *不知道有没有除权事件*, **不是** *无事件*。
+    - **空帧**   —— 库存在但 (该批标的) 无行 = 确实无除权事件, 原始价即复权价,
+      可安全按空因子计算。这与 A 股 ``fetch_adj_factor_single(strict=True)``
+      「空帧是合法返回」的语义一致。
+    - **非空帧** —— 规范三列 + 明细列。
+
+    读取失败 (文件损坏) 也返回 ``None`` 并记 error: 宁可中止, 也不拿半截因子去
+    复权 —— 那会让价格序列在损坏点前后各错一半, 比完全不复权更难发现。
+    """
+    path = hk_adj_factor_path(data_dir)
+    if not path.exists():
+        return None
+    try:
+        df = pl.read_parquet(path)
+    except Exception as e:  # noqa: BLE001
+        logger.error("港股复权因子库读取失败 (%s): %s", path, e)
+        return None
+    if symbols is not None and not df.is_empty():
+        df = df.filter(pl.col("symbol").is_in(list(symbols)))
+    return df
+
+
+def sync_hk_adj_factor(
+    repo,
+    *,
+    symbols: Sequence[str] | None = None,
+    client: EastmoneyClient | None = None,
+    batch_size: int | None = None,
+    on_progress=None,
+    failed_out: list[str] | None = None,
+) -> tuple[int, list[str]]:
+    """同步港股复权因子 → ``adj_factor_hk/all.parquet``。返回 (新增行数, 因子变化的标的)。
+
+    链路: 东财 F10 分红事件 (:func:`hk_dividend.fetch_hk_dividend_events`) →
+    解析中文方案为港币数值 → 用**本地** ``kline_hk_daily`` 的原始收盘价定参考价 →
+    ``ex_factor = P / ((P − D) / (1 + B))``。因子口径与落库细节见
+    :mod:`app.plugins.eastmoney.hk_dividend`。
+
+    ``changed`` 列表供 enriched 局部重算: 只有 ``ex_factor`` 新增或变化 (差 > 1e-9)
+    的标的才算, 明细列回填不改变复权价故不计入 —— 与 A 股
+    :func:`kline_sync._merge_adj_factor_store` 同一判定。
+
+    **失败语义** (对齐 A 股 ``sync_adj_factor``): 单标的取数抛
+    :class:`EastmoneyError` → 记 warning + 追加进 ``failed_out`` + 继续, 一只失败
+    不中断整轮; 但**绝不**把失败伪装成「该标的无除权事件」—— 上层据 ``failed_out``
+    重跑。无除权事件本身是合法的空结果, 不记失败。
+
+    一轮**全部成功**却无任何事件时仍会落一个空库 —— 那是「已同步、确认无事件」的
+    凭据, :func:`sync_hk_enriched` 的 fail-closed 闸门靠它放行; 有标的失败时刻意
+    不落, 宁让 enriched 中止, 也不用空库谎称数据齐全。
+
+    ``on_progress(done, total)`` 每标的回调一次, 与 :func:`sync_hk_daily` 同口径。
+    """
+    from app.parquet import scan_daily_parquet
+
+    data_dir = repo.store.data_dir
+    universe = list(symbols) if symbols is not None else hk_daily_universe(data_dir)
+    if not universe:
+        logger.info("港股复权因子同步: 标的清单为空, 跳过")
+        return 0, []
+
+    files = repo.daily_repair_files("stock", market=Market.HK)
+    if not files:
+        # 没有原始日K就定不出参考价 P。这不是「无除权事件」, 而是前置数据缺失,
+        # 记 warning 后返回空 —— 调用方 (bootstrap) 应先跑 sync_hk_daily。
+        logger.warning("港股复权因子同步: kline_hk_daily 无原始日K, 无法定参考价, 跳过")
+        return 0, []
+
+    # 只取算因子必需的三列: 全市场原始日K行数远大于此, 少读 5 列显著降峰值内存。
+    raw_scan = scan_daily_parquet(files).select(["symbol", "date", "close"])
+
+    own_client = client is None
+    if own_client:
+        client = EastmoneyClient()
+
+    step = max(1, min(batch_size or HK_ENRICHED_BATCH_SIZE, HK_ENRICHED_BATCH_SIZE))
+    out_path = hk_adj_factor_path(data_dir)
+    added = 0
+    changed: list[str] = []
+    # 调用方没给 failed_out 也要自己记一份: 下面「是否落空库」的判定依赖它。
+    failed: list[str] = [] if failed_out is None else failed_out
+    done = 0
+    total = len(universe)
+    try:
+        for i in range(0, total, step):
+            batch = universe[i:i + step]
+            raw = raw_scan.filter(pl.col("symbol").is_in(batch)).sort(
+                ["symbol", "date"]
+            ).collect(engine="streaming")
+            closes_by_sym: dict[str, dict[date, float]] = {}
+            for key, part in raw.partition_by("symbol", as_dict=True, include_key=False).items():
+                sym = key[0] if isinstance(key, tuple) else key
+                closes_by_sym[sym] = dict(
+                    zip(part["date"].to_list(), part["close"].to_list(), strict=True)
+                )
+
+            frames: list[pl.DataFrame] = []
+            for sym in batch:
+                closes = closes_by_sym.get(sym)
+                if not closes:
+                    logger.debug("港股复权因子 %s: 本地无原始日K, 跳过", sym)
+                else:
+                    try:
+                        events = hk_dividend.fetch_hk_dividend_events(client, sym)
+                    except EastmoneyError as e:
+                        logger.warning("港股分红事件 %s 拉取失败, 记为失败: %s", sym, e)
+                        failed.append(sym)
+                        events = None
+                    if events is not None:
+                        f = hk_dividend.build_hk_adj_factors(sym, events, closes)
+                        if not f.is_empty():
+                            frames.append(f)
+                done += 1
+                if on_progress is not None:
+                    on_progress(done, total)
+
+            if not frames:
+                continue
+            new_data = pl.concat(frames, how="diagonal")
+            a, c = _merge_adj_factor_store(out_path, new_data)
+            added += a
+            changed.extend(c)
+    finally:
+        if own_client:
+            client.close()
+
+    if not out_path.exists() and not failed:
+        # 一轮**全部成功**却没有任何除权事件时也要落一个空库: 空库是「已同步、确认
+        # 无事件」的凭据。不落文件的话 sync_hk_enriched 的 fail-closed 闸门永远打不开
+        # —— 它区分不了「没同步过」与「同步过但无事件」(见 load_hk_adj_factors 三态)。
+        # 有标的失败时**刻意不落**: 那轮结果不完整, 宁可让 enriched 继续中止, 也不能
+        # 用一个空库谎称数据齐全。
+        _merge_adj_factor_store(
+            out_path,
+            pl.DataFrame(schema={
+                "symbol": pl.String, "trade_date": pl.Date, "ex_factor": pl.Float64,
+            }),
+        )
+
+    logger.info(
+        "港股复权因子同步完成: %d 标的 / 新增 %d 行 / 因子变化 %d 标的 / 失败 %d 标的",
+        total, added, len(set(changed)), len(set(failed)),
+    )
+    return added, sorted(set(changed))
+
+
 def sync_hk_enriched(
     repo,
     *,
@@ -213,6 +376,7 @@ def sync_hk_enriched(
     start: date | None = None,
     batch_size: int | None = None,
     on_progress=None,
+    require_adj_factor: bool = True,
 ) -> int:
     """从已落库的港股**原始**日K重算 enriched → ``kline_hk_enriched/``。返回写入行数。
 
@@ -224,11 +388,18 @@ def sync_hk_enriched(
     unified 视图, 由 ``test_unified_views_exclude_hk`` 钉死)。加锁只会白付代价,
     且 ``_write_daily_partition`` 的 ``generation_asset`` 映射本来就不含港股目录。
 
+    **复权**: 落库是原始价 (``iter_hk_daily_frames`` 强制 ``fqt=0``), 本函数从
+    ``adj_factor_hk/all.parquet`` 取因子交给 ``compute_enriched`` 重建复权价, 与
+    A 股同构。``require_adj_factor=True`` (默认) 时**因子库不存在即中止并返回 0**
+    —— 缺因子会让每个除净日留下假跳空、MA/MACD 随之失真, 属 CONTRIBUTING §3
+    警告的「看起来对但错」, 故 fail closed 而非静默用原始价 (方案 §13/§15)。
+    仅当明确知道自己在做什么 (如构造测试夹具) 才传 ``False``。
+
     🔴 **两处已知近似 —— 是数据源现状不是 bug, 但读端必须知道**:
 
-    1. **不复权**。港股复权因子源尚未接入 (``iter_hk_daily_frames`` 强制 ``fqt=0``),
-       故 ``factors=None``, enriched 的 open/high/low/close 等于原始价。跨除权除息日
-       的 MA/MACD 等宽指标会有跳变失真。接入因子源后本函数无需改动, 传 factors 即可。
+    1. **约 3% 的分红事件无法折算为港币数值** (外币宣派未给折算值 / 分派股份
+       spin-off / 红利认股权证), :func:`hk_dividend.build_hk_adj_factors` 对它们
+       **warn + 跳过**, 这些除净日前后仍会有跳变失真。逐条告警可见, 不是静默。
     2. **换手率用当前流通股本回溯全历史**。港股无历史股本表 (``historical_shares=None``),
        而 CONTRIBUTING §3.4 要求「优先使用公告日不晚于目标交易日的历史股本」。港股
        全流通、股本变动主要来自增发/回购, 误差通常小于 A 股, 但**不等于没有**。
@@ -275,6 +446,24 @@ def sync_hk_enriched(
             "请先跑 sync_hk_instruments。", HK_INSTRUMENT_RELPATH,
         )
         return 0
+
+    factors_all = load_hk_adj_factors(data_dir)
+    if factors_all is None and require_adj_factor:
+        # fail closed: 缺因子 ≠ 无除权事件。用原始价算出来的 MA/MACD 会在每个
+        # 除净日出现假跳空, 且**数值看起来完全正常**, 属 CONTRIBUTING §3 的
+        # 「看起来对但错」, 比直接报错危险得多。
+        logger.error(
+            "港股 enriched 重算中止: 复权因子库 %s 不存在 (从未成功同步)。"
+            "请先跑 sync_hk_adj_factor; 确要以原始价计算须显式传 "
+            "require_adj_factor=False。", HK_ADJ_FACTOR_RELPATH,
+        )
+        return 0
+    if factors_all is None:
+        logger.warning(
+            "港股 enriched 重算: 复权因子库 %s 不存在, 按 require_adj_factor=False "
+            "以**原始价**计算 —— 跨除净日的 MA/MACD 会失真", HK_ADJ_FACTOR_RELPATH,
+        )
+
     step = max(1, min(batch_size or HK_ENRICHED_BATCH_SIZE, HK_ENRICHED_BATCH_SIZE))
     batches = [selected[i:i + step] for i in range(0, len(selected), step)]
     written = 0
@@ -288,7 +477,12 @@ def sync_hk_enriched(
         if not raw.is_empty():
             enriched = compute_enriched(
                 raw,
-                factors=None,
+                # 空帧 = 该批标的无除权事件, _apply_adj_factor 会原样返回 raw;
+                # None 仅在 require_adj_factor=False 且因子库缺失时出现。
+                factors=(
+                    None if factors_all is None
+                    else factors_all.filter(pl.col("symbol").is_in(batch))
+                ),
                 instruments=instruments.filter(pl.col("symbol").is_in(batch)),
                 historical_shares=None,
                 market=Market.HK,
@@ -311,12 +505,16 @@ def sync_hk_enriched(
 
 
 __all__ = [
+    "HK_ADJ_FACTOR_RELPATH",
     "HK_ENRICHED_BATCH_SIZE",
     "HK_KLINE_BEG_DEFAULT",
+    "hk_adj_factor_path",
     "hk_daily_universe",
     "hk_enriched_instruments",
     "iter_hk_daily_frames",
     "latest_hk_daily_date",
+    "load_hk_adj_factors",
+    "sync_hk_adj_factor",
     "sync_hk_daily",
     "sync_hk_enriched",
 ]

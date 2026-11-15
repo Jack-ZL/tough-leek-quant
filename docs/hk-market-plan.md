@@ -102,7 +102,7 @@ class MarketTradingRules:
 | 港股全市场股票列表 | `push2.eastmoney.com/api/qt/clist/get?fs=m:128 t:3,m:128 t:4,m:128 t:1,m:128 t:2` | **total=4748** |
 | 港股主板列表 | 同上但 `fs=m:128 t:3` | **total=2621** |
 | 港股日K（东财） | `push2his.eastmoney.com/api/qt/stock/kline/get?secid=116.00700&klt=101&fqt=1` | 腾讯控股，末根 `2026-11-13,393.000,386.600,395.200,385.600,31493353` |
-| 港股日K（腾讯，**含前复权**） | `web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hk00700,day,,,5,qfq` | code=0，5 根，末根同上 + 复权因子字段 |
+| 港股日K（腾讯，**含前复权**） | `web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hk00700,day,,,5,qfq` | code=0，5 根，末根同上。⚠️ 该 qfq 是**等差**投影，**不能当复权因子源**，见 §3.6 |
 
 ⚠️ **三个必须写进 PR2 的坑**：
 
@@ -184,7 +184,7 @@ def shares_per_volume_unit(market) -> float:
 
 **双源以上（可主备切换）**：日K(em+sina) · 实时(em+sina) · 指数(em+sina) · AH(em+tx) · 基本信息(em+xq)
 
-**单源无兜底**：财务三表、财务指标、分钟K、每手股数、所属行业 —— **全是东财**。
+**单源无兜底**：财务三表、财务指标、分钟K、每手股数、所属行业、**港股分红/复权因子** —— **全是东财**。
 
 且 akshare `#7465`（2026-10-30）提交标题为「**统一重试逻辑，东方财富 push2 限流时不再重试**」→ 东财限流时 akshare **直接失败**。**这正是 §3.1 选直连的理由之一**：直连走 `eastmoney/client.py` 已有的每主机令牌桶+熔断+封禁池，限流时是我们自己退避重试，而不是直接失败。
 
@@ -254,13 +254,126 @@ def availability() -> tuple[bool, str]:
 
 → akshare 没装只让卡片置灰带安装按钮，**绝不影响 A 股启动**。
 
+### 3.6 港股复权因子：自建链路，及一个被实测推翻的捷径
+
+**结论先行**：港股复权走「东财 F10 分红事件 → 自建乘性因子」，落 `data/adj_factor_hk/all.parquet`，与 A 股 `adj_factor/` 目录隔离但**共用**下游全部纯函数（`_merge_adj_factor_store` / `_align_adj_factor_frame` / `_apply_adj_factor`）。实现在 `app/plugins/eastmoney/hk_dividend.py` + `app/services/kline_sync_hk.py`。
+
+#### 🔴 被推翻的捷径：腾讯 `hkfqkline` 不能当因子源
+
+本文档早期版本（及 `hk.py` 的一条注释）曾记「腾讯 `hkfqkline/get?param=hk00700,day,,,N,qfq` 直接返回前复权价，不需自己拿因子重算」。**实测该结论不成立**，两处都已改正：
+
+- 端点确实返回前复权序列（key 是 `qfqday`；第 6 个 param 字段**必填**，传 `bfq`/`none`/空都回 `code=1 bad params`），原始价得换另一个端点 `appstock/app/kline/kline`（key `day`）。
+- 但它是**等差（加性）投影**：`qfq = raw − Σ(未来每股港币分红)`，与本项目 `kline_sync.py:661` 早已记下的 A 股「等差显示投影」同一形态。于是 `qfq/raw = 1 − c/raw` **随价格水平漂移**，不是常数。
+- 后果是致命的：按「比值突变」反推除权事件，在**汇丰身上产出 207 个假事件**（噪声比值差中位数 4.76e-4），而腾讯只有约 3 个真事件（1.13e-4）—— 信号被噪声完全淹没。这不是「精度不够」，是**方法本身无效**。
+- 等差序列也**无法与本地 `fqt=0` 原始价混用**：要么整条替换价格序列（放弃原始价落库契约），要么就得自己拿因子重算。故选后者。
+
+> 这条否定结论有正面佐证：汇丰最新一次除净（2026-11-05，`每股派美元0.1元(相当于港币0.784812元(计算值))`）在加性偏移序列上独立测得的跳变值**恰好是 0.784**，且在该日归零 —— 与 F10 给出的 0.784812 逐位吻合。两个互不相干的探针对上了，说明「F10 分红额」与「等差投影的偏移量」是同一个数，也就说明等差投影的**差分**可用、**比值**不可用。
+
+因此 §13 原计划的「腾讯 qfq vs 东财 `fqt=1` 两源数值互验」**前提不成立**（等差 vs 乘性不可能数值一致），已从测试矩阵与「PR2 未做」表中撤下，改为上面的锚点断言（hermetic，不需网络）。
+
+#### 数据源：东财 F10 分红报表
+
+| 项 | 值 |
+|---|---|
+| 主机/路径 | `datacenter-web.eastmoney.com/api/data/v1/get`（**与 push2 封禁池独立**） |
+| reportName | `RPT_HKF10_MAIN_DIVBASIC` |
+| filter | `(SECUCODE="00700.HK")(IS_BFP="0")` |
+| 排序 | `NOTICE_DATE,EX_DIVIDEND_DATE` / `-1,-1` |
+| 返回字段 | **仅 12 个**，且**没有任何数值型分红列** |
+
+三个实测要点：
+
+1. **`IS_BFP="0"` 是必需的**：`IS_BFP=1` 是「未派发或宣派股息」占位行（除净日为 null）。加上该过滤，腾讯从 91 行降到 27 行。
+2. **金额只存在于 `PLAN_EXPLAIN` 中文文本里**（如 `每股派港币5.3元`），必须解析。`SECUCODE="00700.HK"` 与 `SECURITY_CODE="00700"` 实测**等价**，选前者是为了复用 `hk_fin_secucode()`，不另起一套代码规范化分支。⚠️ 该函数已返回带 `.HK` 的形式，**不能再拼一次** —— 畸形 SECUCODE 返回的是**静默空结果**（`code=9201`），不是报错。
+3. **服务端不支持按 `EX_DIVIDEND_DATE` 过滤**（实测 `(EX_DIVIDEND_DATE>='2024-01-01')` 返回 0 行），故无法只拉增量窗口；每标的 1 次请求取全史（`pageSize=200` 单页足够：腾讯 27 行、汇丰 95 行），增量在本地做。
+
+走项目自己的 `EastmoneyClient.datacenter_report`（默认 `source=WEB/client=WEB`）实测正常，**不需要**改成 akshare 用的 `F10/PC`。
+
+#### 方案文本解析：96.98% 覆盖率，及剩下 3% 为什么宁缺勿造
+
+在 32 只跨行业港股、**1159 条真实除权事件**上实测（51 种句式骨架、753 种不同文本）：
+
+| 结果 | 条数 |
+|---|---|
+| 成功解析出港币数值 | **1124（96.98%）** |
+| 外币宣派且无港币折算值 | 23（`每股派美元0.1元(可选择以股代息)` 20 / `每股派人民币0.05元` 3） |
+| 分派股份（spin-off）无等值 | 9（`每21股腾讯股份分派1股京东集团A类普通股股份`） |
+| 红利认股权证 | 3（权证非送股，且无价值数据） |
+
+失败的 35 条**全部**属于「源数据本身没给港币数值」。这类事件 **warn + 跳过**，绝不当 0 处理 —— 当 0 会产出 `ex_factor=1.0` 的**假因子**，比缺一个事件更难发现。编汇率或编市价同理（CONTRIBUTING §4）。
+
+两个必须钉住的解析陷阱（都有测试）：
+
+- `每股派港币1元(相当于人民币0.9元)` → 必须取 **1.0**，取错会让因子偏小约 8% 且数值看着完全正常；
+- `每股派人民币0.5元(汇率人民币0.5元:港币0.55元)(相当于港币0.55元)` → 「汇率」片段里也有「港币+数字」，不能被误命中。
+
+真正的护栏是**两个等值分支都强制要求「港」字**，而不是匹配顺序 —— 变异测试实测把顺序对调，全部真实样本结果不变（顺序只是第二道防线）。
+
+#### 因子口径：与 A 股同构，三处刻意不同
+
+```
+ref       = (P − D) / (1 + B)      # 交易所除净公式在「无配股 A=0」下的退化形式
+ex_factor = P / ref                # 单次事件的前后比价，不是累计值
+```
+
+`P` = **除净日前最后一个交易日**的原始收盘（取自本地 `kline_hk_daily`）；`D` = 每股现金分红（港币）；`B` = 每股送转比例。累计由 `_apply_adj_factor` 的 `cum_prod().over("symbol")` 负责，故这里**只出单次比值**。
+
+与 A 股 `provider.get_adj_factors` 的三处差异，都是港股规则决定的：
+
+| 差异 | A 股 | 港股 | 原因 |
+|---|---|---|---|
+| 参考价取整 | 四舍五入到 0.01 | **不取整** | A 股要对齐官方涨跌停参考价；港股无涨跌停，且 tick size 按价位分档（0.001–0.5），取整反而要维护一张易腐的档位表 |
+| 合理性自检 | 涨跌停幅度自检 | `D/P > 0.9`、`B > 5.0`、`P`/`ref` 非正或**非有限** → 跳过 | 港股无涨跌停可参照，改用比例闸门。NaN 必须挡：它穿过所有 `>`/`<=` 比较（NaN 比较恒 False），产出的 NaN 因子经 `cum_prod` 会污染该日之后**整条**序列 |
+| 同日多方案 | — | **先合并再算 ref**（D 求和、B 求和） | `_apply_adj_factor` 按 `(symbol, trade_date)` 去重，不合并会**静默丢掉**一条事件 |
+
+`(可选择以股代息)`（scrip dividend）按**全额现金**处理：现金股息是宣派的法定金额，股东选现金还是选股票是个人取舍，不改变除净日的价格调整。
+
+#### fail closed：三态语义
+
+`load_hk_adj_factors` 返回值**三态**，调用方必须区分：
+
+| 返回 | 语义 | `sync_hk_enriched` 行为 |
+|---|---|---|
+| `None` | 库不存在/读取失败 = **不知道**有没有除权事件 | 默认 `require_adj_factor=True` → `logger.error` + 返回 0，**不落盘** |
+| **空帧** | 库存在但无行 = **确认无**除权事件，原始价即复权价 | 正常计算（`_apply_adj_factor` 对空帧原样返回 raw） |
+| 非空帧 | 规范三列 + 明细列 | 正常计算 |
+
+配套两条容易漏的约定：
+
+- `sync_hk_adj_factor` 一轮**全部成功**却无任何事件时，仍要落一个**空库** —— 那是「已同步、确认无事件」的凭据；不落文件，上面的闸门就永远打不开。
+- 但**有标的失败时刻意不落**：那轮结果不完整，宁可让 enriched 继续中止，也不能用一个空库谎称数据齐全。单标的失败记 warning + 进 `failed_out` + 继续（一只失败不中断整轮），**绝不**把失败伪装成「无除权事件」。
+
+显式传 `require_adj_factor=False` 可降级用原始价计算，但会 warning 说清代价（跨除净日的 MA/MACD 会失真）。
+
+#### 验证
+
+`tests/test_hk_adj_factor.py` **62 项**，全 hermetic（假 client，不触网），复权数值全部是手算可复核的字面量（CONTRIBUTING:708）。端到端那条钉死了「因子真的作用到 enriched 上」：30 天原始收盘 `101+i`，在第 15 天放 `ex_factor=1.25`，断言前 15 天 `close == raw_close × 0.8`、后 15 天 `close == raw_close`（前复权保持最新价不变）。
+
+**变异检验 17/17 全部被抓到**，另有 3 个**等价变异**如预期存活并记录了原因（解析顺序对调、单独去掉任一道 NaN 防护 —— 都被另一道防线兜住）。脚本 `backend/_scratch/mutate_hk_adj2.py`。
+
+| 变异 | 结果 | | 变异 | 结果 |
+|---|---|---|---|---|
+| M1 等值分支放开币种限制 | ✅ | | M10 因子取倒数 | ✅ |
+| M2 送转符号写反 `1+B→1−B` | ✅ | | M11 解析不出时当 0 | ✅ |
+| M3 同日多方案不聚合 | ✅ | | M12 缺库时不 fail closed | ✅ |
+| M4 参考价取除净日当天 | ✅ | | M13 三态塌成两态 | ✅ |
+| M5 两道 NaN 防护全去掉 | ✅ | | M14 无事件时不落空库 | ✅ |
+| M6 不剔除停牌日 | ✅ | | M15 全部失败也落空库 | ✅ |
+| M7 现金分红闸门失效 | ✅ | | M16 取数失败不记录 | ✅ |
+| M8 送转闸门失效 | ✅ | | M17 自建 client 不关闭 | ✅ |
+| M9 去掉权证负向断言 | ✅ | | | |
+
+> M14/M15 是**写测试时才发现的实现漏洞**：最初无事件时不落任何文件，导致「全市场都没有除权事件」这种合法状态下 enriched 会永久 fail closed。测试先于文档暴露了它。
+
+**已知局限**：① 单源（东财 F10），无兜底，已登记进 §3.3；② 3% 的事件拿不到港币数值，复权链在这些日前后会有偏差，每次同步都会 warn；③ 未接调度，目前只能经 API 触发。
+
 ## 4. 存储与隔离：五道闸
 
 | # | 闸 | 说明 |
 |---|---|---|
 | 1 | **独立港股模块** | 直连方案下不再是「独立插件目录」，而是**现有插件内的独立港股模块**：`plugins/eastmoney/hk.py`、`plugins/tencent/hk.py`、`plugins/sina/hk.py`，**只服务 `.HK`，A 股 symbol 返回空**；共用同插件的 `client.py`（复用限速/熔断/封禁池）。隔离性靠 PR1 的 `assert_symbol_market` 护栏 + 模块级 market 门控保证，不靠目录边界 |
 | 2 | **`availability()` 懒导入** | 港股模块导入失败或依赖缺失只置灰卡片，不破坏启动（CONTRIBUTING §4 要求插件加载失败需隔离测试）。**若最终启用 akshare extra，该 extra 缺失同样只置灰财务类卡片** |
-| 3 | **独立数据目录** | `instruments_hk` / `kline_hk_daily` / `kline_hk_enriched` / `kline_hk_minute` / `kline_hk_index_daily`。现有 **11 处 `kline_daily/**/*.parquet` 递归 glob**（`repository.py:175,177,2808,2809`；`api/kline.py:2240`；`jobs/daily_pipeline.py:1060`）**扫不到港股** |
+| 3 | **独立数据目录** | `instruments_hk` / `kline_hk_daily` / `kline_hk_enriched` / `kline_hk_minute` / `kline_hk_index_daily` / `adj_factor_hk`。现有 **11 处 `kline_daily/**/*.parquet` 递归 glob**（`repository.py:175,177,2808,2809`；`api/kline.py:2240`；`jobs/daily_pipeline.py:1060`）**扫不到港股**。复权因子同理：港股落 `adj_factor_hk/all.parquet`，与 A 股 `adj_factor/all.parquet` **文件名相同、目录不同**，`tests/test_hk_adj_factor.py` 有显式隔离断言 |
 | 4 | **DuckDB 视图前缀隔离** | 港股视图统一 `hk_*` 前缀（抄 QuantMind `quanthk_hub.py:45-92`：子类只换数据根 + 视图前缀 `qhk_*`，防跨市场视图串味） |
 | 5 | **AST 架构守卫 + 串市场回归测试** | `tests/test_market_architecture_guard.py`（**PR1 已落地**）扫描 `backend/app/` 全部文件，禁止 `market == "HK"` 式字面量分支，命中即报 `file:line`；测试断言「`market=HK` 的任何响应不含 CN 数据」「缓存不串市场」「非法 market 4xx」。<br>*原计划的 `grep -rn "if .*market\s*==\s*['\"]"` 已弃用*：实测全仓仅 3 处命中，其中 **2 处是我们自己 docstring 里引用该反模式作警示**，grep 一上来就被自己的文档绊倒 |
 
@@ -579,7 +692,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **插件隔离**（CONTRIBUTING §4 硬要求） | 港股模块导入失败 / 上游接口变更 / 字段缺失 / 空数据 → `availability()` 返回 False + 提示，**A 股启动与全部 A 股功能不受影响**，不崩、fail closed。*若启用 akshare extra，未安装时同样只置灰财务类卡片* |
 | **港股列表纯净性** | 断言 `fs=m:128 t:3` 取回的列表**不含窝轮/牛熊证代码段**（实测 `m:116` 会混入 17580 条含衍生品）；断言 total 落在预期量级（主板 ~2621 / 全市场 ~4748），数量级突变即报警 |
 | **双柜台处理** | 钉住 §3.1.1 已定策略：`89988`/`09988` **都入库**且 `is_cny_counter` 标记正确；成交额合计/涨跌家数/量比分母/行业排名**只计港币柜台**；按 `89988` 搜索能命中、个股页能出行情 |
-| **复权正确性** | 断言腾讯 `hkfqkline` 的 `qfq` 序列与东财 `fqt=1` 序列在重叠区间**数值一致**（两源互验）；取不到复权数据时 **fail closed**，绝不静默回落 raw 价 |
+| **复权正确性** | 因子链用**固定样本数值断言**（CONTRIBUTING:708）：锚点是汇丰 2026-11-05 实测除净 `每股派美元0.1元(相当于港币0.784812元(计算值))`，其 0.784812 与腾讯 `hkfqkline` 前复权序列在同一日独立测得的加性偏移**逐位吻合**；端到端断言 enriched 的 `close` 已复权而 `raw_close` 未复权；取不到复权数据时 **fail closed**，绝不静默回落 raw 价。⚠️ 原计划的「腾讯 qfq vs 东财 `fqt=1` 两源数值互验」**前提不成立**（等差 vs 乘性），已撤下，见 §3.6 |
 | **串市场护栏** | `market=HK` 的任何响应**不含 CN 数据**；非法 market → 4xx；**缓存不串市场**（第二个市场读到第一个市场的序列 = 失败）；11 处 A 股 glob **扫不到港股目录** |
 | **CI grep** | `grep -rn "if .*market\s*==\s*['\"]" backend/` 命中数为 **0**（白名单除外） |
 | **能力矩阵** | matrix 测试覆盖港股新能力；`usable` 门控生效；不支持的能力（depth5/概念板块）明确声明 |
@@ -648,7 +761,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 ### PR2 完成情况（数据通路 + 财务）
 
-**状态：PR2a / PR2b / PR2c 代码与测试均已完成，未提交。** 后端全量 **6807 passed / 8 skipped / 1 xfailed / 0 failed**（PR1 后基线 6586 → PR2a/b 6787 → PR2c 6807，新增 20 项与实测增量精确吻合），存量 A 股测试**一行未改**即全绿。Ruff 新增告警 **0**（`pre-existing: 670` 与 HEAD 基线逐条一致）。7 个港股测试文件共 **453 项**，全部离线可跑（无网络依赖）。
+**状态：PR2a / PR2b / PR2c / PR2d 代码与测试均已完成，未提交。** 后端全量 **6869 passed / 8 skipped / 1 xfailed / 0 failed**（PR1 后基线 6586 → PR2a/b 6787 → PR2c 6807 → PR2d 6869，新增 62 项与实测增量精确吻合），存量 A 股测试**一行未改**即全绿。Ruff 新增告警 **0**（`pre-existing: 670` 与 HEAD 基线逐条一致）。8 个港股测试文件共 **515 项**，全部离线可跑（无网络依赖）。
 
 | 文件 | 用例 | 覆盖 |
 |---|---|---|
@@ -659,6 +772,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | `tests/test_hk_storage_layout.py` | 27 | 五道闸：目录隔离 / 视图不串市场 / `_DIRNAMES` 无 etf |
 | `tests/test_hk_kline_sync.py` | 34 | 日线同步：universe / 增量 / `fqt != 0` 拒绝；**enriched 生成**：换手率单位 / 大涨不判涨停 / 限价恒 null / 目录隔离 / 拒绝降级 / 进度 |
 | `tests/test_hk_instrument_sync.py` | 16 | 维表同步：字段补全 / `_MIN_FRESH_RATIO` / 保留字段 |
+| `tests/test_hk_adj_factor.py` | 62 | **复权因子链**：方案文本解析（11 种真实句式 + 9 种不可解析 + 4 个具名陷阱）/ 因子数值与四道闸门 / `load_hk_adj_factors` 三态 / fail-closed / 端到端复权 vs 原始 / 同步语义（**变异检验 17/17**） |
 
 **PR2a（数据通路）交付**：`app/plugins/eastmoney/hk.py`（467 行，数据边界）、`app/services/instrument_sync_hk.py`、`app/services/kline_sync_hk.py`、`app/api/hk.py`、`repository.py` 的 `_DIRNAMES` / `daily_dirname()` / `enriched_dirname()` / `append_hk_daily` / `append_hk_enriched`、`provider.symbol_to_secid` 的 `.HK→116.` 纯增量分支。
 
@@ -711,10 +825,11 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 同一张表两种行为，属于 CONTRIBUTING:825 的「写入后存在已知缓存不一致」（PR 拒绝项）。加之港股无涨跌停，`compute_limit_signals` 对 HK **只有换手率这一项产出有意义**（其自身 docstring 原话），缺它则产出无价值。故 `sync_hk_enriched` 在维表为空时 `logger.error` 并返回 0、不落盘。注：港股日K 本就依赖维表（`hk_daily_universe` 从它取标的），走到这一步说明维表被删/损坏，属异常状态，该报错而非静默降级。
 
-**两处诚实的近似（已写进 `sync_hk_enriched` docstring，不是遗漏）**：
+**一处诚实的近似（已写进 `sync_hk_enriched` docstring，不是遗漏）**：
 
-1. **不做复权**（`factors=None`）：`iter_hk_daily_frames` 强制 `fqt=0`，且港股复权因子源尚未接线。后果是 MA/MACD 在除息日附近会失真。将来接上因子源只需把 `factors` 传进去，其余代码不用动。两源互验（腾讯 `hkfqkline` qfq vs 东财 `fqt=1`）仍在「待复测」表里。
-2. **换手率对全部历史使用当前 `float_shares`**（`historical_shares=None`）：CONTRIBUTING §3.4 要求优先使用「公告日不晚于目标交易日」的历史股本。港股全流通（实测 `f38 == f39`），误差比 A 股小但非零。
+1. **换手率对全部历史使用当前 `float_shares`**（`historical_shares=None`）：CONTRIBUTING §3.4 要求优先使用「公告日不晚于目标交易日」的历史股本。港股全流通（实测 `f38 == f39`），误差比 A 股小但非零。
+
+> 原先这里的第 1 条「**不做复权**（`factors=None`），后果是 MA/MACD 在除息日附近会失真」**已消除**：因子源已接线，`sync_hk_enriched` 现在传真实因子并默认 `require_adj_factor=True`（缺库即中止），详见 §3.6。
 
 > 港股 `limit_up_price` / `limit_down_price` 恒 null、`consecutive_limit_ups/downs` 恒 0 是**正确结果**，不是缺数据 —— 港股无涨跌停。测试里对此有显式断言，避免后人误当 bug 去「修」。
 
@@ -739,12 +854,28 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 >
 > 普适教训：**「某列不落盘」+「表达式级函数不抛错」= 静默错误的完美藏身处**。凡修市场差异，都要先问「这个错误数字最终会从哪个可观测字段露出来」，再让测试数据真的能触发它。
 
+### PR2d 完成情况（港股复权因子接线 —— 消除 PR2c 登记的第 1 处近似）
+
+**交付**：`app/plugins/eastmoney/hk_dividend.py`（新增，东财 F10 分红事件 → 乘性因子）、`app/services/kline_sync_hk.py` 的 `HK_ADJ_FACTOR_RELPATH` / `hk_adj_factor_path()` / `load_hk_adj_factors()` / `sync_hk_adj_factor()` 与 `sync_hk_enriched(require_adj_factor=True)`、`repository.py` 三处接线（目录 / 视图 / glob）。
+
+数据源实测、等差 qfq 的否定结论、解析覆盖率、因子口径与变异检验 **17/17** 全部在 **§3.6**，此处不重复。
+
+**PR2d 实施中发现并修复的 3 个真实缺陷**（同样是写测试逼出来的实现 bug，不是「测试写错了」）：
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| `build_hk_adj_factors` 对本地收盘价直接 `float(c)` | 停牌/数据缺口日的 close 为 `None` → `TypeError` **炸掉整轮同步**（一只标的一个空值毁掉全市场） | 建索引时先滤掉 `None`。这同时**更正确**：`bisect_left` 会落到更早的**有效**交易日，那才是真正的「除净日前最后一个交易日」 |
+| 闸门只判 `p <= 0.0` / `ref <= 0.0` | NaN 穿过所有比较（NaN 参与 `>`/`<=` 恒为 `False`）→ 产出 NaN 因子，经 `cum_prod` 污染该日之后**整条**序列，比丢一个事件严重得多 | 两道闸门都改成 `not math.isfinite(x) or x <= 0.0`。两道**单独看都冗余**（各自能挡住对方漏掉的那一半），是刻意的纵深防御，已作为等价变异 E2/E3 记录在案 |
+| 无事件时 `if not frames: continue` 跳过合并 | 因子库文件**根本不创建** → `sync_hk_enriched` 的 fail-closed 闸门在「全市场都不分红」这种**合法**状态下永远打不开 | 一轮全部成功且文件不存在时，落一个**空库**当「已同步、确认无事件」的凭据。🔴 但**有标的失败时刻意不落** —— 空库等于宣称数据齐全，不能拿它骗过闸门 |
+
+> 第 3 条是 `test_sync_no_events_writes_empty_store` 变红才暴露的。它说明 fail-closed 设计有个容易漏的对偶面：**「拒绝在数据不全时出数」与「允许在确认无数据时出数」必须同时成立**，只做前者会把一个合法状态永久锁死。
+
 **PR2 未做（明确留待后续，不是遗漏）**：
 
 | 项 | 状态 | 归属 |
 |---|---|---|
 | **能力矩阵 market 维** | 刻意延后：港股 kline 绕过偏好路由直连，矩阵暂无消费方。**在此登记以免被误读为漏做** | PR3 |
-| **复权两源互验** | 腾讯 `hkfqkline` qfq vs 东财 `fqt=1` 需真实网络，无法做成 hermetic；留作人工验证步骤 | PR3 |
+| ~~**复权两源互验**~~ | **已取消**：腾讯 `hkfqkline` 的 qfq 实测是**等差**投影，与东财 `fqt=1` 的乘性口径不可能数值一致，该互验前提不成立（§3.6）。复权正确性改由「F10 分红额 ↔ 加性偏移逐位吻合」锚定，已 hermetic 化，不再需要真实网络 | — |
 | **调度接线** | 港股同步目前**只能经 API 触发**。是否并入盘前/盘后 job 需先决策：港股交易时段不同，且**不能危及 A 股关键路径** | 待决策 |
 | **成交量单位余量** | `pipeline.py:813,2422` 已修；`strategy/scoring.py:179`、`backtest/engine.py:1979`、`strategy/intraday_features.py:106`、`api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` **暂缓**，明细见 §3.1.2。港股进打分/回测链路的那个 PR 必须一并改，否则 VWAP 低 100 倍会让港股永远打不出分 | PR4+ |
 | **待复测（需网络）** | 港股 `pz` 上限（疑为 100）；全列表代码前缀分布（纯净性护栏用）；**`t:3=主板 / t:4=GEM / t:1=REITs / t:2=债券` 的语义**（`FS_HK_EQUITY` 目前只靠单次早期探针支撑）；东财港股 kline 的 **amount 单位**（元 vs 万元，腾讯侧疑似万元） | PR3 前 |
@@ -753,7 +884,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 | 风险 | 后果 | 对策 |
 |---|---|---|
-| **复权口径** | 缺因子时静默用 raw 价算收益 = CONTRIBUTING §3 警告的「看起来对但错」 | **风险已降低**：腾讯 `hkfqkline/get?param=hk00700,day,,,5,qfq` 实测**直接返回前复权价**（2026-11-15），不需自己拿因子重算。东财 `kline/get?fqt=1` 亦为前复权。仍保留：缺复权数据时 **fail closed** 不出数，绝不静默用 raw 价 |
+| **复权口径** | 缺因子时静默用 raw 价算收益 = CONTRIBUTING §3 警告的「看起来对但错」 | **已接线**（§3.6）：东财 F10 分红事件自建乘性因子，落 `adj_factor_hk/`，`sync_hk_enriched` 默认 `require_adj_factor=True`。🔴 原先记的「腾讯 `hkfqkline` 直出前复权价，不需自己拿因子重算」**是错的** —— 它是**等差**投影，只能整条替换价格序列，无法与本地 `fqt=0` 原始价混用，也反推不出因子（汇丰身上按比值差法产出 207 个假事件）。缺复权数据时仍 **fail closed** 不出数，绝不静默用 raw 价 |
 | **港股双柜台** | 同一公司有港币(`09988`)与人民币(`89988`)两个代码，实测 `m:128 t:3` 里两者**并存** → 成交额重复计算、量比分母错、行业排名同一家公司占两席 | **策略已定（§3.1.1）**：都入库 + `is_cny_counter` 标记，市场级统计只计港币柜台。PR2 落地时用 `tests/test_hk_dual_counter.py` 钉住；**该策略影响 PR6 行业排名正确性**，不能拖到 PR6 才发现漏了 |
 | **东财市场码用错** | `m:116` 返回 **17580** 条含窝轮/牛熊证（实测样本 `14192 中寿信证七一购A`），当成股票列表会污染全市场统计、涨跌幅榜、量比 | 列表固定用 `fs=m:128 t:3`（主板 2621）或 `m:128 t:3,t:4,t:1,t:2`（全市场 4748）；**分隔符是空格不是 `+`**；写测试断言列表里不含衍生品代码段 |
 | **交易日历** | 最阴险的不是崩，而是**把节假日当交易日**（港股复活节/圣诞/农历与 A 股完全不同） | oracle + provenance + **半日市表**；实盘/告警路径拒绝 weekday_fallback |
