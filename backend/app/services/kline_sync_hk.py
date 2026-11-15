@@ -1,0 +1,322 @@
+"""港股日K同步 → ``data/kline_hk_daily/``。
+
+与 A 股 :mod:`app.services.kline_sync` **物理与代码双隔离** (方案 §4 闸3):
+A 股那条链路深度耦合能力路由/偏好档位/TickFlow 补齐, 港股按用户决策是「行情/K线
+直连东财」, 不走偏好路由。硬塞进 ``sync_and_persist_daily_batch`` 会让两个市场的
+失败互相连累, 且 A 股那条是关键路径。
+
+复用的是**纯函数**部分, 这些与路由无关:
+- ``hk.fetch_hk_kline``      港股单标的日K (secid 前缀 116)
+- ``provider._map_kline_row`` CSV 行 → 内部日K契约 (港股行格式与 A 股实测一致)
+- ``kline_sync._normalize_daily`` 规范化 + 停牌日过滤 + canonical 列裁剪
+- ``repo.append_hk_daily``   按日分区 merge-upsert 落库
+
+⚠️ **成交量单位**: 港股东财原生单位是「股」, A 股是「手」。本模块按原样落库
+(不做单位换算), 下游经 :func:`app.market.shares_per_volume_unit` 换算。落库前
+必须确认 enriched 生成走 ``market=Market.HK``, 否则换手率高 100 倍 ——
+见 ``docs/hk-market-plan.md`` §3.1.2。
+"""
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator, Sequence
+from datetime import date, timedelta
+from pathlib import Path
+
+import polars as pl
+
+from app.market import Market, SymbolMarketMismatchError
+from app.plugins.eastmoney import hk
+from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
+from app.plugins.eastmoney.provider import _map_kline_row
+from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
+from app.services.kline_sync import _normalize_daily
+
+logger = logging.getLogger(__name__)
+
+#: 全量回填起点。与 A 股 ``provider._KLINE_BEG_DEFAULT`` 同值, 但**不 import**:
+#: 港股最早上市标的远晚于 1990, 用同一起点只是让「全量」语义一致, 东财按标的
+#: 实际上市日返回, 不会产生空行。
+HK_KLINE_BEG_DEFAULT = "19900101"
+
+
+def hk_daily_universe(
+    data_dir: Path, *, include_cny_counter: bool = False
+) -> list[str]:
+    """从 ``instruments_hk`` 读出港股日K的标的清单。
+
+    默认**排除人民币柜台** (``is_cny_counter``): 同一公司的两个柜台是同一份基本面,
+    双份拉取会把请求数翻倍 (直接加剧东财 IP 封禁风险), 且全市场统计会重复计一家公司。
+    维表里两个代码都保留 (用户决策), 只是行情默认只拉港币柜台。
+
+    维表缺失/为空时返回 ``[]`` —— 调用方据此跳过, 不去猜一个 universe。
+    """
+    path = data_dir / HK_INSTRUMENT_RELPATH
+    if not path.exists():
+        logger.warning("港股维表不存在 (%s), 跳过日K同步", path)
+        return []
+    try:
+        df = pl.read_parquet(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("港股维表读取失败, 跳过日K同步: %s", e)
+        return []
+    if df.is_empty() or "symbol" not in df.columns:
+        return []
+    if not include_cny_counter and "is_cny_counter" in df.columns:
+        df = df.filter(~pl.col("is_cny_counter").fill_null(False))
+    return sorted(s for s in df["symbol"].drop_nulls().unique().to_list() if s)
+
+
+def iter_hk_daily_frames(
+    client: EastmoneyClient,
+    symbols: Sequence[str],
+    *,
+    beg: str = HK_KLINE_BEG_DEFAULT,
+    end: str = "20500101",
+    fqt: int = 0,
+) -> Iterator[pl.DataFrame]:
+    """逐标的拉港股日K, 一标的一帧流式产出 (供调用方逐批落盘, 控制峰值内存)。
+
+    单标的软失败 (记 warning + 跳过): 港股有长期停牌标的, 东财对其返回空 klines,
+    一只失败不该中断整轮同步。限速由 client 令牌桶承担。
+
+    ``fqt`` 必须为 **0** (不复权): 项目契约是落库原始价, 复权在读端按除权因子重建。
+    """
+    if fqt != 0:
+        raise ValueError(f"港股日K落库必须用原始价 (fqt=0), 收到 fqt={fqt}")
+    for symbol in symbols:
+        try:
+            lines = hk.fetch_hk_kline(client, symbol, beg, end, fqt=fqt)
+        except EastmoneyError as e:
+            logger.warning("港股日K %s 拉取失败, 跳过: %s", symbol, e)
+            continue
+        except SymbolMarketMismatchError as e:
+            # 维表里混进了非港股 symbol (脏数据/上游改口径)。跳过而非中断:
+            # 一只脏数据不该让整轮同步失败, 但必须记 warning 让人能发现。
+            logger.warning("港股日K %s 非港股 symbol, 跳过: %s", symbol, e)
+            continue
+        if not lines:
+            logger.debug("港股日K %s 返回 0 行 (可能长期停牌或未上市)", symbol)
+            continue
+        rows = [r for r in (_map_kline_row(symbol, line) for line in lines) if r]
+        if not rows:
+            logger.warning("港股日K %s 返回 %d 行但全部无法解析", symbol, len(lines))
+            continue
+        df = _normalize_daily(pl.DataFrame(rows), default_symbol=symbol)
+        if not df.is_empty():
+            yield df
+
+
+def latest_hk_daily_date(repo) -> date | None:
+    """已落库港股日K的最大交易日; 无数据返回 None (供增量同步定起点)。"""
+    try:
+        row = repo.execute_one("SELECT max(date) FROM kline_hk_daily")
+    except Exception as e:  # noqa: BLE001
+        # 视图在空目录下不注册 (read_parquet 无匹配文件), 这是首次同步的正常状态
+        logger.debug("kline_hk_daily 视图不可用, 按无历史处理: %s", e)
+        return None
+    if not row or row[0] is None:
+        return None
+    d = row[0]
+    return d if isinstance(d, date) else date.fromisoformat(str(d))
+
+
+def sync_hk_daily(
+    repo,
+    *,
+    symbols: Sequence[str] | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    include_cny_counter: bool = False,
+    incremental: bool = True,
+    client: EastmoneyClient | None = None,
+    on_progress=None,
+) -> int:
+    """同步港股日K → ``kline_hk_daily/``。返回写入的行数。
+
+    ``incremental=True`` 且未显式给 ``start`` 时, 起点取已落库最大日期的**次日**;
+    无历史则全量回填。港股无 T+1 限制但日K口径与 A 股一致 (按交易日分区)。
+
+    ``on_progress(done, total)`` 供前端进度条使用, 每标的回调一次。
+    """
+    data_dir = repo.store.data_dir
+    universe = list(symbols) if symbols is not None else hk_daily_universe(
+        data_dir, include_cny_counter=include_cny_counter
+    )
+    if not universe:
+        logger.info("港股日K同步: 标的清单为空, 跳过")
+        return 0
+
+    if start is None and incremental:
+        latest = latest_hk_daily_date(repo)
+        if latest is not None:
+            start = latest + timedelta(days=1)
+    beg = start.strftime("%Y%m%d") if start else HK_KLINE_BEG_DEFAULT
+    end_s = end.strftime("%Y%m%d") if end else "20500101"
+    if start is not None and end is not None and start > end:
+        logger.info("港股日K同步: 起点 %s 晚于终点 %s, 已是最新", start, end)
+        return 0
+
+    own_client = client is None
+    if own_client:
+        client = EastmoneyClient()
+    written = 0
+    done = 0
+    total = len(universe)
+    try:
+        for df in iter_hk_daily_frames(client, universe, beg=beg, end=end_s):
+            repo.append_hk_daily(df)
+            written += df.height
+            done += 1
+            if on_progress is not None:
+                on_progress(done, total)
+    finally:
+        if own_client:
+            client.close()
+
+    if written:
+        repo.rebuild_views()
+    logger.info(
+        "港股日K同步完成: %d 标的 / 写入 %d 行 (beg=%s end=%s)",
+        total, written, beg, end_s,
+    )
+    return written
+
+
+#: enriched 重算的默认标的批大小, 与 A 股 ``recompute_daily_symbols`` 同量级:
+#: 批内要同时驻留完整原始历史与全套指标宽表, 太大峰值内存吃不消。
+HK_ENRICHED_BATCH_SIZE = 200
+
+
+def hk_enriched_instruments(data_dir: Path) -> pl.DataFrame:
+    """读 ``instruments_hk`` 供 enriched 计算 (换手率需要 ``float_shares``)。
+
+    维表缺失/损坏 → 返回**空帧**, 由调用方 :func:`sync_hk_enriched` 决定中止。
+    **不猜一个默认股本** —— 猜出来的换手率「看起来对但错」, 比缺数据危险得多
+    (CONTRIBUTING §3)。这里只负责如实报告「读不到」, 不负责降级策略。
+    """
+    path = data_dir / HK_INSTRUMENT_RELPATH
+    if not path.exists():
+        logger.warning("港股维表不存在: %s", path)
+        return pl.DataFrame()
+    try:
+        return pl.read_parquet(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("港股维表读取失败 (%s): %s", path, e)
+        return pl.DataFrame()
+
+
+def sync_hk_enriched(
+    repo,
+    *,
+    symbols: Sequence[str] | None = None,
+    start: date | None = None,
+    batch_size: int | None = None,
+    on_progress=None,
+) -> int:
+    """从已落库的港股**原始**日K重算 enriched → ``kline_hk_enriched/``。返回写入行数。
+
+    与 A 股 ``pipeline.recompute_daily_symbols`` 同构: 按标的分批、输入用**完整本地
+    原始历史**(指标需要预热窗口)、只发布 ``start`` 起的行。
+
+    **刻意不走 ``EnrichedPublication`` 代次锁**: 那套机制服务于 matrix / 选股器 /
+    回测的读一致性, 而港股 enriched 目前没有任何这类读方 (方案 §4 闸3: 港股不进
+    unified 视图, 由 ``test_unified_views_exclude_hk`` 钉死)。加锁只会白付代价,
+    且 ``_write_daily_partition`` 的 ``generation_asset`` 映射本来就不含港股目录。
+
+    🔴 **两处已知近似 —— 是数据源现状不是 bug, 但读端必须知道**:
+
+    1. **不复权**。港股复权因子源尚未接入 (``iter_hk_daily_frames`` 强制 ``fqt=0``),
+       故 ``factors=None``, enriched 的 open/high/low/close 等于原始价。跨除权除息日
+       的 MA/MACD 等宽指标会有跳变失真。接入因子源后本函数无需改动, 传 factors 即可。
+    2. **换手率用当前流通股本回溯全历史**。港股无历史股本表 (``historical_shares=None``),
+       而 CONTRIBUTING §3.4 要求「优先使用公告日不晚于目标交易日的历史股本」。港股
+       全流通、股本变动主要来自增发/回购, 误差通常小于 A 股, 但**不等于没有**。
+
+    港股无涨跌停 (``HK_RULES.has_price_limit=False``) → ``limit_up_price`` /
+    ``limit_down_price`` 恒 null, ``consecutive_limit_ups/downs`` 恒 0。**这是正确
+    结果不是缺数据**; 读端不得把 null 限价解读成别的语义 (方案 §9.1 AI 护栏)。
+
+    ``market=Market.HK`` 是本函数存在的核心理由: 港股 volume 单位是「股」而 A 股是
+    「手」, 走默认 CN 会让换手率**高 100 倍** (方案 §3.1.2)。
+    """
+    from app.indicators.pipeline import compute_enriched
+    from app.parquet import scan_daily_parquet
+
+    data_dir = repo.store.data_dir
+    files = repo.daily_repair_files("stock", market=Market.HK)
+    if not files:
+        logger.info("港股 enriched 重算: kline_hk_daily 无原始日K, 跳过")
+        return 0
+
+    raw_scan = scan_daily_parquet(files)
+    if symbols is not None:
+        selected = sorted(set(symbols))
+    else:
+        selected = sorted(raw_scan.select("symbol").unique().collect()["symbol"].drop_nulls().to_list())
+    if not selected:
+        logger.info("港股 enriched 重算: 标的清单为空, 跳过")
+        return 0
+
+    instruments = hk_enriched_instruments(data_dir)
+    if instruments.is_empty():
+        # 明确拒绝而不是「算出来但缺列」。理由有二:
+        # 1) compute_limit_signals 在 instruments 为空时提前返回, 落盘分区里连
+        #    turnover_rate 这一列都**不存在**。实测: 若所有分区都缺该列, DuckDB 视图
+        #    就没有这个列, 消费方 `SELECT turnover_rate` 直接 BinderException; 若只有
+        #    部分分区缺, union-by-name 会补成 NULL —— 同一张表两种行为, 属于
+        #    CONTRIBUTING:825 的「写入后存在已知缓存不一致」。
+        # 2) 港股无涨跌停, compute_limit_signals 对 HK **只有换手率这一项产出有意义**
+        #    (见其 docstring)。没有股本就等于唯一有意义的列缺失, 产出无价值。
+        # 注: 港股日K 本就依赖维表 (hk_daily_universe 从它取标的), 走到这里说明维表
+        # 被删/损坏, 属异常状态, 该报错而不是静默降级。
+        logger.error(
+            "港股 enriched 重算中止: 维表 %s 缺失或为空, 无法取得 float_shares。"
+            "请先跑 sync_hk_instruments。", HK_INSTRUMENT_RELPATH,
+        )
+        return 0
+    step = max(1, min(batch_size or HK_ENRICHED_BATCH_SIZE, HK_ENRICHED_BATCH_SIZE))
+    batches = [selected[i:i + step] for i in range(0, len(selected), step)]
+    written = 0
+    for done, batch in enumerate(batches, start=1):
+        raw = raw_scan.filter(pl.col("symbol").is_in(batch)).sort(["symbol", "date"]).collect(
+            engine="streaming"
+        )
+        # 空批次 (点名了尚未同步日K的标的) 不写盘, 但**仍要报进度** —— 进度上报只留
+        # 这一个出口, 从结构上杜绝「某条分支忘了调 on_progress 导致进度条卡在 99%」
+        # 这类漂移。
+        if not raw.is_empty():
+            enriched = compute_enriched(
+                raw,
+                factors=None,
+                instruments=instruments.filter(pl.col("symbol").is_in(batch)),
+                historical_shares=None,
+                market=Market.HK,
+            )
+            # 计算用完整历史 (预热 + 连板递推), 发布只取 start 起的行 —— 与 A 股一致。
+            output = enriched if start is None else enriched.filter(pl.col("date") >= start)
+            if not output.is_empty():
+                repo.append_hk_enriched(output)
+                written += output.height
+        if on_progress is not None:
+            on_progress(done, len(batches))
+
+    if written:
+        repo.rebuild_views()
+    logger.info(
+        "港股 enriched 重算完成: %d 标的 / 写入 %d 行 (start=%s)",
+        len(selected), written, start or "全量",
+    )
+    return written
+
+
+__all__ = [
+    "HK_ENRICHED_BATCH_SIZE",
+    "HK_KLINE_BEG_DEFAULT",
+    "hk_daily_universe",
+    "hk_enriched_instruments",
+    "iter_hk_daily_frames",
+    "latest_hk_daily_date",
+    "sync_hk_daily",
+    "sync_hk_enriched",
+]

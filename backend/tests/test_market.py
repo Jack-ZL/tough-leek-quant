@@ -39,6 +39,7 @@ from app.market import (
     register_half_days,
     rules_for,
     sessions_for,
+    shares_per_volume_unit,
     trading_total_minutes,
 )
 
@@ -353,6 +354,92 @@ def test_cn_exchange_of():
     assert cn_exchange_of("920001.BJ") == "BJ"
     assert cn_exchange_of("00700.HK") is None
     assert cn_exchange_of("garbage") is None
+
+
+# ================================================================
+# 成交量单位系数
+#
+# 内部 volume 单位随市场而变 (A 股手 / 港股股)。这个系数曾经以 ``* 100`` 的
+# 形式硬编码散落在换手率、VWAP、封单额等 6 处, 港股接入后会静默把换手率算高
+# 100 倍。收敛到一处后, 下面三条钉住: 系数值、缺省行为、以及「同一份真实股数
+# 在两个市场必须算出同一个换手率」这个端到端不变量。
+# ================================================================
+
+def test_shares_per_volume_unit_covers_every_market():
+    """新增市场忘了配系数要当场失败 (与规则表覆盖测试同一思路)。"""
+    from app.market import _SHARES_PER_VOLUME_UNIT
+    assert set(_SHARES_PER_VOLUME_UNIT) == set(Market)
+    for market, factor in _SHARES_PER_VOLUME_UNIT.items():
+        assert factor > 0, f"{market} 的 volume 换算系数必须为正"
+
+
+def test_shares_per_volume_unit_values():
+    assert shares_per_volume_unit(Market.CN) == 100.0   # volume 单位 = 手
+    assert shares_per_volume_unit(Market.HK) == 1.0     # volume 单位 = 股
+
+
+def test_shares_per_volume_unit_defaults_to_cn():
+    """缺省必须是 CN —— 这是「A 股路径算术完全不变」的保证。"""
+    assert shares_per_volume_unit() == 100.0
+    assert shares_per_volume_unit() == shares_per_volume_unit(Market.CN)
+
+
+@pytest.mark.parametrize("value", ["cn", "CN", "hk", "HK", "港股", "a股"])
+def test_shares_per_volume_unit_accepts_aliases(value):
+    """与 rules_for 同样接受别名串 (调用方常从配置/请求参数拿到字符串)。"""
+    assert shares_per_volume_unit(value) == shares_per_volume_unit(parse_market(value))
+
+
+@pytest.mark.parametrize("value", [None, "", "US", "garbage", 123, Market])
+def test_shares_per_volume_unit_raises_on_unknown(value):
+    """无法识别 (含 None) 必须抛错, 不兜底成 CN。
+
+    静默兜底成 100 会让港股换手率高 100 倍且全程无声 —— 与 rules_for 同一约定。
+    """
+    with pytest.raises(ValueError):
+        shares_per_volume_unit(value)
+
+
+def test_turnover_rate_is_market_invariant_given_true_share_count():
+    """端到端不变量: 同样的真实成交股数与流通股本, 两个市场必须算出同一换手率。
+
+    这条是 §3.1.2 的验收标准。若港股沿用 A 股的 ``* 10000``, 结果会差 100 倍。
+    """
+    float_shares = 9_190_000_000.0        # 腾讯控股实测总股本
+    true_shares_traded = 31_493_353.0     # 00700 2026-11-13 实测成交量(股)
+    expected = true_shares_traded / float_shares * 100.0   # ≈ 0.3427%
+
+    # 港股: volume 以股入库
+    hk_volume = true_shares_traded
+    # A 股: 同样的股数以手入库
+    cn_volume = true_shares_traded / shares_per_volume_unit(Market.CN)
+
+    for market, volume in ((Market.HK, hk_volume), (Market.CN, cn_volume)):
+        pct = volume * shares_per_volume_unit(market) * 100.0 / float_shares
+        assert pct == pytest.approx(expected), f"{market} 换手率算错"
+    # 实测腾讯返回的换手率是 0.350% — 量级必须吻合 (差 100 倍即单位错)
+    assert expected == pytest.approx(0.3427, abs=1e-3)
+
+
+def test_vwap_is_market_invariant_given_true_share_count():
+    """VWAP = 成交额 / 成交股数, 同样必须与市场无关。"""
+    amount = 12_251_162_810.0
+    true_shares = 31_493_353.0
+    expected = amount / true_shares
+
+    hk_vwap = amount / (true_shares * shares_per_volume_unit(Market.HK))
+    cn_vwap = amount / ((true_shares / 100.0) * shares_per_volume_unit(Market.CN))
+    assert hk_vwap == pytest.approx(expected)
+    assert cn_vwap == pytest.approx(expected)
+    assert expected == pytest.approx(389.0, abs=0.5)   # 落在当日 385.6~395.2 区间内
+
+
+def test_volume_ratio_needs_no_unit_coefficient():
+    """量比是比值, 分子分母同单位即约掉 — 不得引入本系数 (否则半日市折算会被重复计)。"""
+    today, avg5 = 31_493_353.0, 28_000_000.0
+    for market in Market:
+        factor = shares_per_volume_unit(market)
+        assert (today * factor) / (avg5 * factor) == pytest.approx(today / avg5)
 
 
 # ================================================================

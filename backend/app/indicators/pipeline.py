@@ -31,6 +31,7 @@ from app.enriched_generation import (
     EnrichedPublication,
     enriched_publication_incomplete,
 )
+from app.market import Market, rules_for, shares_per_volume_unit
 from app.market_time import cn_today
 from app.parquet import scan_daily_parquet, scan_enriched_parquet, scan_parquet_compat
 from app.price_limits import (
@@ -683,13 +684,24 @@ def compute_signals(
     return df
 
 
-def _attach_no_limit_window(inst_subset: pl.DataFrame) -> pl.DataFrame:
+def _attach_no_limit_window(
+    inst_subset: pl.DataFrame, *, market: object = Market.CN
+) -> pl.DataFrame:
     """给 instruments 子集附上无涨跌幅窗口列 (单一事实源: app.price_limits)。
 
     _no_limit_days: 窗口交易日数 (0/null = 不适用, 改革前老股或无上市日)
     _no_limit_until: 窗口边界日历日 = listing_date + 保守边际 (供 date <= 边界
                     的向量化比较; 精确交易日序号门控由调用方补足)
+
+    🔴 「注册制新股无涨跌幅窗口」是 **A 股专属**概念: 它是注册制改革的产物, 而
+    ``price_limits.no_limit_window_days`` 对非 A 股 symbol 直接抛
+    :class:`~app.market.SymbolMarketMismatchError`。无涨跌停的市场 (港股
+    ``HK_RULES.has_price_limit=False``) 根本不存在「窗口」这一说, 故按**规则表**
+    原样返回。判定放在这里而非各调用方, 是为了让将来新增的调用方无从忘记 ——
+    市场差异住在 ``MarketTradingRules`` 里, 不住在控制流里。
     """
+    if not rules_for(market).has_price_limit:
+        return inst_subset
     if inst_subset.is_empty() or "listing_date" not in inst_subset.columns:
         return inst_subset
     info: list[dict] = []
@@ -723,6 +735,8 @@ def compute_limit_signals(
     instruments: pl.DataFrame,
     needed: set[str] | None = None,
     historical_shares: pl.DataFrame | None = None,
+    *,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """计算涨跌停判定价与连板状态 (信号布尔列由自定义信号定义注入)。
 
@@ -738,6 +752,13 @@ def compute_limit_signals(
 
     输入必须包含: symbol, date, raw_close, raw_high, raw_low, open, high, low, close,
                   change_pct, vol_ratio_5d。
+
+    Args:
+        market: 影响两处 —— ① ``volume`` 的单位换算系数 (A 股手 / 港股股, 差
+            100 倍); ② 涨跌幅比例, 无涨跌停的市场 (港股) 限价列恒 null、大涨大跌
+            都不记连板。仅关键字且默认 CN → 存量 A 股调用方无需改动、算术完全不变。
+            ⚠️ 港股无涨跌停 (``HK_RULES.has_price_limit=False``), 传 HK 时本函数
+            只有换手率这一项产出有意义。
     """
     if df.is_empty():
         return df
@@ -790,18 +811,21 @@ def compute_limit_signals(
         inst_subset = inst_subset.join(st_flag, on="symbol", how="left")
 
     if need_price_limits:
-        inst_subset = _attach_no_limit_window(inst_subset)
+        inst_subset = _attach_no_limit_window(inst_subset, market=market)
 
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
 
     if "turnover_rate" in want:
         df = apply_historical_float_shares(df, historical_shares, today=cn_today())
 
-    # 计算换手率(%) = volume(手) * 10000 / float_shares(股)
+    # 换手率(%) = volume * shares_per_volume_unit(market) * 100 / float_shares(股)
+    # A 股 volume 单位是手 → 系数 100, 合起来等于历史上的 * 10000 (算术不变);
+    # 港股 volume 单位是股 → 系数 1。硬编码 10000 会让港股换手率高 100 倍。
     if "turnover_rate" in want and "float_shares" in df.columns and "volume" in df.columns:
+        turnover_factor = shares_per_volume_unit(market) * 100.0
         df = df.with_columns(
             pl.when(pl.col("float_shares") > 0)
-              .then(pl.col("volume") * 10000.0 / pl.col("float_shares"))
+              .then(pl.col("volume") * turnover_factor / pl.col("float_shares"))
               .otherwise(None)
               .alias("turnover_rate")
         )
@@ -834,7 +858,7 @@ def compute_limit_signals(
 
     is_risk_warning = pl.col("_is_st") if "_is_st" in df.columns else pl.lit(False)
     df = df.with_columns(
-        polars_price_limit_pct(pl.col("symbol"), pl.col("date"), is_risk_warning)
+        polars_price_limit_pct(pl.col("symbol"), pl.col("date"), is_risk_warning, market=market)
         .alias("_limit_pct")
     )
 
@@ -1016,15 +1040,22 @@ def compute_all(
     df: pl.DataFrame,
     instruments: pl.DataFrame | None = None,
     historical_shares: pl.DataFrame | None = None,
+    *,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """从 OHLCV 计算全套指标 + 信号。一站式调用。
 
     输入: symbol, date, open, high, low, close, volume, amount, raw_close
+
+    ``market`` 透传给 :func:`compute_limit_signals`, 影响换手率的 volume 单位系数
+    与涨跌幅比例 (无涨跌停市场限价列恒 null)。
     """
     df = compute_indicators(df)
     df = compute_signals(df)
     if instruments is not None and not instruments.is_empty():
-        df = compute_limit_signals(df, instruments, historical_shares=historical_shares)
+        df = compute_limit_signals(
+            df, instruments, historical_shares=historical_shares, market=market
+        )
 
     # 清理 NaN / Inf
     float_cols = [c for c in df.columns if df[c].dtype.is_float()]
@@ -1066,12 +1097,19 @@ def compute_enriched(
     factors: pl.DataFrame | None = None,
     instruments: pl.DataFrame | None = None,
     historical_shares: pl.DataFrame | None = None,
+    *,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """对原始日 K 应用前复权 + 全量计算指标 + 信号, 产出完整 enriched (含全部指标列)。
 
     输入应包含至少: symbol, date, open, high, low, close, volume (可选 amount)。
     如果提供了 factors, 先应用前复权再算指标。
     如果提供了 instruments, 计算涨跌停信号和换手率。
+
+    ``market`` 透传给 :func:`compute_all` → :func:`compute_limit_signals`, 影响
+    换手率的 volume 单位系数 (A 股手 / 港股股) 与涨跌幅比例。**港股 enriched 生成
+    必须传 ``Market.HK``**, 否则换手率高 100 倍、且大涨会被误判成涨停连板 ——
+    见 ``docs/hk-market-plan.md`` §3.1.2。
     """
     if raw.is_empty():
         return raw
@@ -1101,6 +1139,7 @@ def compute_enriched(
         df,
         instruments=instruments,
         historical_shares=historical_shares,
+        market=market,
     )
 
     return df
@@ -1450,12 +1489,17 @@ def compute_enriched_history_window(
     sym_batch: int | None = None,
     *,
     include_instrument_metadata: bool = False,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """按 symbol 分批执行历史窗口计算: 指标 → 偏离列 → 信号 → 涨跌停。
 
     分批约束计算中间表, 最终完整历史仍常驻内存。排序和可选元数据关联
     均在单批完成, 避免合并后再复制整张宽表。
     sym_batch 显式传入时跳过自适应 (测试用)。
+
+    ``market`` 透传给 :func:`compute_limit_signals`, 影响换手率的 volume 单位系数
+    (A 股手 / 港股股) 与涨跌幅比例。港股 enriched 生成必须传 ``Market.HK``, 否则
+    换手率高 100 倍、大涨会被误判成涨停连板。
     """
     if df_hist.is_empty() or "symbol" not in df_hist.columns:
         return df_hist
@@ -1477,7 +1521,9 @@ def compute_enriched_history_window(
                 if historical_shares is not None and not historical_shares.is_empty()
                 else historical_shares
             )
-            part = compute_limit_signals(part, inst_batch, historical_shares=shares_batch)
+            part = compute_limit_signals(
+                part, inst_batch, historical_shares=shares_batch, market=market
+            )
             if include_instrument_metadata:
                 inst_cols = [c for c in ("name", "total_shares", "float_shares")
                              if c in inst_batch.columns and c not in part.columns]
@@ -2054,6 +2100,8 @@ def compute_enriched_today(
     today_ohlcv: pl.DataFrame,
     instruments: pl.DataFrame | None = None,
     elapsed_minutes: float | None = None,
+    *,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """用昨天的递推状态 + 今天的 OHLCV 增量计算今天的 enriched 数据。
 
@@ -2066,6 +2114,9 @@ def compute_enriched_today(
         instruments:    维表 (涨跌停/换手率需要)
         elapsed_minutes: 当日已交易分钟数(用于标准量比的时间折算)。
             None 或 0 表示不折算(盘后或时间不可用, 此时 volume 已是全天量)。
+        market: 影响两处 —— ① ``volume`` 的单位换算系数 (A 股手 / 港股股, 差
+            100 倍); ② 涨跌幅比例, 无涨跌停的市场 (港股) 限价列恒 null。仅关键字
+            且默认 CN → 存量调用方无需改动、算术完全不变。
 
     返回:
         今天的 enriched DataFrame (~5500 行, 64 列)
@@ -2295,7 +2346,7 @@ def compute_enriched_today(
 
     # ---- 涨跌停判定价 + 换手率 + 连板 (信号布尔列由定义注入) ----
     if instruments is not None and not instruments.is_empty():
-        df = _compute_limit_signals_today(df, instruments)
+        df = _compute_limit_signals_today(df, instruments, market=market)
 
     # ---- 清理内部列 ----
     drop_cols = [
@@ -2351,8 +2402,23 @@ def compute_enriched_today(
     return df
 
 
-def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) -> pl.DataFrame:
-    """盘中增量版的涨跌停/换手率/炸板/连板计算。"""
+def _compute_limit_signals_today(
+    df: pl.DataFrame,
+    instruments: pl.DataFrame,
+    *,
+    market: object = Market.CN,
+) -> pl.DataFrame:
+    """盘中增量版的涨跌停/换手率/炸板/连板计算。
+
+    ``market`` 由 :func:`compute_enriched_today` 透传, 影响两处:
+
+    1. 换手率的 volume 单位系数 (A 股手 / 港股股, 差 100 倍);
+    2. 涨跌幅比例 —— 无涨跌停的市场 (港股) 限价列恒 null, 大涨大跌都不记连板。
+
+    ⚠️ 第 2 点必须显式透传: ``polars_price_limit_pct`` 是**表达式级**函数, 漏传
+    market 不会报错, 而是静默按 A 股主板 10% 构造表达式 (港股代码不匹配任何板块
+    前缀 → 落默认值), 产出「看起来对但错」的涨停判定。
+    """
     inst_cols = ["symbol"]
     for c in ["float_shares", "limit_up", "limit_down", "listing_date"]:
         if c in instruments.columns:
@@ -2373,16 +2439,19 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         )
         inst_subset = inst_subset.join(st_flag, on="symbol", how="left")
 
-    inst_subset = _attach_no_limit_window(inst_subset)
+    inst_subset = _attach_no_limit_window(inst_subset, market=market)
 
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
 
     # 换手率: API 有则直接用, 无则从 float_shares 计算
+    # 系数随市场: A 股 volume 单位是手 (×100 → 股), 港股是股 (×1)。
+    # 硬编码 10000 会让港股换手率高 100 倍, 见 docs/hk-market-plan.md §3.1.2。
     if "turnover_rate" not in df.columns:
         if "float_shares" in df.columns and "volume" in df.columns:
+            turnover_factor = shares_per_volume_unit(market) * 100.0
             df = df.with_columns(
                 pl.when(pl.col("float_shares") > 0)
-                  .then(pl.col("volume") * 10000.0 / pl.col("float_shares"))
+                  .then(pl.col("volume") * turnover_factor / pl.col("float_shares"))
                   .otherwise(None)
                   .alias("turnover_rate")
             )
@@ -2404,6 +2473,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         pl.col("symbol"),
         trade_date,
         is_risk_warning,
+        market=market,
     ).alias("_limit_pct")
 
     limit_up_price = polars_limit_price(prev_raw, limit_pct, up=True)

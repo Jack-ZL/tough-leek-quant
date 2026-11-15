@@ -415,6 +415,51 @@ def cn_exchange_of(symbol: object) -> str | None:
 
 
 # ================================================================
+# 成交量单位 (volume unit)
+#
+# 内部 ``volume`` 字段的单位**随市场而变**: A 股是「手」(1 手 = 100 股),
+# 港股是「股」(东财/腾讯原生单位)。实测依据与两条独立交叉验证见
+# docs/hk-market-plan.md §3.1.2。
+#
+# 曾经这个单位是隐式的 —— 换算系数 ``* 100`` 硬编码散落在换手率、VWAP、
+# 封单额等 6 处。港股接入后那 6 处会静默把换手率算高 100 倍、VWAP 算低
+# 100 倍, 且不报错。系数因此收敛到本模块一处。
+# ================================================================
+
+_SHARES_PER_VOLUME_UNIT: dict[Market, float] = {
+    Market.CN: 100.0,  # volume 单位 = 手
+    Market.HK: 1.0,    # volume 单位 = 股
+}
+
+
+def shares_per_volume_unit(market: object = Market.CN) -> float:
+    """内部 ``volume`` 字段 → **股数** 的换算系数。
+
+    A 股 volume 单位是手 → ``100.0``; 港股 volume 单位是股 → ``1.0``。
+
+    用法 (换手率与 VWAP 都必须经此函数, 不得再硬编码 ``* 100``)::
+
+        turnover_rate = volume * shares_per_volume_unit(market) * 100 / float_shares
+        vwap          = amount / (volume * shares_per_volume_unit(market))
+
+    ⚠️ **不存在**「把港股 volume 折算成手」这条路: 港股每手股数 (board lot)
+    逐股不同 (腾讯 100 / 汇丰 400 / 中国银行 1000), 折算需要逐标的 lot_size,
+    且碎股 (odd lot) 会产生非整数手。把无损的原始量纲换成有损且依赖外部
+    元数据的量纲是错的方向, 因此内部单位随市场而变是**刻意设计**。
+
+    量比 (今日量 / 前 5 日均量) 是比值, 分子分母同单位即约掉, **不需要**此系数;
+    半日市影响的是量比的**时间**折算 (330/150), 与本函数无关。
+
+    与 :func:`rules_for` 同一约定: 无法识别的 market (含 ``None``) **抛错**,
+    不兜底成 CN —— 静默兜底会让港股按 100 倍系数算换手率, 且全程无声。
+    """
+    parsed = parse_market(market)
+    if parsed is None:
+        raise ValueError(f"未知市场: {market!r} (支持: {', '.join(m.value for m in Market)})")
+    return _SHARES_PER_VOLUME_UNIT[parsed]
+
+
+# ================================================================
 # 半日市 (half-day session)
 #
 # 港交所半日市只交易早盘, 12:00 收市 (无午盘)。日期由 HKEX **逐年公布**

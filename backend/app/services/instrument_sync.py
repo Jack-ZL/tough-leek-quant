@@ -158,31 +158,42 @@ _SHARE_FIELDS = (
 )
 
 
-def _preserve_instrument_fields(df: pl.DataFrame, data_dir: Path) -> pl.DataFrame:
+def _preserve_instrument_fields(
+    df: pl.DataFrame,
+    data_dir: Path,
+    *,
+    relpath: str = "instruments/instruments.parquet",
+    preserve_fields: tuple[str, ...] = _SHARE_FIELDS,
+    label: str = "instruments",
+) -> pl.DataFrame:
     """用现有维表补全 provider 未提供的名称、股本和交易规则字段。
 
     新增标的仍保留 null (没有历史值可用, 不伪造); 只在同一 symbol 上把
     provider 的空值替换为既有值, 并在日志里给出补全规模。
+
+    ``relpath`` / ``preserve_fields`` / ``label`` 供港股维表复用同一套 coalesce
+    逻辑 (见 :mod:`app.services.instrument_sync_hk`)。默认值即 A 股原行为,
+    存量调用方无需改动。港股要补的字段集不同 (多 ``industry``), 故可覆写。
     """
     if "name" in df.columns:
         df = df.with_columns(pl.col("name").cast(pl.Utf8).str.strip_chars().replace("", None))
-    available = [c for c in ("name", *_SHARE_FIELDS) if c in df.columns]
+    available = [c for c in ("name", *preserve_fields) if c in df.columns]
     if not available:
         return df
     if all(df[c].null_count() == 0 for c in available):
         return df  # provider 已提供全部字段, 无需补全
 
-    path = data_dir / "instruments" / "instruments.parquet"
+    path = data_dir / relpath
     if not path.exists():
         logger.warning(
-            "instruments provider 缺少标的信息且无历史维表可补全: %s",
-            "/".join(c for c in available if df[c].null_count()),
+            "%s provider 缺少标的信息且无历史维表可补全: %s",
+            label, "/".join(c for c in available if df[c].null_count()),
         )
         return df
     try:
         existing = pl.read_parquet(path)
     except Exception as e:  # noqa: BLE001
-        logger.warning("instruments 历史维表读取失败, 无法补全股本字段: %s", e)
+        logger.warning("%s 历史维表读取失败, 无法补全股本字段: %s", label, e)
         return df
     if "symbol" not in existing.columns:
         return df
@@ -209,8 +220,8 @@ def _preserve_instrument_fields(df: pl.DataFrame, data_dir: Path) -> pl.DataFram
             [pl.col(c).is_not_null().sum() for c in filled]
         ).row(0)[0])
         logger.info(
-            "instruments provider 缺 %s, 已逐行从历史维表补全 (首列非空 %d/%d)",
-            "/".join(filled), restored, merged.height,
+            "%s provider 缺 %s, 已逐行从历史维表补全 (首列非空 %d/%d)",
+            label, "/".join(filled), restored, merged.height,
         )
     return merged
 

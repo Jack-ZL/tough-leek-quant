@@ -32,6 +32,7 @@ from app.data_providers.normalizer import normalize_daily
 
 from . import client as em_client
 from .client import EastmoneyError
+from .hk import hk_secid
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,9 @@ def _to_int(value) -> int:
 def symbol_to_secid(symbol: str) -> str | None:
     """内部 symbol → 东财 secid (股票/ETF/指数同一套前缀规则)。
 
-    东财市场前缀: 1=上海, 0=深圳/北京。例: 600000.SH→1.600000, 000001.SZ→0.000001,
-    920002.BJ→0.920002, 000001.SH(上证指数)→1.000001, 399001.SZ→0.399001。
+    东财市场前缀: 1=上海, 0=深圳/北京, 116=港股。例: 600000.SH→1.600000,
+    000001.SZ→0.000001, 920002.BJ→0.920002, 000001.SH(上证指数)→1.000001,
+    399001.SZ→0.399001, 00700.HK→116.00700。
     无法识别的后缀返回 None (调用方跳过并记日志)。
     """
     s = (symbol or "").strip().upper()
@@ -95,6 +97,10 @@ def symbol_to_secid(symbol: str) -> str | None:
         return f"1.{code}"
     if suffix in ("SZ", "BJ"):
         return f"0.{code}"
+    if suffix == "HK":
+        # 港股前缀与 A 股不同源 (116 vs 0/1), 且代码必须 5 位零填充 ——
+        # 委托给 hk_secid 以免「116」这个魔数在两处各写一遍后走偏。
+        return hk_secid(s)
     return None
 
 
@@ -206,10 +212,14 @@ def _map_spot_row(row: dict, fetched_ms: int) -> dict | None:
 
 
 def _map_kline_row(symbol: str, line: str) -> dict | None:
-    """kline CSV 行 → 内部日K行 (volume 手 / amount 元, 东财原生单位透传)。
+    """kline CSV 行 → 内部日K行 (amount 元; volume 单位随市场, 东财原生透传)。
 
     列序(实测 2026-11): 日期,开,收,高,低,成交量,成交额,振幅%,涨跌幅%,涨跌额,换手率%
     — 注意收在第 3 列、高/低在第 4/5 列, 与常见 OHLC 序不同。
+
+    ⚠️ ``volume`` 单位**不是恒定的**: A 股是手, 港股是股 (实测依据见
+    docs/hk-market-plan.md §3.1.2)。本函数按原样透传, 换算由下游经
+    :func:`app.market.shares_per_volume_unit` 完成, 不得在此处乘 100。
     """
     parts = (line or "").split(",")
     if len(parts) < 7:

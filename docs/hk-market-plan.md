@@ -106,13 +106,65 @@ class MarketTradingRules:
 
 ⚠️ **三个必须写进 PR2 的坑**：
 
-1. **市场码是 `m:128` 不是 `m:116`。** `m:116` 返回 **17580** 条，混入大量窝轮/牛熊证（实测样本：`14192 中寿信证七一购A`、`69128 华虹汇丰八甲熊J`）。`m:128` 才是股票。子类实测：`t:1`=493(REITs) `t:2`=1324(债券) `t:3`=2621(主板) `t:4`=310(GEM) `t:5`=5903(窝轮牛熊证)。**分隔符是空格不是 `+`**（`fs=m:128 t:3`）。
-2. **单标的 secid 前缀 `116.` 与 `128.` 都能用**，实测返回完全相同的数据。但**列表用 128、单标的前缀需统一选定一个**并写测试钉住，否则两套前缀混用会在缓存键与去重上出问题。
-3. **港股有双柜台（港币/人民币），同一公司两个代码。** `m:128 t:3` 里 `89988 阿里巴巴-WR`、`89888 百度集团-WR`、`89618 京东集团-SWR` 是人民币柜台，与 `09988`/`09888`/`09618` 港币柜台是**同一家公司**。
+1. **市场码是 `m:128` 不是 `m:116`。** `m:116` 返回 **17580** 条，混入大量窝轮/牛熊证（实测样本：`14192 中寿信证七一购A`、`69128 华虹汇丰八甲熊J`）。`m:128` 才是股票。子类实测：`t:1`=493(REITs) `t:2`=1324(债券) `t:3`=2621(主板) `t:4`=310(GEM) `t:5`=5903(窝轮牛熊证)。
+   **分隔符 `+` 与空格等价**（2026-11-15 复测：`m:128+t:3` 与 `m:128 t:3` 均返回 total=2621）——URL 编码后同为空格，与既有 `FS_ALL_A` 的 `+` 写法一致即可。
+2. **单标的 secid 前缀 `116.` 与 `128.` 都能用**，实测返回完全相同的数据。**已定：单标的统一用 `116.`，列表过滤统一用 `m:128`**（两者是不同命名空间：secid 是标的命名空间，`fs` 是过滤命名空间）。写测试钉住，否则两套前缀混用会在缓存键与去重上出问题。
+3. **港股有双柜台（港币/人民币），同一公司两个代码。** 规律比最初以为的更宽：**人民币柜台代码 = 港币柜台代码首位 `0`→`8`**，名称多一个 `-R` 后缀。实测主板 24 个：`89988 阿里巴巴-WR↔09988 阿里巴巴-W`、`89888 百度集团-WR↔09888`、`89618 京东集团-SWR↔09618`、`86618 京东健康-R↔06618`、`83690 美团-WR↔03690`、`82388 中银香港-R↔02388`、`82333 长城汽车-R↔02333`、`82331 李宁-R↔02331` 等。
+   ⚠️ **不能只按 `89` 开头识别**——`82xxx`/`83xxx`/`86xxx` 同样是人民币柜台，只查 `89` 会漏掉 21 个。
 
    **已定策略（2026-11-15）**：两个代码都入库，`instruments_hk` 加 `is_cny_counter: bool` 标记；**所有市场级统计（成交额合计、涨跌家数、量比分母、行业排名）只计港币柜台**。
 
    为什么保留而不是直接不入库：人民币柜台是真实可交易标的，用户搜 `89988` 时应能命中并看到行情，入库时过滤会让搜索与个股页 404。为什么用标记而不是入库时合并：把「是否参与统计」的决定权留在查询层，日后想改口径（例如某些统计需含双柜台）不必重跑全量入库。**该策略影响 PR6 行业排名正确性，PR2 落地时必须有测试钉住。**
+4. 🔴 **成交量单位与 A 股不同：港股是「股」，A 股是「手」。** 这是本次最容易静默算错的一处，详见 §3.1.2。
+
+### 3.1.2 🔴 成交量单位：港股「股」vs A股「手」（PR2 最高危的一处）
+
+**实测结论（2026-11-15，两条独立交叉验证）**：东财港股接口的成交量单位是**股**，而 A 股是**手**（1 手 = 100 股）。
+
+| 验证路径 | 数据 | 结论 |
+| --- | --- | --- |
+| clist 快照自洽 | `89988` f5=86000、f6=6679940 元、f2=76.8 → 86000×76.8≈6.6M≈f6 | f5 是**股**（若是手则成交额应为 6.6 亿，差 100 倍） |
+| kline × 换手率 | `00700` 2026-11-13 volume=31493353，腾讯同行返回换手率 `0.350`%；腾讯总股本≈91.9 亿股 → 31.5M/9.19B=0.34% | volume 是**股**（与换手率吻合） |
+
+**为什么危险**：现有代码把「volume 单位 = 手」**硬编码在 6 处 / 5 个文件**，全部以 `×100` 的形式出现：
+
+| 位置 | 公式 | 港股直接透传的后果 | PR2a 状态 |
+| --- | --- | --- | --- |
+| `indicators/pipeline.py:813`（`compute_limit_signals`） | `turnover_rate = volume × 10000 / float_shares` | **换手率高 100 倍** | ✅ 已改走 `shares_per_volume_unit` |
+| `indicators/pipeline.py:2422`（`_compute_limit_signals_today`） | 同上（盘中增量路径） | 同上 | ✅ 已改 |
+| `strategy/scoring.py:179` | `vwap = amount / (volume × 100)` | **VWAP 低 100 倍** | ⏸ 延后（见下） |
+| `backtest/engine.py:1979` | `vwap = amount / (volume × 100)` | 同上 | ⏸ 延后 |
+| `strategy/intraday_features.py:106` | `vwap = cum_amt / (cum_vol × 100)` | 同上（分钟线） | ⏸ 延后 |
+| `api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` | `封单额 = vol × 100 × close` | 港股无涨跌停封单概念 | ⏸ 延后（不可达） |
+
+**⏸ 延后的 4 处为什么可以延后**（不是遗漏，是范围判断）：
+
+- `scoring.py` / `backtest/engine.py` 的 VWAP：港股在 PR2a **不进入打分与回测链路**（选股器与回测仍只读 A 股 unified 视图，闸3 已用 `test_unified_views_exclude_hk` 钉死）。等港股接入打分/回测的那个 PR 必须一并改这两处，否则 VWAP 低 100 倍会让港股永远打不出分。
+- `intraday_features.py`：分钟线，港股分钟数据 PR2a 不落库（`kline_hk_minute` 目录尚未启用）。
+- `monitor_rules.py` / `monitor.py` 的封单额：港股**无涨跌停制度**（`HK_RULES.has_price_limit=False`），封单监控对港股逻辑上不可达。
+
+这 4 处**必须在对应功能接入港股的同一个 PR 里改完**，不能靠「以后再说」——建议在接港股打分/回测时把本表当作 checklist。
+
+注意 **量比（`vol_ratio_5d`）不受影响** —— 它是「今日量 / 前 5 日均量」的**比值**，分子分母同单位即约掉。半日市影响的是**时间**折算（330/150），与成交量单位是两件独立的事，不要混为一谈。
+
+**已定方案**：不在 provider 层把港股 volume 折算成「手」。理由：港股每手股数（board lot）**逐股不同**（腾讯 100、汇丰 400、中国银行 1000），折算需要每只标的的 `lot_size`，且碎股（odd lot）会产生非整数手 —— 把一个无损的原始量纲换成有损且依赖外部元数据的量纲，是错的方向。
+
+改为：**内部 volume 单位随市场而变，换算系数集中到 `market.py` 一处**：
+
+```python
+def shares_per_volume_unit(market) -> float:
+    """内部 volume 单位 → 股。CN: volume 单位=手 → 100.0; HK: volume 单位=股 → 1.0。"""
+```
+
+上表 6 处的 `× 100` / `× 10000` 改为经此函数取值，**market 参数仅关键字且默认 `CN`**。这样：
+
+- A 股路径算术**完全不变**（系数仍是 100），存量测试必须一行不改即全绿 —— 这是本改动的验收标准；
+- 港股走 `market=Market.HK` 时系数为 1，换手率与 VWAP 正确；
+- 单位知识只有一处，将来接美股（单位也是股）零成本。
+
+⚠️ **PR2 落地顺序要求**：`shares_per_volume_unit` 必须**先于**任何港股 K 线落库上线。否则港股数据一旦进 enriched，错误的换手率会被物化进 parquet，事后修正需要重算全量历史。
+
+
 
 ### 3.2 四源清单
 
@@ -441,6 +493,81 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 - 遵守 CONTRIBUTING §3.4：turnover_rate 优先用 `announcement_date ≤ 目标交易日` 的历史股本；**维表日期 ≠ 财务公告日 ≠ 报告期**，三者不可混用
 - 已有降级先例可参考：`stock_analyzer.py:407` `fins = {} if asset_type in {"etf","index"}`
 
+### 12.1 PR2b 实测：直连 datacenter 成功，**不需要 akshare**
+
+§3.1 的选型是「财务类先试直连东财 datacenter，啃不动才引入 `akshare>=1.20.25` 可选 extra」。**结论：直连啃得动，akshare extra 不引入。** 上面那张 akshare 接口表因此只作为字段语义的参照，不再是取数路径。
+
+直连走 `datacenter-web.eastmoney.com/api/data/v1/get`，在 `client.py` 里有**独立于 push2 的令牌桶 / 熔断 / 封禁池**（实测 push2 被 IP 封禁期间 datacenter 仍正常）。
+
+**报表名（逐个实测，`code=9501 报表配置不存在` 即不存在）**：
+
+| 报表名 | 形态 | 用途 |
+|---|---|---|
+| `RPT_HKF10_FN_MAININDICATOR` | **宽表**，一行一报告期，76 字段 | 主要指标 + 现金流核心项 + 估值 |
+| `RPT_HKF10_FN_INCOME` | **长表**，一行一科目（~27 项/期） | 利润表明细 |
+| `RPT_HKF10_FN_BALANCE` | **长表**，一行一科目（~55 项/期） | 资产负债表明细 |
+
+> 🔴 **港股没有独立的现金流量表报表**。试过 `_CASHFLOW` / `_CASHFLOWS` / `_CASH` / `_CF` / `_CASHFLW` / `_CASHFLOWSTATE` 全部 9501；`RPT_HKFINANCE_MAINFINADATA`、`RPT_DMSK_HKFIN_MAIN` 亦不存在。现金流核心项作为**宽表列**存在：`NETCASH_OPERATE` / `NETCASH_INVEST` / `NETCASH_FINANCE` / `END_CASH` / `OCF_SALES` / `PER_NETCASH_OPERATE`。所以港股是「宽表 + 两张长表」，**不是 A 股的四表结构**。
+
+**规模实测（决定取数策略）**：
+
+| 报表 | `REPORT_DATE>='2024-01-01'` | 仅年报且 `>='2025-01-01'` |
+|---|---|---|
+| MAININDICATOR（宽） | 15,774 行 / **32 页** | 3,312 行 / **7 页** |
+| INCOME（长） | 417,063 行 / **835 页** | 88,314 行 / 177 页 |
+| BALANCE（长） | 637,825 行 / **1276 页** | 134,749 行 / 270 页 |
+
+→ **宽表走全市场分页**（6 年窗口约 60~70 页即覆盖全部港股），**长表只按标的下钻时取**（全市场同步要上千页，不划算）。
+
+**接口硬限制（都是实测撞出来的）**：
+
+- `pageSize` **硬上限 500**：传 1000/5000 服务端静默截断成 500，且 `pages` 恒按 `count/500` 算 → 若按调用方给的 page_size 判断翻页终止条件会**提前停、静默少取数据**。`fetch_hk_main_indicator` 因此对 `page_size > 500` 直接抛 `ValueError`。
+- `in` 批量**上限约 200**：filter 走 query string，n=200（2215 字符）可用，**n=500 → HTTP 414 URI Too Long**。服务层按 200 自动分批。
+- filter 语法：**并列即 AND**，`(SECUCODE in ("00700.HK","09988.HK"))`、`(REPORT_DATE>='2024-01-01')`、`(DATE_TYPE_CODE="001")`。🔴 **不支持 `between`** → `code=9501 ... NoViableAltException`，日期区间必须拆成 `>=` 与 `<=` 两条。
+- 🔴 **畸形 `SECUCODE` 静默返回空结果（`code=9201`）而非报错**。这是本项目最难定位的一类失败：症状是「同步成功，0 行」。`hk_fin_secucode` 因此对 `00700.HK` 先剥后缀再规范化，杜绝 `00700.HK.HK`。
+- `DATE_TYPE_CODE`：`001`=年报、`002`=中报、`003`=一季报、`004`=三季报。
+
+**四个语义陷阱（映射错就是错数据，不是缺数据）**：
+
+| 陷阱 | 事实 | 处理 |
+|---|---|---|
+| 🔴 **币种双轨且两表表示法不同** | 宽表 `CURRENCY` 是**计价币种**（港币柜台 `HKD`／人民币柜台 `CNY`）；长表 `CURRENCY` 是**中文名**（`"人民币"`），`CURRENCY_CODE` 才是 ISO 编报币种（`CNY`）。腾讯**计价 HKD、编报 CNY** | 映射成**两个刻意不同名**的字段：宽表 → `pricing_currency`，长表 → `report_currency`。API 响应强制带 `currency_warning` |
+| 🔴 **港股年结日不统一** | 年报（`DATE_TYPE_CODE=001`）的 `REPORT_DATE` 月份实测**跨 02~12**，是各公司自定的财年结日 | 绝不假定年报 = 12-31，绝不与「上一日历年 12-31」比较 |
+| 🔴 **`FISCAL_YEAR` 同名不同义** | A 股 `fiscal_year` 是 **Int64 年份**（2026）；港股东财 `FISCAL_YEAR` 是**字符串 `"12-31"`**（财年结日月-日） | 不进投影表，由 `period_end[:4]` 重新推导成 Int64 |
+| 🔴 **周转天数 vs 周转率** | 港股 `INVENTORY_TDAYS` / `ACCOUNTS_RECE_TDAYS` / `TOTAL_ASSETS_TDAYS` 是周转**天数**；A 股 `inventory_turnover` / `receive_account_turnover_ratio` / `total_assets_turnover_ratio` 是周转**率/次数** —— 互为倒数关系而非同值 | 明确排除，不映射。同理排除 `END_CASH`（现金流量表期末现金）≠ `cash_and_equivalents`（资产负债表货币资金）、`EQUITY_MULTIPLIER` ≠ `long_term_debt_equity_ratio`、`ROE_YEARLY`（年化）≠ `ROE_AVG`（加权平均，A 股 `roe` 对应后者） |
+
+**`ORG_TYPE` ∈ {一般企业, 银行, 证券, 保险}** 决定哪些字段族有值：实测工行（01398）`LOAN_ASSETS=61.92` / `DEPOSIT_ASSETS=103.29` / `NET_INTEREST_INCOME=1.227e11`，而腾讯这些字段全 `None`。港股财务 UI **必须按 `org_type` 分支或隐藏空区块**，不能套 A 股的一般企业版式。
+
+**长表科目名是港式 / IFRS 表述，前端不能复用 A 股标签**（实测腾讯 2026-06-30）：`营业额` / `其他营业收入` / `营运收入` / `营运支出` / `毛利` / `销售及分销费用` / `行政开支` / `经营溢利` / `利息收入` / `融资成本` / `应占联营公司溢利` / `除税前溢利` / `税项` / `除税后溢利` / `少数股东损益` / `股东应占溢利` / `每股基本盈利` / `每股摊薄盈利` / `其他全面收益` / `全面收益总额`。`REPORT_TYPE` 也**跨表不可比**：宽表带年份前缀（`"2026年中报"`），长表是裸值（`"中报"`）→ 展示用的 `period_name` 一律由 `DATE_TYPE_CODE` 查表得到。
+
+⭐ **`PER_SHARES` 就是每手股数（board lot size）** —— 这填补了 §3.4 之外的一处已知缺口：`hk_instrument_rows` 的 docstring 原本写着「东财 clist **不提供**每手股数（`f292` 已实测排除），`lot_size` 恒为 `None`，**需由独立源补齐**」。
+
+| 标的 | `PER_SHARES` | 已知真值 | |
+|---|---|---|---|
+| 00005 汇丰控股 | 400 | 400 | ✅ |
+| 00700 腾讯控股 | 100 | 100 | ✅ |
+| 01398 工商银行 | 1000 | 1000 | ✅ |
+| 09988 阿里巴巴-W | 100 | 100 | ✅ |
+| 00388 香港交易所 | 100 | 100 | ✅ |
+| 03690 美团-W | 100 | 100 | ✅ |
+| 01299 友邦保险 | 200 | 200 | ✅ |
+| 00941 中国移动 | 500 | 500 | ✅ |
+
+**8/8 精确匹配**；全市场年报分页可覆盖 **2761 只**，3312 行里只有 3 行缺该字段。实测每手股数分布从 10 到 100000（10/15/20/25/30/40/50/60/80/100/150/200/250/300/400/500/600/660/800/1000/…/100000），**因股而异，不是市场级常量** → `app.market.HK_RULES.lot_size` 保持 `None`，值落在 `instruments_hk.lot_size`，由 `financial_sync_hk.backfill_hk_lot_size` 回填。
+
+> 🔴 配套改动：`lot_size` 必须加进 `instrument_sync_hk._HK_PRESERVE_FIELDS`。东财 clist 不提供该字段、维表重同步会写 `None`，不在保留名单里的话**每次重同步都会抹掉回填结果**，下单取整随即失效。
+
+**`IS_CNY_CODE` 交叉验证了 PR1 的 `is_cny_counter`：3312/3312 一致，0 假阳 0 假阴（100.00%）**。27 只人民币柜台的后缀形态有 `-R` / `-WR` / `-SWR`，以及 **`–R`（U+2013 EN DASH，如「华润啤酒–R」「联想集团–R」）**；`is_cny_counter` 用 `.endswith("R")` 判定，四种形态全部命中。同时实测确认 `pricing_currency == "CNY"` ⟺ `is_cny_code == 1`，3312 行 **0 反例**。
+
+**规范化投影（共用 A 股财务概况页的契约）**：`hk_financials_canonical(df, table)` 把宽表投影成与 A 股 `financials/<table>` **同名同 dtype** 的四张表（`metrics` / `income` / `balance_sheet` / `cash_flow`）。实测 dtype 逐项一致（`fiscal_year`/`report_date_ms`/`period_end_ms` 为 Int64，`symbol`/`period_end`/`announce_date` 为 String），两市场的帧可直接 `pl.concat`。
+
+- 🔴 `announce_date` 与 `report_date_ms` **恒为 null**：港股宽表不提供公告日，**不拿报告期冒充**（CONTRIBUTING §3.4 要求换手率按「公告日不晚于目标交易日」的历史股本对齐，伪造公告日会污染下游）。
+- 港股确实没有的 A 股列（15 个周转率 / 现金比率类指标）**不出现在投影结果里**；要让两市场列集完全一致，再经 `align_hk_to_ashare(hk_df, ashare_df)` 按**真实 A 股帧**补 null（用参照帧的 dtype，不是 `Null` 类型，否则 concat 会因类型不匹配报错）。参照帧为空时原样返回 —— 硬编码一份 A 股列名只会与真实 schema 漂移。
+- 港股独有列（`name` / `org_type` / `period_name` / `date_type_code` / `pricing_currency` / `lot_size` / `pe_ttm` / `pb_ttm` / `total_market_cap`）附在末尾，是前端渲染分支的依据。
+- **源列缺失时补同 dtype 的 null 列，不省略该列**：schema 漂移是真实场景（给 `HK_MAIN_INDICATOR_FIELDS` 加字段后，之前落库的 parquet 没有该列），省略会让前端按列名取值时 KeyError。空帧同样返回完整列集，使读端只需处理一种形态。
+
+**存储：不建 DuckDB 视图。** A 股财务的视图只在 `DataStore._register_views` 注册，而 `financial_sync._refresh_financials_views` 是**只打日志的空实现**，读路径（`get_financial_df`）直接用 polars 读 parquet、完全绕过视图。港股沿用直读，**结构上避免了「两套视图注册表漂移」**（CONTRIBUTING 把「写入后存在已知缓存不一致」列为 PR 拒绝项）。目录为 `financials_hk/{main_indicator,income,balance}/part.parquet`，合并语义：新行覆盖旧行（财报重述），**滚动窗口外的历史保留**，拉取失败或返回 0 行时**保留历史不覆盖**。
+
 ## 13. 测试矩阵（per CONTRIBUTING）
 
 | 层 | 测试 |
@@ -518,6 +645,109 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 三处关键修复都做了**变异检验**（故意还原 bug，确认测试真的失败），避免「测试通过但抓不住东西」。
 
 **PR1 未做（按方案属于后续 PR）**：数据通路、能力矩阵 market 维、前端、AI 护栏、财务、板块 tab、指数。当前 `market` 参数全链路默认 CN，港股仅规则表与护栏就位，**尚无任何港股数据入口**。
+
+### PR2 完成情况（数据通路 + 财务）
+
+**状态：PR2a / PR2b / PR2c 代码与测试均已完成，未提交。** 后端全量 **6807 passed / 8 skipped / 1 xfailed / 0 failed**（PR1 后基线 6586 → PR2a/b 6787 → PR2c 6807，新增 20 项与实测增量精确吻合），存量 A 股测试**一行未改**即全绿。Ruff 新增告警 **0**（`pre-existing: 670` 与 HEAD 基线逐条一致）。7 个港股测试文件共 **453 项**，全部离线可跑（无网络依赖）。
+
+| 文件 | 用例 | 覆盖 |
+|---|---|---|
+| `tests/test_hk_eastmoney.py` | 154 | 插件层：secid / 列表 fs / 双柜台 / tick_size 11 档 / spot 与 kline 映射 |
+| `tests/test_hk_financial_sync.py` | 96 | 财务服务层：合并语义 / 规范化投影 / align / lot_size 回填 |
+| `tests/test_hk_financials.py` | 74 | 财务插件层：报表名 / filter 语法 / 分页上限 / 字段映射（**已做变异检验**） |
+| `tests/test_hk_api.py` | 52 | 10 条路由的契约、参数校验、串市场护栏、enriched 阶段接线 |
+| `tests/test_hk_storage_layout.py` | 27 | 五道闸：目录隔离 / 视图不串市场 / `_DIRNAMES` 无 etf |
+| `tests/test_hk_kline_sync.py` | 34 | 日线同步：universe / 增量 / `fqt != 0` 拒绝；**enriched 生成**：换手率单位 / 大涨不判涨停 / 限价恒 null / 目录隔离 / 拒绝降级 / 进度 |
+| `tests/test_hk_instrument_sync.py` | 16 | 维表同步：字段补全 / `_MIN_FRESH_RATIO` / 保留字段 |
+
+**PR2a（数据通路）交付**：`app/plugins/eastmoney/hk.py`（467 行，数据边界）、`app/services/instrument_sync_hk.py`、`app/services/kline_sync_hk.py`、`app/api/hk.py`、`repository.py` 的 `_DIRNAMES` / `daily_dirname()` / `enriched_dirname()` / `append_hk_daily` / `append_hk_enriched`、`provider.symbol_to_secid` 的 `.HK→116.` 纯增量分支。
+
+> ⭐ **架构护栏守住了**：`tests/test_market_architecture_guard.py::test_no_market_literal_branches_in_app` 扫描 `app/` 里 `market` 与市场字面量的比较，全程 **0 命中**。所有市场差异都走 `_DIRNAMES` / `daily_dirname()` / `enriched_dirname()` / `rules_for()` 查表，没有一处 `if market == Market.HK`。该测试的 docstring 明确写着正确修法**不是**加白名单而是把差异移进 `MarketTradingRules` / 查表 —— 本次照做。
+
+**PR2b（财务）交付**：`app/plugins/eastmoney/hk_financials.py`（685 行）、`app/services/financial_sync_hk.py`（582 行）、`app/api/hk.py` 的 5 条财务路由（共 9 条）。实测结论与四个语义陷阱见 **§12.1**。
+
+**PR2b 实施中发现并修复的 4 个真实缺陷**（都不是「测试写错了」，是写测试时逼出来的实现 bug）：
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| `HK_ONLY_CANONICAL_FIELDS` 循环用 `if extra in df.columns` 才 append | 源列缺失时**静默丢掉该列**，而同函数里主投影循环却正确补 `pl.lit(None, dtype)` —— 两条路径不一致。schema 漂移是真实场景（给映射表加字段后旧 parquet 没有该列） | 新增 `HK_ONLY_CANONICAL_DTYPES`，缺失时补**同 dtype 的 null 列** |
+| `if df.is_empty(): return pl.DataFrame()` | 空帧是 **0 列**，「列集恒定」的契约只对非空帧成立 → 读端要处理两种形态 | 返回 `pl.DataFrame(schema=hk_canonical_schema(table))`，并新增公开的 `hk_canonical_schema()` |
+| `hk_latest_financials(data_dir, "00700")` 直接用裸字符串过滤 | 库里存的是 `00700.HK` → **静默返回空**。与「畸形 SECUCODE 静默空结果」同一类失败模式，最难定位 | 入口先经 `hk_fin_secucode` 规范化，`ValueError` 兜底 |
+| `backfill_hk_lot_size` 遇维表缺 `lot_size` 列时返回 0 且不打日志 | 静默 no-op；「缺每手股数」要等到下单取整时才暴露 | 补列 + WARNING（`instruments_hk 缺 lot_size 列, 补列后回填`） |
+
+配套把 `lot_size` 加进 `instrument_sync_hk._HK_PRESERVE_FIELDS`，并**更新了 PR2a 那条断言它「不在名单里」的测试** —— 该断言的前提（clist 不提供每手股数、该列恒 None）已被 `PER_SHARES` 的发现推翻。同时补了行为级测试 `test_backfilled_lot_size_survives_instrument_resync`，两者都经**变异检验**（从名单移除 `lot_size` → 2 项失败）。
+
+> 🔴 **dtype 常量放在服务层而非插件层**：`HK_ONLY_CANONICAL_DTYPES` / `_HK_CANONICAL_KEY_DTYPES` 定义在 `financial_sync_hk.py`，`hk_financials.py` 保持**不依赖 polars**。dtype 是存储关注点，不是数据边界关注点。
+
+### PR2c 完成情况（港股 enriched 生成 —— 补上 PR2a 最后一个功能缺口）
+
+**状态：代码与测试完成，未提交。** PR2a 把 `append_hk_enriched` / `kline_hk_enriched` 视图 / `_DIRNAMES` 全都建好了，但**没有任何调用方**，目录恒空 —— §3.1.2 的换手率单位修复在实践中根本走不到。本节把它接通。
+
+**交付**：
+
+| 位置 | 内容 |
+|---|---|
+| `app/services/kline_sync_hk.py` | `sync_hk_enriched()`（批量重算，形状对齐 A 股 `recompute_daily_symbols`）、`hk_enriched_instruments()`、`HK_ENRICHED_BATCH_SIZE=200` |
+| `app/indicators/pipeline.py` | `compute_enriched(..., *, market=Market.CN)` —— **keyword-only 且默认 CN，8 个存量调用方零改动** |
+| `app/tickflow/repository.py` | `daily_repair_files(asset_type, *, market=Market.CN)` |
+| `app/api/hk.py` | `POST /api/hk/sync_enriched`（独立重算）+ `HkDailySyncRequest.enriched=True`（日K 同步后自动接续） |
+
+**实施中发现并修复的 3 个真实缺陷**（全部由「先写测试再跑」逼出来，不是读代码读出来的）：
+
+| 缺陷 | 后果 | 修法 |
+|---|---|---|
+| 🔴 `compute_enriched` 没有 `market` 参数，内部调 `compute_all(...)` 时不传 → 静默按 CN 算 | 港股换手率**高 100 倍**（`shares_per_volume_unit` CN=100 / HK=1）。这正是 §3.1.2 警告的场景，而 `compute_enriched` 恰恰是任何 HK enriched 生成器最自然会调的入口 | 加 keyword-only `market`，透传给 `compute_all` |
+| 🔴 `_attach_no_limit_window` 无条件调用，而 `price_limits.no_limit_window_days` 对非 A 股 symbol **硬抛** `SymbolMarketMismatchError` | 港股 enriched 一算就崩。护栏本身是**对的**（其 docstring 明说「注册制新股无涨跌幅窗口是 A 股专属概念，港股本来就无涨跌停，不存在窗口」），错的是调用方 | 把「A 股专属」这个知识收进 `_attach_no_limit_window` 自身：`if not rules_for(market).has_price_limit: return inst_subset`。判定放函数内而非各调用方，是为了让将来新增的调用方**无从忘记** |
+| 🟠 `polars_price_limit_pct(...)` 在**批量路径**（`compute_limit_signals`）和**实时路径**（`_compute_limit_signals_today`）都没传 `market` | PR2a 已给这两个函数加了 `market` 参数，但只接了换手率那一半，限价那一半没接 → 会撞上 `price_limits.py:89` 的第二道护栏。不修的话港股「批量能跑、实时崩」 | 两处都补 `market=market`。PR1 早已把机制建好（`has_price_limit=False` 时返回恒 null 的 Float64 表达式，下游 `polars_limit_price` 自然产出 null 限价），只差透传 |
+
+> ⭐ **架构护栏仍然 0 命中**：以上三处修法全部经 `rules_for(market).has_price_limit` **查规则表**，没有一处 `if market == Market.HK`。`tests/test_market_architecture_guard.py` 的 docstring 明确要求「正确修法不是加白名单，而是把差异移进 `MarketTradingRules`」—— 本次照做。
+
+**一个刻意的设计决定：维表缺失时明确拒绝，而不是降级产出。**
+
+`compute_limit_signals` 在 `instruments` 为空时**提前返回**，落盘分区里连 `turnover_rate` 这一列都不存在。实测 DuckDB 行为分两种：
+
+- **所有**分区都缺该列 → 视图里没有这个列，消费方 `SELECT turnover_rate` 直接 `BinderException`；
+- **部分**分区缺 → `read_parquet` glob 按名合并 schema，缺的读出为 `NULL`。
+
+同一张表两种行为，属于 CONTRIBUTING:825 的「写入后存在已知缓存不一致」（PR 拒绝项）。加之港股无涨跌停，`compute_limit_signals` 对 HK **只有换手率这一项产出有意义**（其自身 docstring 原话），缺它则产出无价值。故 `sync_hk_enriched` 在维表为空时 `logger.error` 并返回 0、不落盘。注：港股日K 本就依赖维表（`hk_daily_universe` 从它取标的），走到这一步说明维表被删/损坏，属异常状态，该报错而非静默降级。
+
+**两处诚实的近似（已写进 `sync_hk_enriched` docstring，不是遗漏）**：
+
+1. **不做复权**（`factors=None`）：`iter_hk_daily_frames` 强制 `fqt=0`，且港股复权因子源尚未接线。后果是 MA/MACD 在除息日附近会失真。将来接上因子源只需把 `factors` 传进去，其余代码不用动。两源互验（腾讯 `hkfqkline` qfq vs 东财 `fqt=1`）仍在「待复测」表里。
+2. **换手率对全部历史使用当前 `float_shares`**（`historical_shares=None`）：CONTRIBUTING §3.4 要求优先使用「公告日不晚于目标交易日」的历史股本。港股全流通（实测 `f38 == f39`），误差比 A 股小但非零。
+
+> 港股 `limit_up_price` / `limit_down_price` 恒 null、`consecutive_limit_ups/downs` 恒 0 是**正确结果**，不是缺数据 —— 港股无涨跌停。测试里对此有显式断言，避免后人误当 bug 去「修」。
+
+**变异检验（8 个变异全部被抓到）**：
+
+按 CONTRIBUTING 的纪律，新写的断言逐个做变异检验 —— 注入 bug 后测试必须变红，否则断言只是装饰。每次变异前都 `assert` 原文**唯一命中**，防止 `str.replace` 静默 no-op（本轮 M1 第一次就因搜索串与真实源码不符而命中 0 次，被该 `assert` 拦下；文档里的用例计数也曾因一条写坏的 shell heredoc 静默未生效，同样靠复核才发现）。
+
+| 变异 | 结果 |
+|---|---|
+| M1 `compute_enriched` 不透传 `market` | ✅ 10 failed |
+| M2 去掉 `_attach_no_limit_window` 的 `has_price_limit` 短路 | ✅ 10 failed |
+| M3 去掉维表缺失的中止分支 | ✅ 1 failed |
+| M4 批量路径 `polars_price_limit_pct` 退回 CN 默认 | ✅ 1 failed（**补测试后**，见下） |
+| M5 enriched 误写 A 股目录 | ✅ 8 failed |
+| M6 实时路径 `polars_price_limit_pct` 退回 CN 默认 | ✅ 1 failed（**补测试后**） |
+| M7 实时路径 `_attach_no_limit_window` 退回无条件调用 | ✅ 2 failed |
+| M8 实时路径换手率退回 CN 系数 | ✅ 1 failed |
+
+> 🔴 **M4 第一轮漏网，暴露一个真实测试缺口。** 删掉批量路径的 `market=market` 后，港股 enriched 的 **121 项测试全绿**。原因是双重的：① `polars_price_limit_pct` 是**表达式级**函数，无法逐行抛错，漏传 `market` 不报错，而是静默按 A 股主板 10% 构造表达式（`00700.HK` 不匹配 300/301/302/688/689/.BJ 任何前缀 → 落默认 10%）；② `limit_up_price` **不在 `ENRICHED_STORAGE_COLS` 里**，落盘根本看不出来，只有 `consecutive_limit_ups` 会露馅 —— 而原先的测试数据日涨幅仅 ~1%，永远触发不了 10% 阈值。
+>
+> 补法：`test_enriched_hk_big_move_is_not_flagged_as_limit_up` 用连续 **+30%** 大涨，同时断言落盘口径（连板数全 0）与内存口径（`limit_up_price` / `limit_down_price` 恒 null）。M6 同理：在 `tests/test_limit_signals_no_price_limit.py`（该文件本就同时覆盖批量与实时两条路径，是「无涨跌停」语义的自然归属）补 `test_hk_big_move_not_limit_up_on_both_paths` 与 `test_hk_realtime_turnover_uses_share_unit`，+2 项（14 → 16）。
+>
+> 普适教训：**「某列不落盘」+「表达式级函数不抛错」= 静默错误的完美藏身处**。凡修市场差异，都要先问「这个错误数字最终会从哪个可观测字段露出来」，再让测试数据真的能触发它。
+
+**PR2 未做（明确留待后续，不是遗漏）**：
+
+| 项 | 状态 | 归属 |
+|---|---|---|
+| **能力矩阵 market 维** | 刻意延后：港股 kline 绕过偏好路由直连，矩阵暂无消费方。**在此登记以免被误读为漏做** | PR3 |
+| **复权两源互验** | 腾讯 `hkfqkline` qfq vs 东财 `fqt=1` 需真实网络，无法做成 hermetic；留作人工验证步骤 | PR3 |
+| **调度接线** | 港股同步目前**只能经 API 触发**。是否并入盘前/盘后 job 需先决策：港股交易时段不同，且**不能危及 A 股关键路径** | 待决策 |
+| **成交量单位余量** | `pipeline.py:813,2422` 已修；`strategy/scoring.py:179`、`backtest/engine.py:1979`、`strategy/intraday_features.py:106`、`api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` **暂缓**，明细见 §3.1.2。港股进打分/回测链路的那个 PR 必须一并改，否则 VWAP 低 100 倍会让港股永远打不出分 | PR4+ |
+| **待复测（需网络）** | 港股 `pz` 上限（疑为 100）；全列表代码前缀分布（纯净性护栏用）；**`t:3=主板 / t:4=GEM / t:1=REITs / t:2=债券` 的语义**（`FS_HK_EQUITY` 目前只靠单次早期探针支撑）；东财港股 kline 的 **amount 单位**（元 vs 万元，腾讯侧疑似万元） | PR3 前 |
 
 ## 15. 风险
 

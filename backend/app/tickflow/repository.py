@@ -37,6 +37,7 @@ from app.enriched_generation import (
     get_enriched_generation,
     get_enriched_generation_snapshot,
 )
+from app.market import Market, parse_market
 from app.market_time import CN_TZ, cn_today
 from app.parquet import scan_enriched_parquet
 from app.polars_guard import guarded_collect
@@ -80,13 +81,53 @@ def replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay_s: flo
     raise last  # type: ignore[misc]  # attempts >= 1 时 last 必已赋值
 
 
-def enriched_dirname(asset_type: str) -> str:
-    """asset_type → enriched parquet 目录名。ETF 走独立目录, 其余(stock)用日K enriched。"""
-    return {"stock": "kline_daily_enriched", "etf": "kline_etf_enriched", "index": "kline_index_enriched"}[asset_type]
+#: (market, asset_type) → (daily 目录名, enriched 目录名)。
+#:
+#: 港股走**独立目录** (方案 §4 闸3: 存储隔离)。物理分离后, A 股那 11 处
+#: ``kline_daily/**/*.parquet`` 递归 glob 永远扫不到港股文件, 反之亦然 ——
+#: 这比任何 ``if market == HK`` 分支都可靠: 分支会漏, 目录不会。
+#:
+#: 港股无 ETF (本仓 ETF 链路是 A 股场内基金专有), 因此 HK 只登记 stock/index。
+#: 传 ``("HK", "etf")`` 会 KeyError —— 刻意的 fail-closed, 不静默回退到 A 股目录
+#: (回退会让港股数据写进 A 股分区, 污染全市场统计且难以事后分离)。
+_DIRNAMES: dict[Market, dict[str, tuple[str, str]]] = {
+    Market.CN: {
+        "stock": ("kline_daily", "kline_daily_enriched"),
+        "etf": ("kline_etf_daily", "kline_etf_enriched"),
+        "index": ("kline_index_daily", "kline_index_enriched"),
+    },
+    Market.HK: {
+        "stock": ("kline_hk_daily", "kline_hk_enriched"),
+        "index": ("kline_hk_index_daily", "kline_hk_index_enriched"),
+    },
+}
 
 
-def daily_dirname(asset_type: str) -> str:
-    return {"stock": "kline_daily", "etf": "kline_etf_daily", "index": "kline_index_daily"}[asset_type]
+def _dirname(asset_type: str, market: object, *, enriched: bool) -> str:
+    parsed = parse_market(market)
+    if parsed is None:
+        raise ValueError(f"未知市场: {market!r} (支持: {', '.join(m.value for m in Market)})")
+    by_type = _DIRNAMES[parsed]
+    if asset_type not in by_type:
+        raise KeyError(
+            f"市场 {parsed.value} 不支持 asset_type={asset_type!r} "
+            f"(可用: {', '.join(sorted(by_type))})"
+        )
+    daily, enr = by_type[asset_type]
+    return enr if enriched else daily
+
+
+def enriched_dirname(asset_type: str, *, market: object = Market.CN) -> str:
+    """(asset_type, market) → enriched parquet 目录名。ETF 走独立目录, 其余(stock)用日K enriched。
+
+    ``market`` 仅关键字且默认 CN → 存量调用方无需改动, A 股目录名逐字不变。
+    """
+    return _dirname(asset_type, market, enriched=True)
+
+
+def daily_dirname(asset_type: str, *, market: object = Market.CN) -> str:
+    """(asset_type, market) → 日K parquet 目录名。``market`` 语义同 :func:`enriched_dirname`。"""
+    return _dirname(asset_type, market, enriched=False)
 
 
 # 盘中递推状态的最长窗口 (交易日): MA60 部分和 tail(59)、60 日动量 tail(60)
@@ -148,12 +189,25 @@ class DataStore:
             "ai_cache",
             "user_data",
             "depth5",
+            # ---- 港股独立目录 (方案 §4 闸3: 存储隔离) ----
+            # 与 A 股物理分离: A 股那 11 处 kline_daily/**/*.parquet 递归 glob
+            # 扫不到这里, 反之亦然。目录级隔离比 if market 分支可靠 —— 分支会漏。
+            "instruments_hk",
+            "kline_hk_daily",
+            "kline_hk_enriched",
+            "financials_hk",
         ):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 
         # 财务数据子目录
         for sub in ("metrics", "income", "balance_sheet", "cash_flow", "shares"):
             (self.data_dir / "financials" / sub).mkdir(parents=True, exist_ok=True)
+
+        # 港股财务子目录 (与 A 股 financials/ 物理分离, 同闸3 隔离原则)
+        # 表名与 app.services.financial_sync_hk.HK_FINANCIAL_TABLES 保持一致;
+        # 此处内联而非跨层导入, 与上面 A 股财务子目录的写法一致。
+        for sub in ("main_indicator", "income", "balance"):
+            (self.data_dir / "financials_hk" / sub).mkdir(parents=True, exist_ok=True)
 
         # DuckDB 内存模式 — 不建 .db 文件(§7.1)
         with startup_phase(logger, "DuckDB connection"):
@@ -201,6 +255,15 @@ class DataStore:
                 SELECT * FROM read_parquet('{d}/instruments_ext/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_ext AS
                 SELECT * FROM read_parquet('{d}/kline_ext/**/*.parquet', union_by_name=true)""",
+            # ---- 港股视图 (独立命名, 不与 A 股视图 UNION; 方案 §4 闸3) ----
+            # 视图名与目录名一致 (A 股有 kline_daily_enriched→kline_enriched 的历史
+            # 改名, 港股不沿用该特例, 避免「视图名与目录名对不上」的排查成本)。
+            f"""CREATE OR REPLACE VIEW instruments_hk AS
+                SELECT * FROM read_parquet('{d}/instruments_hk/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_hk_daily AS
+                SELECT * FROM read_parquet('{d}/kline_hk_daily/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_hk_enriched AS
+                SELECT * FROM read_parquet('{d}/kline_hk_enriched/**/*.parquet', union_by_name=true)""",
             # 财务数据视图
             f"""CREATE OR REPLACE VIEW financials_metrics AS
                 SELECT * FROM read_parquet('{d}/financials/metrics/*.parquet', union_by_name=true)""",
@@ -2528,14 +2591,45 @@ class KlineRepository:
         df_storage = df.select(storage_cols)
         self._write_daily_partition(df_storage, "kline_etf_enriched")
 
-    def append_daily_asset(self, asset_type: str, df: pl.DataFrame) -> None:
-        """按资产类型写入日K；stock/index 保持旧目录兼容。"""
-        if asset_type == "stock":
-            self.append_daily(df)
-        elif asset_type == "index":
-            self.append_index_daily(df)
-        elif asset_type == "etf":
-            self.append_etf_daily(df)
+    def append_hk_daily(self, df: pl.DataFrame) -> None:
+        """按日分区写入**港股**日K数据 (merge-upsert) → ``kline_hk_daily/``。
+
+        目录名经 :func:`daily_dirname` 取, 不写字面量 —— 「港股落哪个目录」只允许
+        有 ``_DIRNAMES`` 一处定义。
+        """
+        if df.is_empty():
+            return
+        self._write_daily_partition(df, daily_dirname("stock", market=Market.HK))
+
+    def append_hk_enriched(self, df: pl.DataFrame) -> None:
+        """按日分区写入**港股** enriched 数据 → ``kline_hk_enriched/``。
+
+        与 A 股同款: 磁盘仅写 ``ENRICHED_STORAGE_COLS`` 窄表, 其余列读时重算。
+        """
+        if df.is_empty():
+            return
+        from app.indicators.pipeline import ENRICHED_STORAGE_COLS
+
+        storage_cols = [c for c in ENRICHED_STORAGE_COLS if c in df.columns]
+        df_storage = df.select(storage_cols)
+        self._write_daily_partition(df_storage, enriched_dirname("stock", market=Market.HK))
+
+    def append_daily_asset(
+        self, asset_type: str, df: pl.DataFrame, *, market: object = Market.CN
+    ) -> None:
+        """按 (资产类型, 市场) 写入日K。
+
+        **刻意不写 ``if market == HK`` 分支** —— 目录名全部经 :func:`daily_dirname`
+        从 ``_DIRNAMES`` 查表得出 (``tests/test_market_architecture_guard.py`` 会拦
+        市场字面量分支)。市场差异住在查表里, 不住在控制流里: 分支会漏, 表不会。
+
+        ``market`` 仅关键字且默认 CN → 存量调用方零改动, A 股目录名逐字不变
+        (stock→kline_daily / index→kline_index_daily / etf→kline_etf_daily)。
+        港股 ETF 等未登记组合由 ``daily_dirname`` 抛 KeyError/ValueError, 不静默回退。
+        """
+        if df.is_empty():
+            return
+        self._write_daily_partition(df, daily_dirname(asset_type, market=market))
 
     def replace_daily_rows(
         self, asset_type: str, day: date, incoming: pl.DataFrame, *,
@@ -2632,9 +2726,13 @@ class KlineRepository:
         confirmed = rows.group_by("symbol").agg(eligible.fill_null(False).all().alias("nontrading"))
         return set(confirmed.filter(pl.col("nontrading"))["symbol"].to_list())
 
-    def daily_repair_files(self, asset_type: str) -> list[Path]:
-        """重算原始历史前验证全部输入路径, 不沿目录或文件链接读取。"""
-        base = self.store.data_dir / daily_dirname(asset_type)
+    def daily_repair_files(self, asset_type: str, *, market: object = Market.CN) -> list[Path]:
+        """重算原始历史前验证全部输入路径, 不沿目录或文件链接读取。
+
+        ``market`` 只用于经 :func:`daily_dirname` 查目录名 (港股 → ``kline_hk_daily``),
+        不引入市场字面量分支 —— 差异住在 ``_DIRNAMES`` 表里。
+        """
+        base = self.store.data_dir / daily_dirname(asset_type, market=market)
         self._validate_repair_path(base)
         paths = sorted(base.glob("date=*/*.parquet"))
         for path in paths:
@@ -2797,11 +2895,16 @@ class KlineRepository:
                 cursor.close()
 
     def rebuild_views(self) -> None:
-        """重建全部 13 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
+        """重建全部 16 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
 
         原先 daily_pipeline._refresh_views(盘后管道) 与 /api/data/clear(清库) 各自
         内联了同一份视图重建 SQL, 清库那份还漏了几张视图导致漂移。此处收敛为单一入口:
-        覆盖全部 13 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
+        覆盖全部 16 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
+
+        ⚠️ 新增数据目录时**必须同时**改这里和 :meth:`DataStore._register_views`。
+        只改启动那份的后果是: 视图在启动时存在, 但盘后管道跑完不刷新 → 读到旧数据,
+        即 CONTRIBUTING §「写入后存在已知缓存不一致」的拒收情形。港股三张视图
+        (instruments_hk / kline_hk_daily / kline_hk_enriched) 已按此登记。
         """
         d = self.store.data_dir.as_posix()
         views = {
@@ -2818,6 +2921,10 @@ class KlineRepository:
             "instruments": f"{d}/instruments/**/*.parquet",
             "instruments_index": f"{d}/instruments_index/**/*.parquet",
             "instruments_etf": f"{d}/instruments_etf/**/*.parquet",
+            # ---- 港股 (独立视图, 不与 A 股 UNION; 方案 §4 闸3) ----
+            "instruments_hk": f"{d}/instruments_hk/**/*.parquet",
+            "kline_hk_daily": f"{d}/kline_hk_daily/**/*.parquet",
+            "kline_hk_enriched": f"{d}/kline_hk_enriched/**/*.parquet",
         }
         for name, path in views.items():
             self.refresh_view(name, path)

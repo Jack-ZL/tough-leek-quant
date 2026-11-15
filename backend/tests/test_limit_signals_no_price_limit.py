@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 
 from app.indicators import pipeline
+from app.market import Market
 from app.price_limits import (
     BJ_OPENING_DATE,
     GEM_REGISTRATION_DATE,
@@ -231,3 +232,83 @@ def test_realtime_path_listing_date_window_without_sentinel():
 
     for price in LIMIT_PRICES:
         assert realtime[price] is None, price
+
+
+# ---------------------------------------------------------------------------
+# 港股: 无涨跌停是**市场规则**级事实, 不是维表哨兵
+# ---------------------------------------------------------------------------
+
+def _hk_rows(prev_close: float, *, close: float) -> pl.DataFrame:
+    return pl.DataFrame({
+        "symbol": ["00700.HK", "00700.HK"],
+        "date": [YESTERDAY, TODAY],
+        "open": [prev_close, prev_close],
+        "high": [prev_close, close * 1.01],
+        "low": [prev_close, close * 0.99],
+        "close": [prev_close, close],
+        "raw_close": [prev_close, close],
+        "raw_high": [prev_close, close * 1.01],
+        "raw_low": [prev_close, close * 0.99],
+        "volume": [1_000_000.0, 1_000_000.0],
+    })
+
+
+def _hk_instruments(float_shares: float = 200_000_000.0) -> pl.DataFrame:
+    return pl.DataFrame({
+        "symbol": ["00700.HK"],
+        "name": ["腾讯控股"],
+        # 港股无涨跌停 → 维表哨兵列恒 None (见 plugins/eastmoney/hk.py:hk_instrument_rows)
+        "limit_up": pl.Series([None], dtype=pl.Float64),
+        "limit_down": pl.Series([None], dtype=pl.Float64),
+        "listing_date": pl.Series([None], dtype=pl.Date),
+        "as_of": [TODAY],
+        "float_shares": [float_shares],
+    })
+
+
+def test_hk_big_move_not_limit_up_on_both_paths():
+    """港股 +30% 在**批量与实时两条路径**都不判涨停, 限价列恒 null。
+
+    A 股的「无涨跌停」靠维表哨兵值 (>=10000) 或 listing_date 窗口识别; 港股是
+    **市场规则**级无涨跌停 (``HK_RULES.has_price_limit=False``), 维表 limit_up /
+    limit_down 恒 None, 没有哨兵可认。
+
+    🔴 两条路径都必须把 ``market`` 透传到 ``polars_price_limit_pct``。它是**表达式级**
+    函数, 无法逐行抛错 (见其 docstring), 所以漏传 market **不会报错**, 而是按 A 股
+    主板 10% 构造表达式 —— ``00700.HK`` 不匹配 300/301/302/688/689/.BJ 任何前缀,
+    落到默认 10%, 于是 +30% 被记成涨停、连板数 +1。变异检验实测: 删掉批量路径的
+    ``market=market`` 后, 港股 enriched 的 121 项测试**全绿** (因为 limit_up_price
+    不在 ENRICHED_STORAGE_COLS 里, 落盘看不出), 只有本用例能抓到。
+    """
+    rows = _hk_rows(100.0, close=130.0)  # +30%, 远超 A 股任何板块涨跌幅
+    inst = _hk_instruments()
+
+    full = pipeline.compute_limit_signals(rows, inst, market=Market.HK).row(-1, named=True)
+    today = rows.filter(pl.col("date") == TODAY).with_columns(
+        pl.lit(rows["close"][0]).alias("_prev_close_raw"),
+    )
+    realtime = pipeline._compute_limit_signals_today(
+        today, inst, market=Market.HK
+    ).row(0, named=True)
+
+    for label, r in (("批量", full), ("实时", realtime)):
+        for price in LIMIT_PRICES:
+            assert r[price] is None, f"{label}路径 {price} 应为 null, 实得 {r[price]}"
+        assert r["consecutive_limit_ups"] == 0, f"{label}路径不该记涨停连板"
+        assert r["consecutive_limit_downs"] == 0, f"{label}路径不该记跌停连板"
+
+
+def test_hk_realtime_turnover_uses_share_unit():
+    """实时路径的港股换手率也走「股」单位 (与批量路径同系数)。
+
+    volume=1e6 股, float_shares=2e8 → 0.5%。若误用 A 股系数 (手→股 再 ×100)
+    会得 50%, 差 100 倍。
+    """
+    rows = _hk_rows(100.0, close=101.0)
+    inst = _hk_instruments(float_shares=200_000_000.0)
+    today = rows.filter(pl.col("date") == TODAY).with_columns(
+        pl.lit(rows["close"][0]).alias("_prev_close_raw"),
+    )
+
+    out = pipeline._compute_limit_signals_today(today, inst, market=Market.HK).row(0, named=True)
+    assert out["turnover_rate"] == pytest.approx(0.5), out["turnover_rate"]

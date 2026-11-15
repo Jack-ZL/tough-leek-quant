@@ -27,6 +27,7 @@ from app.api import (
     factors,
     financials,
     guardian,
+    hk,
     import_center,
     indices,
     intraday,
@@ -786,6 +787,7 @@ app.include_router(alerts.router)
 app.include_router(events.router)
 app.include_router(rps.router)
 app.include_router(sector_rotation.router)
+app.include_router(hk.router)  # 港股数据入口(方案 §4 闸3: 独立路由, 不与 A 股端点混用)
 
 # 二次开发路由与小粒度策略在所有核心路由后注册, 禁止覆盖核心路径。
 extension_registry, extension_load_errors = configure_backend_extensions(app)
