@@ -278,7 +278,8 @@ def test_progress_callback_fires_per_symbol(tmp_path):
 # 全都就位, 但**没有任何调用方**, 目录恒空 → §3.1.2 的换手率单位修复在实践中走不到。
 # ---------------------------------------------------------------------------
 
-def _seed_hk_adj_factor(data_dir, rows: list[dict] | None = None) -> None:
+def _seed_hk_adj_factor(data_dir, rows: list[dict] | None = None,
+                        covered: list[str] | None = None) -> None:
     """写入港股复权因子库 ``adj_factor_hk/all.parquet``。
 
     ``rows=None`` → **空库**, 语义是「因子同步跑过了, 这些标的从未除权」。这不是
@@ -287,6 +288,10 @@ def _seed_hk_adj_factor(data_dir, rows: list[dict] | None = None) -> None:
     为什么必须播: ``sync_hk_enriched`` 默认 ``require_adj_factor=True``, 因子库
     **不存在**即中止 (fail closed)。空库与「不存在」是两回事 —— 前者是已确认无事件,
     后者是未知, 未知时静默用原始价算 MA/MACD 会产出失真指标 (方案 §13)。
+
+    ``covered`` 另外播**完整性凭据** ``adj_factor_hk/coverage.json``: enriched 的第二道
+    闸门按标的放行, 不在 ``covered`` 里的一律拒算。生产里这份凭据由
+    ``sync_hk_adj_factor`` 落盘, 测试不播就会 (正确地) fail closed。
     """
     out = data_dir / sync_hk.HK_ADJ_FACTOR_RELPATH
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -299,6 +304,7 @@ def _seed_hk_adj_factor(data_dir, rows: list[dict] | None = None) -> None:
             "allot_price": pl.Float64, "prev_close": pl.Float64,
         })
     atomic_write_parquet(df, out)
+    sync_hk._write_hk_adj_coverage(data_dir, set(covered or ()), set())
 
 
 def _seed_hk_instruments(data_dir, symbol: str, *, float_shares: int,
@@ -312,8 +318,8 @@ def _seed_hk_instruments(data_dir, symbol: str, *, float_shares: int,
         "limit_up": None, "limit_down": None,
         "listing_date": None, "is_cny_counter": False,
     }]), out)
-    # enriched 的前置条件之一: 因子库必须存在 (见 _seed_hk_adj_factor 文档)。
-    _seed_hk_adj_factor(data_dir)
+    # enriched 的前置条件之一: 因子库 + 完整性凭据必须存在 (见 _seed_hk_adj_factor)。
+    _seed_hk_adj_factor(data_dir, covered=[symbol])
 
 
 def _seed_hk_daily(repo, symbol: str, *, days: int = 30, volume: float = 1_000_000.0,
@@ -526,6 +532,8 @@ def test_enriched_progress_callback_counts_batches(tmp_path):
     _seed_hk_instruments(tmp_path, "00700.HK", float_shares=200_000_000)
     for i in range(5):
         _seed_hk_daily(repo, f"0070{i}.HK", days=6)
+    # 5 个标的的分红史都记为「已拉全」, 否则完整性闸门会把 4 个拒算, 批数就不是 3 了。
+    sync_hk._write_hk_adj_coverage(tmp_path, {f"0070{i}.HK" for i in range(5)}, set())
 
     calls: list[tuple[int, int]] = []
     sync_hk.sync_hk_enriched(repo, batch_size=2, on_progress=lambda d, t: calls.append((d, t)))
@@ -561,6 +569,11 @@ def test_enriched_progress_reports_empty_batches(tmp_path):
     repo = KlineRepository(DataStore(tmp_path))
     _seed_hk_instruments(tmp_path, "00700.HK", float_shares=200_000_000)
     _seed_hk_daily(repo, "00700.HK", days=6)
+    # 三个标的的分红史都记为「已拉全」, 只是后两个还没有本地日K —— 空批次必须来自
+    # 「无日K」而不是被完整性闸门拒算, 才是本用例要钉的场景。
+    sync_hk._write_hk_adj_coverage(
+        tmp_path, {"00700.HK", "09988.HK", "03690.HK"}, set()
+    )
 
     calls: list[tuple[int, int]] = []
     n = sync_hk.sync_hk_enriched(

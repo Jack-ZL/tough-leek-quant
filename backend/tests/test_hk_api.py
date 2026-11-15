@@ -223,7 +223,9 @@ def test_sync_daily_submits_job_with_explicit_symbols(env, monkeypatch):
         lambda repo, **kw: captured.update(kw) or 7,
     )
     monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", lambda repo, **kw: 0)
-    assert seen["run"]() == {"symbols": 2, "rows_written": 7, "enriched_rows": 0}
+    assert seen["run"]() == {
+        "symbols": 2, "rows_written": 7, "enriched_rows": 0, "enriched_uncovered": [],
+    }
     assert captured["symbols"] == ["00700.HK", "09988.HK"]
     assert captured["incremental"] is True
 
@@ -303,7 +305,9 @@ def test_sync_daily_runs_enriched_stage_by_default(env, monkeypatch, tmp_path):
     )
 
     assert client.post("/api/hk/sync_daily", json={}).status_code == 200
-    assert seen["run"]() == {"symbols": 1, "rows_written": 5, "enriched_rows": 5}
+    assert seen["run"]() == {
+        "symbols": 1, "rows_written": 5, "enriched_rows": 5, "enriched_uncovered": [],
+    }
     assert cap["symbols"] == ["00700.HK"], "enriched 阶段应复用同一份标的清单"
     # .get 而非 []: 路由不显式传 start, 断言的是**有效值**(全量发布)而非传参形式
     assert cap.get("start") is None, "全量发布 (按日分区 merge-upsert 幂等)"
@@ -330,7 +334,9 @@ def test_sync_daily_enriched_stage_can_be_disabled(env, monkeypatch, tmp_path):
     )
 
     client.post("/api/hk/sync_daily", json={"enriched": False})
-    assert seen["run"]() == {"symbols": 1, "rows_written": 5, "enriched_rows": 0}
+    assert seen["run"]() == {
+        "symbols": 1, "rows_written": 5, "enriched_rows": 0, "enriched_uncovered": [],
+    }
     assert called == [], "关掉开关后不该调用 enriched"
 
 
@@ -364,11 +370,56 @@ def test_sync_enriched_submits_job_and_passes_params(env, monkeypatch):
     })
     assert r.status_code == 200
     assert r.json()["job_id"] == "hkenr1"
-    assert seen["run"]() == {"rows_written": 12}
+    assert seen["run"]() == {"rows_written": 12, "uncovered": []}
     assert captured["symbols"] == ["00700.HK"]
     assert captured["batch_size"] == 50
     assert captured["start"] is None, "没给 days 就该全量发布"
     assert callable(captured["on_progress"])
+
+
+def test_sync_enriched_reports_uncovered_symbols(env, monkeypatch):
+    """🔴 被完整性闸门拒算的标的必须回在 job 结果里。
+
+    只返回 ``rows_written`` 的话, 调用方看到行数偏少完全无从判断是「本来没数据」还是
+    「复权因子没拉全被挡了」—— 那正是完整性凭据要消灭的静默。
+    """
+    client, _, _ = env
+    seen, _ = _capture_enriched_job(monkeypatch)
+
+    def fake(repo, **kw):
+        kw["uncovered_out"].extend(["09988.HK", "03690.HK"])
+        return 4
+
+    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", fake)
+    assert client.post("/api/hk/sync_enriched", json={}).status_code == 200
+    assert seen["run"]() == {
+        "rows_written": 4, "uncovered": ["09988.HK", "03690.HK"],
+    }
+
+
+def test_sync_daily_reports_enriched_uncovered(env, monkeypatch, tmp_path):
+    """``/sync_daily`` 的 enriched 阶段同样要回报拒算标的 (口径与 /sync_enriched 一致)。"""
+    client, _, _ = env
+    _seed_dim(tmp_path, [_dim("00700.HK", "腾讯控股")])
+    seen = {}
+
+    async def fake_submit(repo, quote_service, make_run):
+        seen["run"] = make_run(lambda *a, **k: None)
+        return {"job_id": "hkd1", "reused": False}
+
+    monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
+    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_daily", lambda repo, **kw: 5)
+
+    def fake(repo, **kw):
+        kw["uncovered_out"].append("00700.HK")
+        return 0
+
+    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", fake)
+    assert client.post("/api/hk/sync_daily", json={}).status_code == 200
+    assert seen["run"]() == {
+        "symbols": 1, "rows_written": 5, "enriched_rows": 0,
+        "enriched_uncovered": ["00700.HK"],
+    }
 
 
 def test_sync_enriched_days_maps_to_start(env, monkeypatch):

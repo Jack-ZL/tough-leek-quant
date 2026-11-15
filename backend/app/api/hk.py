@@ -195,6 +195,7 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
                 on_progress=on_progress,
             )
             enriched_rows = 0
+            enriched_uncovered: list[str] = []
             if req.enriched:
                 def on_enriched(done: int, total: int) -> None:
                     pct = int(done * 100 / total) if total else 100
@@ -203,12 +204,17 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
                 # 不传 start: enriched 按日分区 merge-upsert, 全量发布是幂等的,
                 # 而裁剪发布范围会让「首次同步」漏掉预热期之前的行。
                 enriched_rows = kline_sync_hk.sync_hk_enriched(
-                    repo, symbols=universe, on_progress=on_enriched
+                    repo, symbols=universe, on_progress=on_enriched,
+                    uncovered_out=enriched_uncovered,
                 )
             return {
                 "symbols": len(universe),
                 "rows_written": written,
                 "enriched_rows": enriched_rows,
+                # 非空 = 这些标的复权因子覆盖不完整, 被 enriched **拒算** (fail closed)。
+                # 必须回报: 否则调用方只看到 enriched_rows 偏少, 分不清是「本来没数据」
+                # 还是「被闸门挡了」—— 那正是完整性凭据要消灭的静默。
+                "enriched_uncovered": enriched_uncovered,
             }
 
         return run
@@ -228,6 +234,11 @@ async def sync_hk_enriched(request: Request, req: HkEnrichedSyncRequest) -> dict
 
     维表缺失时服务层**明确拒绝**并返回 0 行 (不产出缺 ``turnover_rate`` 列的分区),
     此时应先调 ``POST /api/hk/sync_instruments``。
+
+    🔴 复权因子同样 fail closed: 完整性凭据 ``adj_factor_hk/coverage.json`` 缺失 →
+    整轮 0 行; 凭据里 ``uncovered`` 的标的 → **逐个拒算**, 并回在 job 结果的
+    ``uncovered`` 字段。两者都意味着 ``sync_hk_adj_factor`` 没跑全 (它目前只由港股
+    定时流水线调用, 无独立 HTTP 入口), 应等下一轮定时同步补齐后重跑, 不要绕闸门。
     """
     repo = request.app.state.repo
 
@@ -241,14 +252,18 @@ async def sync_hk_enriched(request: Request, req: HkEnrichedSyncRequest) -> dict
                 pct = int(done * 100 / total) if total else 100
                 progress("hk_enriched", pct, f"港股 enriched {done}/{total}", stage_pct=pct)
 
+            uncovered: list[str] = []
             written = kline_sync_hk.sync_hk_enriched(
                 repo,
                 symbols=req.symbols,
                 start=start,
                 batch_size=req.batch_size,
                 on_progress=on_progress,
+                uncovered_out=uncovered,
             )
-            return {"rows_written": written}
+            # 见 /sync_daily 里 enriched_uncovered 的说明: 被完整性闸门拒算的标的
+            # 必须显式回报, 否则 rows_written 偏少时无从判断原因。
+            return {"rows_written": written, "uncovered": uncovered}
 
         return run
 

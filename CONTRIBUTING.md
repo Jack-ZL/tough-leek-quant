@@ -162,6 +162,7 @@ Data sources are already pluginized. Any general feature must access data throug
 - Upper-layer services depend on standard fields and capability declarations, not on vendor response structures.
 - Only features explicitly marked as TickFlow-exclusive may depend on TickFlow directly, and they must not affect other providers.
 - When a provider lacks a capability, the system must clearly indicate it, skip the feature, or fail closed. Silently switching to wrong data or wrong semantics is forbidden.
+- A store written incrementally (batch-by-batch merge, no rollback on failure) must ship a **per-item completeness credential** next to the data. "The file exists and is non-empty" cannot distinguish *confirmed empty* from *fetch failed*, and a downstream `fill_null`-style default turns the latter into silently wrong numbers. Record which items are known-complete and which are unknown, refuse to compute the unknown ones, and report the refused list back to the caller. Reference implementation: `adj_factor_hk/coverage.json`, written by `sync_hk_adj_factor` and enforced per symbol by `sync_hk_enriched`.
 - Plugin load failures, missing fields, and empty data must have isolation tests. They must not cause application startup failure or make other data sources unavailable.
 - New data source adapters must update the corresponding contract in `docs/custom-data-source.md` or `docs/plugin-development.md`.
 
@@ -602,6 +603,7 @@ The measure of following this guide is not how much documentation is written, bu
 - 上层服务依赖标准字段和能力声明，不依赖供应商响应结构。
 - 只有明确标注为 TickFlow 专属的功能才可以直接依赖 TickFlow，并且不得影响其他 provider。
 - provider 缺少某项能力时，应明确提示、跳过该功能或 fail-closed；禁止静默换用错误数据或错误口径。
+- 增量写入的存储（逐批 merge、失败不回滚）必须在数据旁同时落一份**按条目的完整性凭据**。「文件存在且非空」区分不了*确认为空*与*取数失败*，而下游 `fill_null` 之类的默认值会把后者变成静默错值。凭据要记下哪些条目已知完整、哪些未知，对未知的**拒算**，并把拒算清单回报给调用方。参考实现：`sync_hk_adj_factor` 落 `adj_factor_hk/coverage.json`，`sync_hk_enriched` 按标的强制执行。
 - 插件加载失败、字段缺失和空数据必须有隔离测试，不能导致应用启动失败或其他数据源不可用。
 - 新增数据源适配应同步更新 `docs/custom-data-source.md` 或 `docs/plugin-development.md` 中对应契约。
 

@@ -118,8 +118,11 @@ def run_hk_sync(
 
     这正是 CONTRIBUTING §4「fail closed, 绝不静默切换到错误数据或错误语义」要拦的
     情形, 所以本 job 在因子阶段报失败时**宁可本轮不出 enriched**, 等下一轮补齐。
-    (服务层 ``sync_hk_adj_factor`` 自身的这个口径问题另行处理, 手动 API 路径同样
-    受影响。)
+    (服务层已补第二道防线: ``sync_hk_adj_factor`` 落一份**按标的**的完整性凭据
+    ``adj_factor_hk/coverage.json``, ``sync_hk_enriched`` 据此逐个拒算 uncovered 标的、
+    凭据缺失则整轮中止, 手动 API 路径因此也已闭合。本函数**保留**这道更严的整体让路:
+    定时全量轮次要求「要么齐要么不算」, 半轮 enriched 会让看板出现新旧指标混杂的
+    截面。)
     """
     from app.plugins.eastmoney.client import EastmoneyClient
     from app.services import instrument_sync_hk, kline_sync_hk

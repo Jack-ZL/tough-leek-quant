@@ -20,10 +20,12 @@ A 股那条链路深度耦合能力路由/偏好档位/TickFlow 补齐, 港股�
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator, Sequence
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import polars as pl
 
@@ -31,6 +33,7 @@ from app.market import Market, SymbolMarketMismatchError
 from app.plugins.eastmoney import hk, hk_dividend
 from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
 from app.plugins.eastmoney.provider import _map_kline_row
+from app.services.fs_utils import atomic_write_text
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
 from app.services.kline_sync import _merge_adj_factor_store, _normalize_daily
 
@@ -245,6 +248,87 @@ def load_hk_adj_factors(
     return df
 
 
+#: 完整性凭据的 schema 版本。语义变更时递增 —— 读到别的版本一律当「无凭据」处理
+#: (fail closed), 而不是猜旧字段的含义。
+HK_ADJ_COVERAGE_VERSION = 1
+
+#: 🔴 凭据**必须是 .json 而不是 .parquet**: ``repository._register_views`` 与
+#: ``rebuild_views`` 都用 ``adj_factor_hk/**/*.parquet`` 递归 glob 注册 ``adj_factor_hk``
+#: 视图, 同目录放一个 parquet 会被 ``union_by_name`` 并进因子表, 污染 schema。
+HK_ADJ_COVERAGE_RELPATH = "adj_factor_hk/coverage.json"
+
+
+class HkAdjCoverage(NamedTuple):
+    """``sync_hk_adj_factor`` 的**完整性凭据**: 每只标的的分红史是否已知。
+
+    因子库本身回答不了这个问题 —— 一只标的在库里没有行, 可能是「确认无除权事件」,
+    也可能是「东财 F10 拉取失败所以不知道」。两者在 ``_apply_adj_factor`` 里都走
+    ``cum_factor.fill_null(1.0)``, 而后者会被当成「该股从无分红」→ 前复权价静默偏高、
+    MA/MACD 静默失真, 属 CONTRIBUTING §3 的「看起来对但错」。
+
+    - ``covered``   —— 拉取成功。库里没有它的行 = **确认无除权事件**,
+      ``fill_null(1.0)`` 是正确语义, 可以算。
+    - ``uncovered`` —— 拉取失败, 或因本地无原始日K而定不出参考价。库里没有它的行 =
+      **不知道**, 必须拒算。
+    """
+
+    covered: frozenset[str]
+    uncovered: frozenset[str]
+    updated_at: str | None
+
+
+def hk_adj_coverage_path(data_dir: Path) -> Path:
+    """港股复权因子完整性凭据的绝对路径。"""
+    return data_dir / HK_ADJ_COVERAGE_RELPATH
+
+
+def load_hk_adj_coverage(data_dir: Path) -> HkAdjCoverage | None:
+    """读完整性凭据。不存在 / 损坏 / 版本不符 → ``None``, 调用方**必须 fail closed**。
+
+    与 :func:`load_hk_adj_factors` 的 ``None`` 同义: 「不知道」绝不降级成「没有」。
+    """
+    path = hk_adj_coverage_path(data_dir)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        logger.error("港股复权因子凭据读取失败 (%s): %s", path, e)
+        return None
+    version = raw.get("version") if isinstance(raw, dict) else None
+    if version != HK_ADJ_COVERAGE_VERSION:
+        logger.error(
+            "港股复权因子凭据版本不符 (%r != %d), 按无凭据处理: %s",
+            version, HK_ADJ_COVERAGE_VERSION, path,
+        )
+        return None
+    return HkAdjCoverage(
+        covered=frozenset(raw.get("covered") or ()),
+        uncovered=frozenset(raw.get("uncovered") or ()),
+        updated_at=raw.get("updated_at"),
+    )
+
+
+def _write_hk_adj_coverage(data_dir: Path, covered: set[str], uncovered: set[str]) -> None:
+    """原子写凭据。半截 JSON 会让下游永久 fail closed 且看不出原因, 故走 tmp+replace。"""
+    path = hk_adj_coverage_path(data_dir)
+    # 全轮失败时因子库 parquet 一个都没落, 目录可能还不存在。
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        path,
+        json.dumps(
+            {
+                "version": HK_ADJ_COVERAGE_VERSION,
+                "updated_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+                "covered": sorted(covered),
+                "uncovered": sorted(uncovered),
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
+    )
+
+
 def sync_hk_adj_factor(
     repo,
     *,
@@ -273,6 +357,12 @@ def sync_hk_adj_factor(
     一轮**全部成功**却无任何事件时仍会落一个空库 —— 那是「已同步、确认无事件」的
     凭据, :func:`sync_hk_enriched` 的 fail-closed 闸门靠它放行; 有标的失败时刻意
     不落, 宁让 enriched 中止, 也不用空库谎称数据齐全。
+
+    🔴 但那道闸门只区分「库在不在」, 区分不了「库非空但缺了某几只」—— 逐批 merge
+    意味着部分失败时成功的行已经落盘且**不回滚**。故本函数另外落一份**按标的**的
+    完整性凭据 ``adj_factor_hk/coverage.json`` (:class:`HkAdjCoverage`), 记下每只
+    标的的分红史是「拉到了」还是「不知道」; :func:`sync_hk_enriched` 据此**按标的
+    拒算**, 而不是让缺因子的标的走 ``fill_null(1.0)`` 被当成「从无分红」。
 
     ``on_progress(done, total)`` 每标的回调一次, 与 :func:`sync_hk_daily` 同口径。
     """
@@ -304,6 +394,10 @@ def sync_hk_adj_factor(
     changed: list[str] = []
     # 调用方没给 failed_out 也要自己记一份: 下面「是否落空库」的判定依赖它。
     failed: list[str] = [] if failed_out is None else failed_out
+    # 完整性凭据的两个桶: processed = 本轮做过判定的标的, succeeded = 其中分红史
+    # 真的拉到的。差集即「本轮新增的 uncovered」。
+    processed: set[str] = set()
+    succeeded: set[str] = set()
     done = 0
     total = len(universe)
     try:
@@ -322,7 +416,10 @@ def sync_hk_adj_factor(
             frames: list[pl.DataFrame] = []
             for sym in batch:
                 closes = closes_by_sym.get(sym)
+                processed.add(sym)
                 if not closes:
+                    # 定不出参考价 P 就算不出因子。这**不是**「无除权事件」, 故不进
+                    # succeeded —— 凭据里留作 uncovered, 下游拒算而非 fill_null(1.0)。
                     logger.debug("港股复权因子 %s: 本地无原始日K, 跳过", sym)
                 else:
                     try:
@@ -332,6 +429,7 @@ def sync_hk_adj_factor(
                         failed.append(sym)
                         events = None
                     if events is not None:
+                        succeeded.add(sym)
                         f = hk_dividend.build_hk_adj_factors(sym, events, closes)
                         if not f.is_empty():
                             frames.append(f)
@@ -348,6 +446,19 @@ def sync_hk_adj_factor(
     finally:
         if own_client:
             client.close()
+
+    # 完整性凭据: **按标的合并** —— 本轮处理过的按本轮结果重写, 没处理的保留上一轮
+    # 状态。这样 symbols=[...] 的局部重跑不会把其他标的的凭据抹掉。
+    # 🔴 有失败也照写: 这正是凭据存在的理由 —— 让下游能区分「确认无除权事件」与
+    # 「拉取失败所以不知道」, 而不是把两者都交给 fill_null(1.0)。
+    prev = load_hk_adj_coverage(data_dir)
+    covered = set(prev.covered) if prev is not None else set()
+    uncovered = set(prev.uncovered) if prev is not None else set()
+    covered -= processed
+    uncovered -= processed
+    covered |= succeeded
+    uncovered |= processed - succeeded
+    _write_hk_adj_coverage(data_dir, covered, uncovered)
 
     if not out_path.exists() and not failed:
         # 一轮**全部成功**却没有任何除权事件时也要落一个空库: 空库是「已同步、确认
@@ -377,6 +488,7 @@ def sync_hk_enriched(
     batch_size: int | None = None,
     on_progress=None,
     require_adj_factor: bool = True,
+    uncovered_out: list[str] | None = None,
 ) -> int:
     """从已落库的港股**原始**日K重算 enriched → ``kline_hk_enriched/``。返回写入行数。
 
@@ -410,6 +522,13 @@ def sync_hk_enriched(
 
     ``market=Market.HK`` 是本函数存在的核心理由: 港股 volume 单位是「股」而 A 股是
     「手」, 走默认 CN 会让换手率**高 100 倍** (方案 §3.1.2)。
+
+    🔴 **两道 fail-closed 闸门** (``require_adj_factor=True`` 时):
+    ① 因子库 ``adj_factor_hk/all.parquet`` 不存在 → 整轮中止返回 0;
+    ② 完整性凭据 ``adj_factor_hk/coverage.json`` 不存在 → 整轮中止返回 0; 凭据存在
+       但某些标的 ``uncovered`` → **只拒算这些标的**, 其余照常, 被拒的写进
+       ``uncovered_out``。闸门 ② 补的是闸门 ① 的洞: 逐批 merge 且失败不回滚, 部分
+       失败时库照样非空, 缺因子的标的会被 ``fill_null(1.0)`` 当成「从无分红」。
     """
     from app.indicators.pipeline import compute_enriched
     from app.parquet import scan_daily_parquet
@@ -464,6 +583,36 @@ def sync_hk_enriched(
             "以**原始价**计算 —— 跨除净日的 MA/MACD 会失真", HK_ADJ_FACTOR_RELPATH,
         )
 
+    if require_adj_factor:
+        # 🔴 第二道闸门 —— **按标的**的完整性凭据。上面那道只判「因子库在不在」, 判不出
+        # 「库非空但某几只的分红史没拉到」: sync_hk_adj_factor 逐批 merge 且失败不回滚,
+        # 部分失败时库照样非空。放行的话缺因子的标的会在 _apply_adj_factor 里拿到
+        # cum_factor.fill_null(1.0), 被当成「从无分红」→ 前复权价静默偏高。
+        # 故凭据缺失一律中止, 凭据里 uncovered 的标的**逐个拒算**。
+        coverage = load_hk_adj_coverage(data_dir)
+        if coverage is None:
+            logger.error(
+                "港股 enriched 重算中止: 复权因子完整性凭据 %s 缺失或不可读。"
+                "因子库存在也无法判定各标的的分红史是否拉全 —— 缺凭据时 fill_null(1.0) "
+                "会把拉取失败的标的当成「从无分红」。请重跑 sync_hk_adj_factor 生成凭据; "
+                "确要以原始价计算须显式传 require_adj_factor=False。",
+                HK_ADJ_COVERAGE_RELPATH,
+            )
+            return 0
+        uncovered = [s for s in selected if s not in coverage.covered]
+        if uncovered:
+            shown = ", ".join(uncovered[:20]) + ("…" if len(uncovered) > 20 else "")
+            logger.error(
+                "港股 enriched: %d 个标的复权因子覆盖不完整, 本轮**拒算** "
+                "(fail closed, 等下一轮 sync_hk_adj_factor 补齐): %s",
+                len(uncovered), shown,
+            )
+            if uncovered_out is not None:
+                uncovered_out.extend(uncovered)
+            selected = [s for s in selected if s in coverage.covered]
+            if not selected:
+                return 0
+
     step = max(1, min(batch_size or HK_ENRICHED_BATCH_SIZE, HK_ENRICHED_BATCH_SIZE))
     batches = [selected[i:i + step] for i in range(0, len(selected), step)]
     written = 0
@@ -505,14 +654,19 @@ def sync_hk_enriched(
 
 
 __all__ = [
+    "HK_ADJ_COVERAGE_RELPATH",
+    "HK_ADJ_COVERAGE_VERSION",
     "HK_ADJ_FACTOR_RELPATH",
     "HK_ENRICHED_BATCH_SIZE",
     "HK_KLINE_BEG_DEFAULT",
+    "HkAdjCoverage",
+    "hk_adj_coverage_path",
     "hk_adj_factor_path",
     "hk_daily_universe",
     "hk_enriched_instruments",
     "iter_hk_daily_frames",
     "latest_hk_daily_date",
+    "load_hk_adj_coverage",
     "load_hk_adj_factors",
     "sync_hk_adj_factor",
     "sync_hk_daily",

@@ -15,6 +15,7 @@ CONTRIBUTING:708 要求复权类逻辑用**固定样本数值断言**, 故本文
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import re
 
@@ -107,6 +108,11 @@ def _seed_instruments(data_dir, symbols: list[str]) -> None:
         "limit_up": None, "limit_down": None,   # 港股无涨跌停 → 哨兵列恒 None
         "listing_date": None, "is_cny_counter": False,
     } for s in symbols]), out)
+    # enriched 的第二道闸门按标的查完整性凭据 (adj_factor_hk/coverage.json): 缺凭据
+    # 整轮中止, uncovered 标的逐个拒算。生产里这份凭据由 sync_hk_adj_factor 落盘;
+    # 这里按「instruments 即已同步全集」播 covered, 让只关心复权数值本身的用例不被
+    # 闸门挡住。要测闸门本身请用 _write_hk_adj_coverage 显式改凭据。
+    sync_hk._write_hk_adj_coverage(data_dir, set(symbols), set())
 
 
 def _seed_daily(repo, symbol: str, *, days: int = 30,
@@ -767,3 +773,236 @@ def test_market_hk_is_used_not_cn():
     """守卫: 港股链路必须显式带 Market.HK (走 CN 默认会让换手率高 100 倍)。"""
     assert Market.HK != Market.CN
     assert sync_hk.Market.HK is Market.HK
+
+
+# ---------------------------------------------------------------------------
+# ⑦ 完整性凭据 coverage.json —— 「部分失败不回滚」的第二道防线
+#
+# 🔴 缺陷本体: sync_hk_adj_factor 逐批 merge 且失败**不回滚**, 部分失败时因子库照样
+# 非空 → ④ 那道「库存在即放行」的闸门判不出来 → 缺因子的标的在 _apply_adj_factor 里
+# 拿到 cum_factor.fill_null(1.0), 被当成「该股从无分红」→ 前复权价静默偏高、MA/MACD
+# 静默失真, 无报错无告警 (CONTRIBUTING §3「看起来对但错」)。
+# 凭据把「分红史拉到了」与「不知道」分开记, enriched 据此**按标的**拒算。
+# ---------------------------------------------------------------------------
+def _cov(data_dir) -> sync_hk.HkAdjCoverage:
+    c = sync_hk.load_hk_adj_coverage(data_dir)
+    assert c is not None, "凭据必须已落盘"
+    return c
+
+
+def test_sync_writes_coverage_credential_on_success(tmp_path):
+    """全部成功 → covered 收录所有标的, uncovered 为空, 带时间戳。"""
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK"])
+    _seed_daily(repo, "00700.HK", days=5)
+
+    sync_hk.sync_hk_adj_factor(repo, client=_FakeDivClient({"00700.HK": []}))
+
+    c = _cov(tmp_path)
+    assert c.covered == frozenset({"00700.HK"})
+    assert c.uncovered == frozenset()
+    assert c.updated_at, "凭据要带时间戳, 排障时才能判断新旧"
+
+
+def test_coverage_marks_failed_symbol_uncovered(tmp_path):
+    """🔴 核心回归钉: 部分失败时成功的进 covered、失败的进 uncovered。
+
+    此刻因子库**非空** (00005.HK 的行已 merge 落盘且不回滚), 所以 ④ 的老闸门会整轮
+    放行; 只有凭据能把 00700.HK 标成「不知道」。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK", "00005.HK"])
+    _seed_daily(repo, "00700.HK", days=30)
+    _seed_daily(repo, "00005.HK", days=30)
+    client = _FakeDivClient(
+        {"00005.HK": [_ev("2026-09-16", "每股派港币1元")]}, fail={"00700.HK"}
+    )
+
+    sync_hk.sync_hk_adj_factor(repo, client=client)
+
+    c = _cov(tmp_path)
+    assert c.covered == frozenset({"00005.HK"})
+    assert c.uncovered == frozenset({"00700.HK"})
+    assert sync_hk.load_hk_adj_factors(tmp_path).height == 1, "前提: 库确实非空"
+
+
+def test_coverage_merges_by_symbol_across_partial_rounds(tmp_path):
+    """🔴 按标的合并 —— 既不是整轮替换, 也不是无脑累积。
+
+    ``symbols=`` 允许局部重跑: 整轮替换会把没处理的标的凭据抹掉 (下游全部拒算),
+    无脑累积会让「上轮成功、这轮失败」的标的继续被当成 covered (缺陷复活)。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK", "00005.HK"])
+    _seed_daily(repo, "00700.HK", days=30)
+    _seed_daily(repo, "00005.HK", days=30)
+    sync_hk.sync_hk_adj_factor(
+        repo, client=_FakeDivClient({"00700.HK": [], "00005.HK": []})
+    )
+    assert _cov(tmp_path).covered == frozenset({"00700.HK", "00005.HK"})
+
+    # 只重跑 00700.HK, 且这次失败
+    sync_hk.sync_hk_adj_factor(
+        repo, symbols=["00700.HK"], client=_FakeDivClient(fail={"00700.HK"})
+    )
+    c = _cov(tmp_path)
+    assert c.covered == frozenset({"00005.HK"}), "没处理的 00005.HK 必须保留原状态"
+    assert c.uncovered == frozenset({"00700.HK"}), "这轮失败的必须从 covered 挪走"
+
+
+def test_coverage_marks_symbol_uncovered_when_no_local_daily(tmp_path):
+    """本地无原始日K → 定不出参考价 P → 记 uncovered, 但**不进 failed_out**。
+
+    它不是取数错误, failed_out 的语义 (job 层据此整体让路) 必须保持不变; 可它同样
+    「不知道分红史」, 所以凭据里不能算 covered。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK", "09988.HK"])
+    _seed_daily(repo, "00700.HK", days=5)   # 09988.HK 在维表里但无日K
+
+    failed: list[str] = []
+    sync_hk.sync_hk_adj_factor(
+        repo, client=_FakeDivClient({"00700.HK": []}), failed_out=failed
+    )
+
+    assert failed == [], "无日K不是取数失败, 不该污染 failed_out"
+    c = _cov(tmp_path)
+    assert c.covered == frozenset({"00700.HK"})
+    assert c.uncovered == frozenset({"09988.HK"})
+
+
+def test_enriched_aborts_without_coverage_credential(tmp_path, caplog):
+    """🔴 因子库**存在**但凭据缺失 → 仍必须整轮中止。
+
+    这条正是 ④ 的 ``test_enriched_aborts_without_factor_store`` 覆盖不到的洞: 老闸门
+    只看库在不在, 库在就放行, 而「库在但不知道每只标的是否拉全」照样会算出错值。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK"])
+    _seed_daily(repo, "00700.HK")
+    _seed_factor_store(tmp_path)                      # 库在 → 老闸门会放行
+    sync_hk.hk_adj_coverage_path(tmp_path).unlink()   # 凭据不在
+
+    with caplog.at_level(logging.ERROR, logger="app.services.kline_sync_hk"):
+        assert sync_hk.sync_hk_enriched(repo) == 0
+    assert "完整性凭据" in caplog.text
+    assert not list((tmp_path / "kline_hk_enriched").glob("**/*.parquet")), \
+        "中止时不该写任何 enriched"
+
+
+def test_enriched_refuses_only_uncovered_symbols(tmp_path, caplog):
+    """🔴 按标的拒算: uncovered 的一行都不写, covered 的照常, 且报进 uncovered_out。
+
+    若不拒算, 09988.HK 会拿到 cum_factor.fill_null(1.0) → close == raw_close, 看起来
+    完全正常, 实际是「假装它从没除过权」。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK", "09988.HK"])
+    _seed_daily(repo, "00700.HK", days=10)
+    _seed_daily(repo, "09988.HK", days=10)
+    _seed_factor_store(tmp_path, [{
+        "symbol": "00700.HK", "trade_date": dt.date(2026, 9, 6), "ex_factor": 1.25,
+        "dividend": 25.0, "bonus": 0.0, "allot": None, "allot_price": None,
+        "prev_close": 115.0,
+    }])
+    sync_hk._write_hk_adj_coverage(tmp_path, {"00700.HK"}, {"09988.HK"})
+
+    uncovered: list[str] = []
+    with caplog.at_level(logging.ERROR, logger="app.services.kline_sync_hk"):
+        n = sync_hk.sync_hk_enriched(repo, uncovered_out=uncovered)
+
+    assert n == 10, "只写 00700.HK 的 10 行"
+    assert uncovered == ["09988.HK"], "被拒的标的必须回报给调用方"
+    assert "覆盖不完整" in caplog.text and "拒算" in caplog.text
+    assert set(_read_enriched(tmp_path)["symbol"].to_list()) == {"00700.HK"}
+
+
+def test_enriched_returns_zero_when_every_symbol_uncovered(tmp_path):
+    """全部 uncovered → 返回 0, 且不写任何 enriched (不是写一堆原始价)。"""
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK"])
+    _seed_daily(repo, "00700.HK", days=10)
+    _seed_factor_store(tmp_path)
+    sync_hk._write_hk_adj_coverage(tmp_path, set(), {"00700.HK"})
+
+    uncovered: list[str] = []
+    assert sync_hk.sync_hk_enriched(repo, uncovered_out=uncovered) == 0
+    assert uncovered == ["00700.HK"]
+    assert not list((tmp_path / "kline_hk_enriched").glob("**/*.parquet"))
+
+
+def test_enriched_opt_out_bypasses_coverage_gate(tmp_path):
+    """``require_adj_factor=False`` 是显式的原始价模式 → 两道闸门都跳过。
+
+    与 ④ 的 ``test_enriched_proceeds_when_explicitly_opted_out`` 同口径: 逃生门只对
+    **显式**调用方开 (那条用例另钉了必须打 WARNING 说清代价)。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK", "09988.HK"])
+    _seed_daily(repo, "00700.HK", days=10)
+    _seed_daily(repo, "09988.HK", days=10)
+    _seed_factor_store(tmp_path)
+    # 两个标的都 uncovered: 默认路径会全部拒算, 显式 opt-out 仍应算完。
+    sync_hk._write_hk_adj_coverage(tmp_path, set(), {"00700.HK", "09988.HK"})
+
+    assert sync_hk.sync_hk_enriched(repo, require_adj_factor=False) == 20
+    assert set(_read_enriched(tmp_path)["symbol"].to_list()) == {"00700.HK", "09988.HK"}
+
+
+def test_coverage_credential_is_invisible_to_factor_view(tmp_path):
+    """🔴 凭据必须是 ``.json`` 而不是 ``.parquet``。
+
+    ``repository`` 用 ``adj_factor_hk/**/*.parquet`` **递归** glob 注册 adj_factor_hk
+    视图; 同目录放一个 parquet 会被 union_by_name 并进因子表, 污染 schema。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_instruments(tmp_path, ["00700.HK"])
+    _seed_daily(repo, "00700.HK", days=5)
+    sync_hk.sync_hk_adj_factor(repo, client=_FakeDivClient({"00700.HK": []}))
+
+    assert sync_hk.HK_ADJ_COVERAGE_RELPATH.endswith(".json")
+    d = tmp_path / "adj_factor_hk"
+    assert [p.name for p in sorted(d.glob("**/*.parquet"))] == ["all.parquet"], \
+        "凭据 (及其 .tmp) 都不得被因子视图的 glob 命中"
+    assert not list(d.glob("*.tmp")), "原子写不该留下临时文件"
+    assert (d / "coverage.json").exists()
+
+    # 视图在 DataStore 初始化时注册, 那时 parquet 还没落 → 必须重建后再查。
+    repo.rebuild_views()
+    cols = {r[0] for r in repo.store.db.execute("describe adj_factor_hk").fetchall()}
+    assert "version" not in cols and "covered" not in cols, "凭据字段混进了因子视图"
+    assert {"symbol", "trade_date", "ex_factor"} <= cols
+
+
+def test_load_coverage_none_on_missing_corrupt_or_version_mismatch(tmp_path, caplog):
+    """读凭据的三态: 不存在 / 损坏 / 版本不符一律 ``None``, 调用方 fail closed。
+
+    与 ``load_hk_adj_factors`` 同义 —— 「不知道」绝不降级成「没有」。
+    """
+    path = sync_hk.hk_adj_coverage_path(tmp_path)
+    assert sync_hk.load_hk_adj_coverage(tmp_path) is None, "不存在 → None"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"version": 1, "covered": ["00', encoding="utf-8")
+    assert sync_hk.load_hk_adj_coverage(tmp_path) is None, "半截 JSON → None, 不猜"
+
+    path.write_text(json.dumps({"version": 999, "covered": ["00700.HK"]}), encoding="utf-8")
+    with caplog.at_level(logging.ERROR, logger="app.services.kline_sync_hk"):
+        assert sync_hk.load_hk_adj_coverage(tmp_path) is None, "版本不符 → None"
+    assert "版本不符" in caplog.text
+
+    path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    assert sync_hk.load_hk_adj_coverage(tmp_path) is None, "非对象 → None"
+
+
+def test_coverage_roundtrips_through_json(tmp_path):
+    """凭据落盘格式: 排序后的列表 + 版本 + 时间戳, 人肉排障时可直接读。"""
+    sync_hk._write_hk_adj_coverage(tmp_path, {"09988.HK", "00700.HK"}, {"03690.HK"})
+    raw = json.loads(sync_hk.hk_adj_coverage_path(tmp_path).read_text(encoding="utf-8"))
+
+    assert raw["version"] == sync_hk.HK_ADJ_COVERAGE_VERSION
+    assert raw["covered"] == ["00700.HK", "09988.HK"], "必须排序, 便于 diff"
+    assert raw["uncovered"] == ["03690.HK"]
+    c = _cov(tmp_path)
+    assert c.covered == frozenset({"00700.HK", "09988.HK"})
+    assert c.uncovered == frozenset({"03690.HK"})

@@ -345,9 +345,35 @@ ex_factor = P / ref                # 单次事件的前后比价，不是累计�
 
 显式传 `require_adj_factor=False` 可降级用原始价计算，但会 warning 说清代价（跨除净日的 MA/MACD 会失真）。
 
+#### 完整性凭据 `coverage.json`：三态闸门补不上的那个洞
+
+三态只判「库在不在 / 有没有行」，判不出**「库非空但缺了某几只」**。而 `sync_hk_adj_factor` 是**逐批 merge 且失败不回滚**的：部分失败时成功那部分已落盘，库照样非空 → 三态闸门放行 → 缺因子的标的在 `_apply_adj_factor` 里拿到 `cum_factor.fill_null(1.0)`，被当成「该股从无分红」→ **前复权价静默偏高、MA/MACD 静默失真，无报错无告警**（CONTRIBUTING §3「看起来对但错」）。
+
+根因是**信息缺失**而非逻辑错误：一只标的在库里没有行，可能是「确认无除权事件」，也可能是「F10 拉取失败所以不知道」—— 两者在 parquet 里**完全同形**，无论怎么改判定逻辑都分不开。故补一份带外凭据 `adj_factor_hk/coverage.json`：
+
+- 🔴 **必须是 `.json` 而不是 `.parquet`**：`repository.py` 用 `adj_factor_hk/**/*.parquet` **递归** glob 注册 `adj_factor_hk` 视图，同目录放一个 parquet 会被 `union_by_name` 并进因子表、污染 schema。
+- **写入方**：`sync_hk_adj_factor`，每轮结束**无条件**写（有失败也写 —— 这正是凭据存在的理由）。走 `atomic_write_text`，半截 JSON 会让下游永久 fail closed 且看不出原因。
+- **结构**：`HkAdjCoverage(covered, uncovered, updated_at)`。`covered` = 分红史已拉全，库里没它的行就是**确认无事件**，`fill_null(1.0)` 是正确语义；`uncovered` = 拉取失败**或**本地无日K定不出参考价 P，库里没它的行意味着**不知道**，必须拒算。
+- 🔴 **按标的合并**，不是整轮替换也不是无脑累积。`symbols=` 允许局部重跑：整轮替换会抹掉未处理标的的凭据（下游全部拒算），无脑累积会让「上轮成功、这轮失败」的标的继续被当成 covered（缺陷复活）。
+- **读取方**：`load_hk_adj_coverage`，不存在 / 半截 JSON / `version` 不符一律返回 `None`，调用方 fail closed —— 与 `load_hk_adj_factors` 的 `None` 同义，「不知道」绝不降级成「没有」。
+
+于是 `sync_hk_enriched` 有**两道**闸门（均在 `require_adj_factor=True` 时生效）：
+
+| # | 条件 | 行为 |
+|---|---|---|
+| ① | 因子库 `all.parquet` 不存在 | 整轮中止返回 0（原有） |
+| ② | 凭据 `coverage.json` 不存在 | 整轮中止返回 0（新增） |
+| ② | 凭据存在但某些标的 `uncovered` | **只拒算这些标的**，其余照常；被拒清单写进 `uncovered_out`（新增） |
+
+`uncovered_out` 一路回报到 HTTP：`POST /api/hk/sync_enriched` 的 `uncovered` 字段、`POST /api/hk/sync_daily` 的 `enriched_uncovered` 字段。不回报的话调用方只看到行数偏少，分不清是「本来没数据」还是「被闸门挡了」—— 那还是静默。
+
+「本地无日K」记 `uncovered` 而**不进** `failed_out`：它不是取数错误，`failed_out` 的语义（job 层据此整体让路）必须保持不变；可它同样「不知道分红史」，所以凭据里不能算 covered。
+
 #### 验证
 
-`tests/test_hk_adj_factor.py` **62 项**，全 hermetic（假 client，不触网），复权数值全部是手算可复核的字面量（CONTRIBUTING:708）。端到端那条钉死了「因子真的作用到 enriched 上」：30 天原始收盘 `101+i`，在第 15 天放 `ex_factor=1.25`，断言前 15 天 `close == raw_close × 0.8`、后 15 天 `close == raw_close`（前复权保持最新价不变）。
+`tests/test_hk_adj_factor.py` **73 项**，全 hermetic（假 client，不触网），复权数值全部是手算可复核的字面量（CONTRIBUTING:708）。端到端那条钉死了「因子真的作用到 enriched 上」：30 天原始收盘 `101+i`，在第 15 天放 `ex_factor=1.25`，断言前 15 天 `close == raw_close × 0.8`、后 15 天 `close == raw_close`（前复权保持最新价不变）。
+
+第 ⑦ 组 11 项专钉完整性凭据，其中三条是核心回归钉：`test_coverage_marks_failed_symbol_uncovered`（部分失败时库非空但凭据能分出 covered/uncovered）、`test_enriched_aborts_without_coverage_credential`（**库在、凭据不在**仍必须中止 —— 正是闸门 ① 覆盖不到的洞）、`test_coverage_merges_by_symbol_across_partial_rounds`（局部重跑不抹掉别人的凭据、也不让失败的继续冒充 covered）。另有 `test_coverage_credential_is_invisible_to_factor_view` 钉死「凭据不得被 `**/*.parquet` glob 命中」。
 
 **变异检验 17/17 全部被抓到**，另有 3 个**等价变异**如预期存活并记录了原因（解析顺序对调、单独去掉任一道 NaN 防护 —— 都被另一道防线兜住）。脚本 `backend/_scratch/mutate_hk_adj2.py`。
 
@@ -768,11 +794,11 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | `tests/test_hk_eastmoney.py` | 154 | 插件层：secid / 列表 fs / 双柜台 / tick_size 11 档 / spot 与 kline 映射 |
 | `tests/test_hk_financial_sync.py` | 96 | 财务服务层：合并语义 / 规范化投影 / align / lot_size 回填 |
 | `tests/test_hk_financials.py` | 74 | 财务插件层：报表名 / filter 语法 / 分页上限 / 字段映射（**已做变异检验**） |
-| `tests/test_hk_api.py` | 52 | 10 条路由的契约、参数校验、串市场护栏、enriched 阶段接线 |
+| `tests/test_hk_api.py` | 54 | 10 条路由的契约、参数校验、串市场护栏、enriched 阶段接线、**拒算清单回报**（`uncovered` / `enriched_uncovered`） |
 | `tests/test_hk_storage_layout.py` | 27 | 五道闸：目录隔离 / 视图不串市场 / `_DIRNAMES` 无 etf |
 | `tests/test_hk_kline_sync.py` | 34 | 日线同步：universe / 增量 / `fqt != 0` 拒绝；**enriched 生成**：换手率单位 / 大涨不判涨停 / 限价恒 null / 目录隔离 / 拒绝降级 / 进度 |
 | `tests/test_hk_instrument_sync.py` | 16 | 维表同步：字段补全 / `_MIN_FRESH_RATIO` / 保留字段 |
-| `tests/test_hk_adj_factor.py` | 62 | **复权因子链**：方案文本解析（11 种真实句式 + 9 种不可解析 + 4 个具名陷阱）/ 因子数值与四道闸门 / `load_hk_adj_factors` 三态 / fail-closed / 端到端复权 vs 原始 / 同步语义（**变异检验 17/17**） |
+| `tests/test_hk_adj_factor.py` | 73 | **复权因子链**：方案文本解析（11 种真实句式 + 9 种不可解析 + 4 个具名陷阱）/ 因子数值与四道闸门 / `load_hk_adj_factors` 三态 / fail-closed / 端到端复权 vs 原始 / 同步语义（**变异检验 17/17**）/ **完整性凭据 `coverage.json` 11 项**（部分失败标记、按标的合并、两道闸门、`.json` 与 parquet glob 隔离） |
 | `tests/test_hk_scheduler.py` | 51 | **调度接线**：单向让路 / 不进 `job_store` 不占执行槽 / 因子部分失败跳过 enriched / 阶段依赖与软失败 / client 必定 close / 视图必定重建 / 注册与 `replace_existing` / `start_scheduler` 隔离、settings API 契约（**变异检验 28/28**） |
 
 **PR2a（数据通路）交付**：`app/plugins/eastmoney/hk.py`（467 行，数据边界）、`app/services/instrument_sync_hk.py`、`app/services/kline_sync_hk.py`、`app/api/hk.py`、`repository.py` 的 `_DIRNAMES` / `daily_dirname()` / `enriched_dirname()` / `append_hk_daily` / `append_hk_enriched`、`provider.symbol_to_secid` 的 `.HK→116.` 纯增量分支。
@@ -898,14 +924,15 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 - **不设 15:00 下限**（与 `set_review_schedule` 的刻意差异）：港股有半日市（12:00 收盘），用户也可能只想盘中拉一次快照。已有测试 `test_hk_schedule_has_no_time_floor_unlike_review` 同时断言「港股 09:30 被保留」与「复盘 09:30 被抬到 15:00」，防止后人照抄下限逻辑。
 - 时区挂 `Asia/Hong_Kong` 而非 `Asia/Shanghai`：两者同为 UTC+8 且均无夏令时，偏移一致，但语义上港股 job 该挂港股时区。
 
-#### 🔴 实施中发现的服务层缺陷（已在 job 层挡住，服务层待决）
+#### 🔴 实施中发现的服务层缺陷（job 层 + 服务层均已闭合）
 
 `sync_hk_adj_factor` 是**逐批 merge** 落盘的：即使有标的拉取失败，成功那部分也已写进 `adj_factor_hk`。`failed` 只用于决定「要不要落空库当凭据」，**并不回滚已 merge 的行**。于是因子库**非空但不完整**，`load_hk_adj_factors` 的三态闸门判定为「非空」而放行，失败标的在 `_apply_adj_factor` 里拿到 `cum_factor.fill_null(1.0)`，被当成「该股从无分红」—— **前复权静默偏高、指标静默失真**。
 
 这正是 CONTRIBUTING §4「fail closed，绝不静默切换到错误数据或错误语义」要拦的情形。PR2e 的处理：
 
 - **job 层已挡**：`run_hk_sync` 在因子阶段报失败时跳过 enriched 并记 error，宁可本轮不出数，等下一轮补齐。
-- ⚠️ **服务层未改**：手动 API 路径（`POST /api/hk/sync_enriched`）仍会踩到同一个洞。修法有两种（因子库按轮次原子替换 / `load_hk_adj_factors` 增加「完整性凭据」维度），涉及 PR2d 已提交代码的口径变更，**留待单独决策**，不在本 PR 顺手改。
+- ✅ **服务层已闭合**（方案 B「完整性凭据」）：`sync_hk_adj_factor` 另外落一份**按标的**的 `adj_factor_hk/coverage.json`（`HkAdjCoverage`：`covered` = 分红史已拉全，`uncovered` = 拉取失败、或本地无日K定不出参考价 P）。`sync_hk_enriched` 据此**逐个拒算** uncovered 标的、凭据缺失则整轮中止，被拒清单经 `uncovered_out` 回报到 `POST /api/hk/sync_enriched`（`uncovered` 字段）与 `POST /api/hk/sync_daily`（`enriched_uncovered` 字段）。详见 §3.6「完整性凭据」。
+- job 层的整体让路**刻意保留**：定时全量轮次要求「要么齐要么不算」，半轮 enriched 会让看板出现新旧指标混杂的截面。服务层的按标的闸门是第二道防线，负责闭合手动 API 路径，两者不冲突。
 
 #### 阶段依赖
 
@@ -1038,7 +1065,7 @@ HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`�
 
 | 风险 | 后果 | 对策 |
 |---|---|---|
-| **复权口径** | 缺因子时静默用 raw 价算收益 = CONTRIBUTING §3 警告的「看起来对但错」 | **已接线**（§3.6）：东财 F10 分红事件自建乘性因子，落 `adj_factor_hk/`，`sync_hk_enriched` 默认 `require_adj_factor=True`。🔴 原先记的「腾讯 `hkfqkline` 直出前复权价，不需自己拿因子重算」**是错的** —— 它是**等差**投影，只能整条替换价格序列，无法与本地 `fqt=0` 原始价混用，也反推不出因子（汇丰身上按比值差法产出 207 个假事件）。缺复权数据时仍 **fail closed** 不出数，绝不静默用 raw 价 |
+| **复权口径** | 缺因子时静默用 raw 价算收益 = CONTRIBUTING §3 警告的「看起来对但错」 | **已接线**（§3.6）：东财 F10 分红事件自建乘性因子，落 `adj_factor_hk/`，`sync_hk_enriched` 默认 `require_adj_factor=True`。🔴 原先记的「腾讯 `hkfqkline` 直出前复权价，不需自己拿因子重算」**是错的** —— 它是**等差**投影，只能整条替换价格序列，无法与本地 `fqt=0` 原始价混用，也反推不出因子（汇丰身上按比值差法产出 207 个假事件）。缺复权数据时仍 **fail closed** 不出数，绝不静默用 raw 价。「逐批 merge 失败不回滚 → 库非空但不完整」这个洞由**完整性凭据** `adj_factor_hk/coverage.json` 闭合：`sync_hk_enriched` 按标的拒算 `uncovered`、凭据缺失整轮中止，被拒清单回报到 API（§3.6） |
 | **港股双柜台** | 同一公司有港币(`09988`)与人民币(`89988`)两个代码，实测 `m:128 t:3` 里两者**并存** → 成交额重复计算、量比分母错、行业排名同一家公司占两席 | **策略已定（§3.1.1）**：都入库 + `is_cny_counter` 标记，市场级统计只计港币柜台。PR2 落地时用 `tests/test_hk_dual_counter.py` 钉住；**该策略影响 PR6 行业排名正确性**，不能拖到 PR6 才发现漏了 |
 | **东财市场码用错** | `m:116` 返回 **17580** 条含窝轮/牛熊证（实测样本 `14192 中寿信证七一购A`），当成股票列表会污染全市场统计、涨跌幅榜、量比 | 列表固定用 `fs=m:128 t:3`（主板 2621）或 `m:128 t:3,t:4,t:1,t:2`（全市场 4748）；**分隔符是空格不是 `+`**；写测试断言列表里不含衍生品代码段 |
 | **交易日历** | 最阴险的不是崩，而是**把节假日当交易日**（港股复活节/圣诞/农历与 A 股完全不同） | oracle + provenance + **半日市表**；实盘/告警路径拒绝 weekday_fallback |
