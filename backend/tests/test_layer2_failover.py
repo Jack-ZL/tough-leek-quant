@@ -342,8 +342,8 @@ def test_capability_matrix_exposes_failover(monkeypatch):
     from app.api.settings import get_capability_matrix
 
     monkeypatch.setattr("app.data_providers.capabilities.build_capability_matrix",
-                        lambda current, tickflow_tier="none": {
-                            "tickflow_tier": tickflow_tier, "capabilities": []})
+                        lambda current, tickflow_tier="none", market="CN": {
+                            "tickflow_tier": tickflow_tier, "market": market, "capabilities": []})
     monkeypatch.setattr("app.tickflow.policy.base_tier_name", lambda: "free")
     monkeypatch.setattr(preferences, "get_realtime_backup_provider", lambda: "auto")
 
@@ -351,6 +351,7 @@ def test_capability_matrix_exposes_failover(monkeypatch):
     fo = result["realtime_failover"]
     assert fo["state"] == "closed" and fo["threshold"] == 3
     assert result["realtime_backup_provider"] == "auto"
+    assert result["market"] == "CN"
 
 
 def test_update_data_providers_resets_failover(monkeypatch):

@@ -37,6 +37,16 @@ import { QK } from '@/lib/queryKeys'
  * 🔴 `false` 的语义是「入口直接隐藏」(方案 §8 规则 4), 不是「渲染出来但为空」:
  * 一个必然失败的按钮比没有按钮更糟 —— 用户点了自选, 后端 `watchlist.py` 零市场
  * 感知会把港股代码当 A 股存进去, 然后列表页永远拉不到它的行情。
+ *
+ * ⚠️ **与后端能力矩阵的分工**(改任一侧前先读这段, 否则会静默漂移):
+ * - 后端 `data_providers/capabilities.py` 的 `CAPABILITY_REGISTRY[*].markets`
+ *   是**数据层**支持度的唯一权威(某市场有没有这个数据集的源)。
+ * - 本接口是**详情弹窗 UI 入口**的就绪度, 粒度更粗且含纯前端语义:
+ *   `minute` 对应后端 `minute`/`full_minute`; `watchlist`/`monitor`/`abnormal`
+ *   **没有**对应的后端能力 id(自选是本地清单、监控引擎与异动是 A 股信号链路),
+ *   只能在这里声明。
+ * - 所以本接口不是后端矩阵的副本, 不能改成从 `/capability-matrix?market=` 拉:
+ *   拉了也凑不出 `monitor`/`abnormal`。两侧一致的部分(分钟链路)以后端为准。
  */
 export interface KlineCapabilities {
 	/** 分时(分钟K)链路。港股无实时行情源(方案 §3.4) ⇒ false。 */

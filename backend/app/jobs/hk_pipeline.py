@@ -33,6 +33,20 @@ A 股关键路径**。这条要求在本仓库里有个不显然的坑 —— ``
 管道并发调用是安全的。共享的 ``EastmoneyClient`` 限流令牌桶按 host 计数, 港股与
 A 股请求会互相排队 —— 这是**保护**而非危害, 且默认时刻(16:40 HKT)本就与 A 股
 盘后管道(默认 15:35)错开。
+
+一轮定时同步包含**两条独立链路**
+--------------------------------
+
+:func:`hk_sync_task` 依次跑:
+
+1. :func:`run_hk_sync` —— 港股**个股** (东财 push2): 维表 → 日K → 复权因子 →
+   enriched → 重建视图, 带 fail-closed 依赖链。
+2. :func:`run_hk_index_sync` —— 港股**指数** (腾讯 ``ifzq`` 日K): 与个股**源不同、
+   表不同、失败语义不同**, 因此个股阶段的任何早退都不连带指数不同步。
+
+两条链路共用同一个调度开关 (``hk_sync_schedule.enabled``) 与同一套隔离纪律
+(不进 job_store / 不占执行槽 / 单向让路 / 异常全吞)。指数日K另有手动入口
+``POST /api/hk/sync_index_daily``, 供指数页单独补数。
 """
 
 from __future__ import annotations
@@ -253,25 +267,83 @@ def run_hk_sync(
     return result
 
 
+def run_hk_index_sync(repo: KlineRepository) -> dict[str, Any]:
+    """跑一轮港股**指数**日K同步 (腾讯源), 与个股管道完全独立。
+
+    为什么不并进 :func:`run_hk_sync`
+    --------------------------------
+
+    指数与个股是两条**没有共同依赖**的链路, 三处都不同:
+
+    * **源不同** —— 个股走东财 push2, 指数走腾讯 ``ifzq``。东财被 IP 级封禁时
+      (2026-11 实测) 个股整轮失败, 指数仍应照常同步。
+    * **表不同** —— ``kline_hk_index_daily`` / ``kline_hk_index_enriched`` 与个股
+      四张表物理隔离, 无同文件竞态。
+    * **失败语义不同** —— 个股管道有「复权因子不完整就挡住 enriched」的
+      fail-closed 依赖链; 指数不做复权, 不存在这条链。
+
+    因此 ``run_hk_sync`` 的任何一个早退分支(维表空 / 日K失败 / 因子不完整 /
+    enriched 异常)都**不该**连带指数不同步 —— 否则指数页会在个股源出问题时
+    一起静默变陈旧。本函数由 :func:`hk_sync_task` 在个股阶段之后**无条件**调用。
+
+    失败语义与个股阶段一致: 异常全吞、只记日志。``sync_hk_index_daily`` 返回的
+    ``failed`` **只含真正的拉取错误**, 不含「腾讯无覆盖」(27 个白名单代码中仅
+    14 个有日K, 无覆盖是源的客观事实, 记为失败会让每轮都告警), 详见
+    :mod:`app.services.index_sync_hk` 的三态契约。
+    """
+    from app.services import index_sync_hk
+
+    result: dict[str, Any] = {"index_daily_written": 0, "index_failed": []}
+    try:
+        written, failed = index_sync_hk.sync_hk_index_daily(
+            repo, on_progress=_throttled_progress("指数日K")
+        )
+        result["index_daily_written"] = written
+        result["index_failed"] = list(failed)
+    except Exception as e:
+        msg = f"港股指数日K同步失败: {e}"
+        logger.exception("港股同步: 指数阶段失败")
+        result.setdefault("errors", []).append(msg)
+    logger.info(
+        "港股指数同步完成: 日K +%d 行 / 真失败 %d 个",
+        result["index_daily_written"], len(result["index_failed"]),
+    )
+    return result
+
+
 def hk_sync_task(repo: KlineRepository) -> dict[str, Any] | None:
-    """APScheduler 入口: 让路检查 → 跑同步 → 吞掉一切异常。
+    """APScheduler 入口: 让路检查 → 个股同步 → 指数同步 → 吞掉一切异常。
 
     返回 result dict 仅供测试/日志断言; 调度路径不消费返回值。
+
+    🔴 指数阶段**不受个股阶段成败影响**: 个股抛未预期异常时仍会跑指数
+    (理由见 :func:`run_hk_index_sync`)。只有「让路」和「两段都炸」才返回 None。
     """
     reason = _yield_to_ashare()
     if reason:
         logger.info("港股定时同步跳过: %s", reason)
         return None
+
+    stock: dict[str, Any] | None = None
     try:
         from app.services import preferences
 
         sched = preferences.get_hk_sync_schedule()
-        return run_hk_sync(
+        stock = run_hk_sync(
             repo, include_cny_counter=bool(sched.get("include_cny_counter", False))
         )
     except Exception:
         logger.exception("港股定时同步未预期失败(已隔离, A 股调度不受影响)")
+
+    try:
+        index = run_hk_index_sync(repo)
+    except Exception:
+        logger.exception("港股指数同步未预期失败(已隔离, A 股调度不受影响)")
+        index = None
+
+    if stock is None and index is None:
         return None
+    return {**(stock or {}), **(index or {})}
 
 
 def register_hk_job(scheduler, repo: KlineRepository) -> bool:

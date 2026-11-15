@@ -721,7 +721,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **复权正确性** | 因子链用**固定样本数值断言**（CONTRIBUTING:708）：锚点是汇丰 2026-11-05 实测除净 `每股派美元0.1元(相当于港币0.784812元(计算值))`，其 0.784812 与腾讯 `hkfqkline` 前复权序列在同一日独立测得的加性偏移**逐位吻合**；端到端断言 enriched 的 `close` 已复权而 `raw_close` 未复权；取不到复权数据时 **fail closed**，绝不静默回落 raw 价。⚠️ 原计划的「腾讯 qfq vs 东财 `fqt=1` 两源数值互验」**前提不成立**（等差 vs 乘性），已撤下，见 §3.6 |
 | **串市场护栏** | `market=HK` 的任何响应**不含 CN 数据**；非法 market → 4xx；**缓存不串市场**（第二个市场读到第一个市场的序列 = 失败）；11 处 A 股 glob **扫不到港股目录** |
 | **CI grep** | `grep -rn "if .*market\s*==\s*['\"]" backend/` 命中数为 **0**（白名单除外） |
-| **能力矩阵** | matrix 测试覆盖港股新能力；`usable` 门控生效；不支持的能力（depth5/概念板块）明确声明 |
+| **能力矩阵** | matrix 测试覆盖港股新能力；`usable` 门控生效；不支持的能力（depth5/概念板块）明确声明。✅ **market 维已落地**（`tests/test_capability_matrix.py`）：HK 支持集/不支持集/逐项 `source` 三张表钉住；未知 market 在两个公开入口都 `ValueError`、API 层 **400**；🔴 HK `realtime` 的 `source` 与 note 范围说明由**变异检验**保护（写回 `eastmoney` 或删掉「尚未接入全市场轮询」都必须被测出来） |
 | **复权一致性** | 缺复权因子时 fail closed，不静默用 raw 价；前复权序列事件间漂移检查 |
 | **报告货币** | `CURRENCY != HKD` 的标的，估值比率有折算或标注，不静默混算 |
 | **AI 数据体检** | 港股标的**不被误判**为「缺财务的 A 股」；`should_block` 不因 market 误触发 |
@@ -1116,18 +1116,133 @@ HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`�
 - **没有顺手修 `cnBoardTag` 的 920 号段缺口**：北交所新号段 `920xxx` 不匹配 `/^[48]/`，因此没有「北」字标 —— 这是**搬迁前就有**的行为，本次只是把函数原样搬进适配器。真要补号段应当连同 Screener 列表那份副本一起改，另开一次改动（测试里已钉住现状并注明）。
 - **延时分钟数与币种都不进 `marketContent`**：只能读接口的 `quote_delay_minutes` / `currency`，写死会与后端漂移。
 
+### PR3 完成情况（自选前置四项：复盘缩写 / 指数调度 / 能力矩阵 market 维 / 腾讯港股快照）
+
+这一批做的是「自选 HK」的**前置**：把三处硬编码收敛、把指数同步接进调度、给能力矩阵补上
+market 维、并把港股实时行情的**源**落地。自选本身仍未接通（挡点见下节表格，已从
+「没有实时源」变成「没有 market 感知的 enriched 读取器」）。
+
+#### 落地文件
+
+| 文件 | 内容 |
+|---|---|
+| `frontend/src/lib/marketContent.ts` | 新增 `CoreIndex.compactName`、`indexCompactName()`、`coreIndexFullNames()` —— 指数简称/全称的**唯一**来源 |
+| `frontend/src/custom/review/Page.tsx` | 删掉第三份硬编码指数表；`INDEX_SHORT` 改为从 `coreIndexes()` 派生，另留 `LEGACY_INDEX_ALIAS` 兼容旧文案；导出 `indexShort` / `shortenIndexNames` |
+| `backend/app/jobs/hk_pipeline.py` | 新增 `run_hk_index_sync`；`hk_sync_task` 重写为**两个独立 try 块**（个股链路与指数链路互不拖累） |
+| `backend/app/data_providers/capabilities.py` | 注册表 7 项全部补 `markets` 声明；`SUPPORTED_MARKETS` / `ROUTED_MARKETS`；`market_decl()` fail-closed；三个公开入口全部带 `market` 维 |
+| `backend/app/api/settings.py` | `GET /api/settings/capability-matrix?market=`，非法值 **400** |
+| `backend/app/plugins/tencent/hk_spot.py` | **新增**：腾讯港股快照归一化（`hk_spot_code` / `hk_spot_symbol` / `hk_timestamp_ms` / `map_hk_spot_fields` / `fetch_hk_spot`） |
+| `backend/app/plugins/tencent/provider.py` | docstring 说明港股**不走** provider 的理由 |
+
+#### 🔴 腾讯港股快照与 A 股快照**同端点但字段布局不同**
+
+这是本批最贵的一个发现。`qt.gtimg.cn` 对 `hk00700` 和 `sh600000` 返回的是
+**同一套 `~` 分隔结构**，看起来可以直接复用 `provider.py` 的索引表 —— 但实测
+（2026-11-13，三行逐位比对）港股 78 列 / A 股 88 列，且**同索引不同义**：
+
+| 索引 | A 股 | 港股 | 用错的后果 |
+|---|---|---|---|
+| `[36]` 成交量 | **手** | **股** | 差 100 倍 |
+| `[37]` 成交额 | **万元** | **元 (HKD)** | 差 1e4 倍 |
+| `[30]` 时间戳 | `YYYYMMDDHHMMSS` | `YYYY/MM/DD HH:MM:SS` | 解析失败 → 静默退回拉取时刻，行情时间全错 |
+| `[35]` | 组合串 `价/量/额` | 只有最新价 | 按 `/` 切分会拿到垃圾 |
+| `[38]` 换手率 | 有值 | **恒 0**（港股在 `[59]`） | 换手率恒 0 |
+| `[9..28]` 五档 | 有值 | **恒 0** | 伪造盘口 |
+| `[63]` | `GP-A` 等 | `GP` 股票 / `ZS` 指数 | 指数行混进股票行情 |
+
+单位口径的**交叉验证**（不靠猜）：
+- 成交量是股不是手 —— `amount / volume = 12251162809.622 / 31493353 ≈ 389.0 HKD`，
+  落在当日 `385.6~395.2` 区间内；若当成手，均价会变成 3.89。
+- 换手率在 `[59]` —— 腾讯 `31493353 / 9092644829(=[69]总股本) = 0.346%` ≈ `[59]` 的 `0.35`；
+  阿里 `158411438 / 19901959514 = 0.796%` ≈ `[59]` 的 `0.80`。两只独立标的都对上才算数。
+
+⚠️ **工具输出渲染陷阱（本次实际踩到）**：终端渲染层会把日期串里的 `/` 显示成 `-`。
+第一版 `_HK_TIME_FORMAT` 就是照渲染出来的样子写成 `"%Y-%m-%d %H:%M:%S"`，结果
+**所有行的时间戳都静默退回拉取时刻**（三只标的返回完全相同的 `timestamp` 才暴露）。
+用 `[ord(c) for c in raw]` 逐字节确认是 `0x2f` 后才改对。
+👉 教训：**分隔符一律用 `ord()` / 整数和 / `strptime` 布尔验证，不要用眼睛看**。
+现在 `_HK_TIME_FORMATS` 同时接受斜杠与横杠两种写法（同 `sina.hk_index._DATE_FORMATS`）。
+
+#### 港股实时源为什么是腾讯而不是东财
+
+`eastmoney.hk.fetch_hk_spot` 已经写好且经过测试，但 `push2.eastmoney.com` 全集群
+对本机 IP 应用层封禁（2026-11 实测，TLS 握手成功但不返回 HTTP 响应）—— 这条链路
+在封禁解除前**取不到数**。能力矩阵里 HK `realtime` 的 `source` 因此写 `tencent`，
+并由 `test_hk_realtime_is_tencent_direct_with_scope_note` 钉住：写回 `eastmoney`
+会让设置页显示一个当前根本取不到数的源。
+
+🔴 **声明范围刻意收窄**：`note` 里明写「覆盖范围是按代码列表取实时行情（自选/详情），
+**尚未接入** `quote_service` 的全市场轮询与监控引擎」，且测试硬断言 note 含
+`hk_spot` 与 `全市场轮询` 两个关键词。理由：注册表的 `desc` 是「全市场实时快照」，
+若不加范围说明，后来人会以为港股已经有等价的全市场链路而去调不存在的代码。
+**范围说明被删掉 = 过度声明，必须被测出来。**
+
+#### 能力矩阵 market 维的三条设计决定
+
+1. **`ROUTED_MARKETS = {CN}`，港股不在其中**。港股各能力都是「直连固定源」（日K/复权/
+   财务走东财，指数走腾讯+新浪，实时走腾讯），没有偏好字段可路由。对这类市场矩阵是
+   **声明式**的：`field=None`、`candidates=[]`、`usable=supported`、`routed=False`
+   （前端据此不渲染路由下拉）。
+2. **未知 market 一律 `ValueError` / HTTP 400，任何地方都不回落 CN** —— 与
+   `app.market.parse_market` 同一套教义。静默回落会让「港股页面显示 A 股数据」
+   这个 §15 记录过的事故重新变得可能。
+3. **市场维对 CN 也是硬闸**（`usable = usable and supported`）。今天 CN 全部声明
+   `supported: True`，这道闸看似多余；但它是**未来新市场**的保险 —— 少了它，
+   一个忘记声明的市场会因为「路由到了可用源」而被判为可用。
+
+`ProviderCapabilities`（`data_providers/base.py`）**刻意没有**加 market 维：
+港股走直连不走插件路由，该 dataclass 的 market 维今天零消费方。已在 dataclass
+docstring 里记录这个延后决定，并指明 `CAPABILITY_REGISTRY[*].markets` 是唯一权威。
+
+#### 指数同步接调度：为什么是独立 job 而不是并入盘前/盘后
+
+`pipeline_jobs` 的两道并发闸（`job_store.create()` 单飞 + `try_acquire_run_slot()`
+全局互斥）都是**全局**的。港股 job 若进去排队，会与 A 股盘后同步互相阻塞。
+最终形态：**不进 `job_store`、不占 run slot**，改为**单向让路**（先读
+`job_store.active_id()`，有活跃 job 就跳过本轮），并吞掉所有异常。
+代价是 `/api/pipeline/jobs` 里看不到它的进度（只有日志）—— 这是明确接受的取舍。
+
+默认 `enabled=False`、默认 16:40 HKT（A 股是 15:35），且**刻意不设 15:00 时间下限**
+（港股有半日市，下限会把半日市的同步永久挡掉），由
+`test_hk_schedule_has_no_time_floor_unlike_review` 钉住这个「与 A 股不同」是故意的。
+
+#### 变异检验（12/12 被杀）
+
+后端 9 个（`hk_spot.py`）：volume ×100 / amount ×10000 / 换手率取索引 38 /
+时间戳只认横杠 / 去掉 `[63]` 类别闸门 / 停牌行保留 / 全批失败软返回 `[]` /
+`hk_spot_code` 不校验 5 位 / `hk_spot_symbol` 不过滤衍生品 —— **全部被杀**。
+注册表 3 个：HK realtime 源写回 eastmoney / 删掉 note 的范围说明 /
+depth5 reason 去掉实测证据 —— **全部被杀**。
+
+⚠️ 变异脚本本身也有个坑：第一版把「断言锚点唯一」写在 `try` 外面，锚点没匹配上时
+脚本直接崩在**恢复文件之前**，把变异体留在了工作区。改成 `try/finally` 恢复 +
+事后 `cmp` 校验字节一致才算完。
+
+#### 刻意不做的事
+
+- **`hk_spot.py` 不处理港股指数**（`hkHSI` 等，`[63]='ZS'`）。指数已有新浪链路
+  （`sina.hk_index.fetch_hk_index_spot`）且带白名单闸门；两处都产出指数行情会造成
+  **双份真相**。代码段非 5 位数字一律拒收，靠「代码格式 + `[63]` 类别」双重闸门挡污染，
+  不需要新浪那种黑名单。
+- **不产出五档**。港股该端点五档恒 0，伪造盘口比没有盘口危险。
+- **`fetch_quotes()` 没有顺手改**。它零调用方（死代码），改它等于给不存在的消费方
+  写代码；接通自选时再一并处理（届时应先决定是删除还是改造）。
+- **没有把 `market` 参数加到 `watchlist.py` 的 23 个路由上**。见下节：真正的挡点是
+  enriched 读取器，先加参数只会得到一批「接受 market 但返回 A 股数据」的端点 ——
+  比不加更危险。
+
 ### PR3 剩余（未开始）
 
 | 项 | 状态 |
 |---|---|
 | ~~前端共享层 + `marketContent.ts`~~ | ✅ **已完成**（见上节）。⚠️ `Market*` 命名空间确已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用 → 新文件取小写 `lib/market.ts` 避撞 |
 | K线 / 详情 | ✅ **已完成**（见上节）。`lib/kline-market-adapter.ts` + `StockDetailBody.tsx` 注册表；🔴 `lib/stockPreviewStore.ts` 那道写死 `/^\d{6}\.(SH\|SZ\|BJ)$/` 的**第一道硬墙已拆**（改为 `symbolMarket(symbol) === null` 才拒），港股代码现在能打开详情抽屉 |
-| 自选（watchlist） | ❌ **仍被后端挡住**：`app/services/watchlist.py` 零市场感知，且港股**没有实时行情端点**可供自选列表取价（腾讯 spot 是单源且当前 IP 被封）。前端能力开关已就位（`capabilities.watchlist = false` → 入口隐藏），后端接通后只需把这一位翻成 `true` |
+| 自选（watchlist） | ❌ **仍被后端挡住，但挡点已变**（原先记的「港股没有实时行情端点」已被 `plugins/tencent/hk_spot.py` 解决，见下节）。🔴 真正的挡点是**数据路由**：`GET /api/watchlist/enriched` 只读 `repo.get_enriched_latest()` / `get_enriched_latest_asset()`，这两个读取器**零 market 参数**、只认 A 股三张缓存表；港股侧只有**逐标的**的 `get_hk_daily()`（`_scan_hk_enriched_symbol` + 读时重算），没有「最新日全量快照」读取器。⚠️ 另注：`services/watchlist.py:440 fetch_quotes()` 经 grep 确认**零调用方**（死代码），接通时不要误以为它是取价入口。前端能力开关已就位（`capabilities.watchlist = false` → 入口隐藏），后端接通后只需把这一位翻成 `true` |
 | 15 分钟延时标注 | 🟡 **指数页 + 个股详情页已完成**：新建 `QuoteDelayBadge`（中性灰，**不复用** `QuoteFreshnessBadge` —— 其 `'delayed'` 语义是异常，文案「请检查数据源与连接」），读接口 `quote_delay_minutes`。❌ 自选列表接入仍待做（依赖上面那项） |
 | 空态契约文案 | 🟡 **指数页 + 个股日K已完成**：日K按 `empty_reason` 三态分文案，`no_enriched` 明确写出「刻意不回退原始价」与 `coverage.json` 的 `uncovered` 拒算路径。❌「港股无概念板块数据源」文案仍不存在 |
-| 能力矩阵 market 维（`:918`） | ❌ PR2 刻意延后至此，仍未做 |
-| 指数同步接调度 | ❌ 未接线（当前只有手动 `POST /api/hk/sync_index_daily`；前端指数页已提供对应同步按钮） |
-| 前端三份硬编码指数副本 | 🟡 `Layout.tsx` ✅ 改为 `coreIndexes(DEFAULT_MARKET)`、`Indices.tsx` ✅ `PINNED_INDEXES` 已删除；❌ `review/Page.tsx:787-801` 仍是第三份硬编码，且 `:793` 的缩写表把**恒生科技指数**和**恒生中国企业指数**都压成「恒生」（`marketContent.test.ts` 已加回归护栏，但**尚未修 `review/Page.tsx` 本身**） |
+| 能力矩阵 market 维（`:918`） | ✅ **已完成**（见下节）。注册表逐项声明 `markets`，`build_capability_matrix` / `resolve_capability_sources` / `capability_gate` 三处全部带 `market` 维，`GET /api/settings/capability-matrix?market=` 非法值 **400**（不静默回落 CN） |
+| 指数同步接调度 | ✅ **已完成**（见下节）。独立 job `hk_daily_sync`，默认关闭、默认 16:40 HKT、**刻意不设时间下限**（港股有半日市） |
+| 前端三份硬编码指数副本 | ✅ **已完成**（见下节）。`Layout.tsx` / `Indices.tsx` / `review/Page.tsx` 三份副本全部收敛到 `lib/marketContent.ts`；`review/Page.tsx:793` 把恒生科技与恒生中国企业都压成「恒生」的缩写冲突已修（`indexShort` 派生自 `CoreIndex.compactName`，另留 `LEGACY_INDEX_ALIAS` 兼容旧文案） |
 | 侧栏指数条 market 感知 + 全局市场切换器 | ❌ 侧栏仍固定渲染 A 股核心四只；全局导航无市场切换器，当前只能在指数页内切换（方案 §8 规则 4「未就绪直接隐藏入口」—— K线/自选未接通前不放到全局） |
 
 ## 15. 风险

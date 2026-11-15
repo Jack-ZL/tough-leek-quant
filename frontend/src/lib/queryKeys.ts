@@ -4,6 +4,7 @@
  * - 新增查询只需在此加一行，所有消费方自动引用。
  * - SSE invalidation 基于 SSE_INVALIDATE_PREFIXES 列表，新增 key 无需改 useQuoteStream。
  */
+import { type Market } from '@/lib/market'
 
 // ===== Query Key 工厂 =====
 
@@ -37,7 +38,16 @@ export const QK = {
 	preferences: ['preferences'] as const,
 	soundPacks: ['sound-packs'] as const,
 	dataSources: ['data-sources'] as const,
-	capabilityMatrix: ['capability-matrix'] as const,
+	/**
+	 * 能力路由矩阵。
+	 *
+	 * 🔴 带 market 时 key 追加市场段（方案 §7：缓存 key 必须带 market，否则 CN/HK
+	 * 响应互相污染）。不传 market 时返回裸前缀 `['capability-matrix']`：既是
+	 * 「CN（后端默认）」的取数 key，也是 invalidate 的前缀 key —— 一次失效
+	 * 覆盖所有市场，与既有调用点行为完全一致。
+	 */
+	capabilityMatrix: (market?: Market) =>
+		(market ? ['capability-matrix', market] : ['capability-matrix']) as readonly string[],
 	quoteStatus: ['quote-status'] as const,
 	quoteInterval: ['quote-interval'] as const,
 	marketTradingStatus: ['market-trading-status'] as const,

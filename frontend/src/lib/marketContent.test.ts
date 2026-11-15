@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_MARKET, MARKETS, isMarket, normalizeMarket } from './market'
-import { MARKET_CONTENT, coreIndexes, indexDisplayName, marketContent, marketToday, symbolMarket } from './marketContent'
+import { MARKET_CONTENT, coreIndexFullNames, coreIndexes, indexCompactName, indexDisplayName, marketContent, marketToday, symbolMarket } from './marketContent'
 
 describe('normalizeMarket: 展示层兜底 CN, 容忍大小写与空白', () => {
   it('已登记市场原样通过', () => {
@@ -93,6 +93,58 @@ describe('短名: 唯一且不超侧栏 85px 预算', () => {
     expect(bySymbol.HSTECH).not.toBe(bySymbol.HSCEI)
     expect(bySymbol.HSTECH).toBe('恒生科技')
     expect(bySymbol.HSCEI).toBe('国企指数')
+  })
+})
+
+describe('紧凑名 compactName: 极窄处(1~2 字位)展示名', () => {
+  // 消费方: custom/review/Page.tsx 的市场摘要条(一行塞四大指数 + 情绪分 + 涨跌结构)。
+  const MAX_COMPACT_CHARS = 2
+
+  it.each(MARKETS)('%s 的紧凑名互不相同', (m) => {
+    const names = coreIndexes(m).map(i => i.compactName).filter(Boolean)
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it.each(MARKETS)('%s 每条核心指数都登记了紧凑名(否则复盘页会退回「去后缀截两字」的撞名算法)', (m) => {
+    for (const i of coreIndexes(m)) {
+      expect(i.compactName, `${i.name} 缺 compactName`).toBeTruthy()
+      expect(i.compactName!.length).toBeLessThanOrEqual(MAX_COMPACT_CHARS)
+    }
+  })
+
+  it('🔴 回归: 恒生科技指数与恒生中国企业指数的紧凑名不得相同', () => {
+    expect(indexCompactName({ name: '恒生科技指数' })).toBe('恒科')
+    expect(indexCompactName({ name: '恒生中国企业指数' })).toBe('国企')
+    expect(indexCompactName({ name: '恒生科技指数' }))
+      .not.toBe(indexCompactName({ name: '恒生中国企业指数' }))
+  })
+
+  it('A股紧凑名沿用单字(存量摘要条布局不变)', () => {
+    expect(indexCompactName({ name: '上证指数' })).toBe('上')
+    expect(indexCompactName({ symbol: '399006.SZ' })).toBe('创')
+  })
+
+  it('查不到返回 null, 不猜、不截字', () => {
+    expect(indexCompactName({ name: '中证白酒指数', symbol: '399997.SZ' })).toBeNull()
+    expect(indexCompactName({})).toBeNull()
+    expect(indexCompactName({ name: null, symbol: null })).toBeNull()
+  })
+})
+
+describe('coreIndexFullNames: 供消费方拼批量替换正则', () => {
+  it('🔴 按长度降序 —— 否则「恒生指数」会先于「恒生科技指数」命中', () => {
+    const names = coreIndexFullNames()
+    for (let i = 1; i < names.length; i++) {
+      expect(names[i - 1].length).toBeGreaterThanOrEqual(names[i].length)
+    }
+    expect(names.indexOf('恒生科技指数')).toBeLessThan(names.indexOf('恒生指数'))
+  })
+
+  it('跨市场去重且覆盖两个市场的核心指数', () => {
+    const names = coreIndexFullNames()
+    expect(new Set(names).size).toBe(names.length)
+    expect(names).toContain('上证指数')
+    expect(names).toContain('恒生中国企业指数')
   })
 })
 

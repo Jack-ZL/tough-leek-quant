@@ -128,8 +128,8 @@ export function SettingsImportCenterPanel() {
 		enabled: view === 'import' && !review && !result
 	})
 	const matrix = useQuery({
-		queryKey: QK.capabilityMatrix,
-		queryFn: api.capabilityMatrix,
+		queryKey: QK.capabilityMatrix(),
+		queryFn: () => api.capabilityMatrix(),
 		enabled: review?.kind === 'source'
 	})
 	const entries = review?.kind === 'resources' ? review.preview.entries : []
@@ -207,7 +207,7 @@ export function SettingsImportCenterPanel() {
 
 	async function refreshInstalled() {
 		await Promise.allSettled([
-			QK.extensionPackages, QK.extPages, QK.dataSources, QK.capabilityMatrix,
+			QK.extensionPackages, QK.extPages, QK.dataSources, QK.capabilityMatrix(),
 			QK.preferences, QK.capabilities, QK.quoteStatus,
 		].map(queryKey => qc.invalidateQueries({ queryKey })))
 	}

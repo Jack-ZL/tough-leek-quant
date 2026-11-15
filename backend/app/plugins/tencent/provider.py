@@ -12,6 +12,12 @@
   日K请用 eastmoney/baostock; adj_factor/financial 上游无对应接口
 - 北交所支持 (bj 前缀, 实测 920002 全字段含五档)
 
+🔴 港股**不走本 provider**: ``qt.gtimg.cn`` 同端点也返回港股 (``hk`` 前缀), 但字段
+布局与 A 股不同 (78 列 vs 88 列, volume 单位股/amount 单位元/时间戳格式/换手率
+索引全都不一样), 归一化单独放在 :mod:`app.plugins.tencent.hk_spot`, 由服务层直连
+调用 —— 港股不是偏好路由市场 (见 ``capabilities.ROUTED_MARKETS``), 声明进
+``plugin.yaml`` 会让路由框架以为可以按 ``realtime_data_provider`` 切到港股。
+
 设置页手动切换 (无自动回退): 默认路由仍为 tickflow, 用户在数据源卡片显式切换后生效。
 """
 

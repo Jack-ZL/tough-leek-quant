@@ -1040,17 +1040,32 @@ def list_data_sources() -> dict:
 
 
 @router.get("/capability-matrix")
-def get_capability_matrix() -> dict:
+def get_capability_matrix(market: str | None = None) -> dict:
     """能力 x 源路由矩阵: 能力注册表 + 各源能力声明 + 当前路由偏好, 设置页一次拉全。
 
     偏好值经 preferences getters 注入 (自带合法源校验, 非法值回退默认),
     TickFlow 当前档位由 tickflow policy 注入 (候选按档位过滤),
     组装逻辑在 data_providers.capabilities, 本层保持薄。
+
+    ``market`` 缺省 CN (设置页现有调用不传参, 行为不变)。🔴 传了**非法**值返回
+    400 而不是静默回退 CN —— 静默回退会让用户以为看到的是港股能力矩阵
+    (方案 §7: market 作显式 query 参数贯穿每个 API, 不用全局拦截器)。
     """
-    from app.data_providers.capabilities import build_capability_matrix
+    from app.data_providers.capabilities import SUPPORTED_MARKETS, build_capability_matrix
+    from app.market import Market, parse_market
     from app.services import preferences
     from app.services.realtime_failover import get_failover
     from app.tickflow import policy
+
+    if market is None:
+        resolved = Market.CN
+    else:
+        resolved = parse_market(market)
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"未知 market {market!r} (支持: {', '.join(SUPPORTED_MARKETS)})",
+            )
 
     result = build_capability_matrix(
         {
@@ -1063,6 +1078,7 @@ def get_capability_matrix() -> dict:
             "financial_data_provider": preferences.get_financial_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
+        market=resolved.value,
     )
     # P1-12 layer2: 实时热备状态 + 备源偏好一并透出, 前端数据源页展示
     result["realtime_failover"] = get_failover().status()
@@ -2853,7 +2869,8 @@ class HkSyncScheduleIn(BaseModel):
 def update_hk_sync_schedule(req: HkSyncScheduleIn, request: Request) -> dict:
     """保存港股定时同步调度并立即更新 APScheduler job。
 
-    - enabled=True: 注册/更新 job(工作日定时同步港股维表/日K/复权因子/enriched)
+    - enabled=True: 注册/更新 job(工作日定时同步港股维表/日K/复权因子/enriched,
+      以及**指数日K** —— 指数走腾讯源、与个股链路解耦, 见 app.jobs.hk_pipeline)
     - enabled=False: 移除 job
 
     与定时复盘不同, 这里**不做前置依赖校验**: 港股同步不需要 AI Key, 维表为空时

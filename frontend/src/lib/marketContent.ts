@@ -46,6 +46,15 @@ export interface CoreIndex {
 	 * 由 `marketContent.test.ts` 钉住唯一性与长度。
 	 */
 	readonly shortName?: string
+	/**
+	 * 极窄处(1~2 字位)的紧凑名, 比 `shortName` 更激进。当前唯一消费方是复盘页的
+	 * 市场摘要条(一行塞四大指数 + 情绪分 + 涨跌结构 + 成交额)。
+	 *
+	 * 🔴 与 `shortName` 同样**必须市场内唯一**, 且**不得由「去掉后缀再截前两字」
+	 * 这类算法生成** —— 那正是「恒生科技指数 / 恒生中国企业指数 → 恒生 / 恒生」
+	 * 撞名的成因。紧凑名是内容, 逐个写死在这里, 由测试钉住唯一性。
+	 */
+	readonly compactName?: string
 }
 
 export interface MarketContent {
@@ -81,10 +90,10 @@ export const MARKET_CONTENT: Record<Market, MarketContent> = {
 		timeZone: 'Asia/Shanghai',
 		symbolPattern: /^[0-9]{6}\.(?:BJ|SH|SZ)$/,
 		coreIndexes: [
-			{ symbol: '000001.SH', name: '上证指数' },
-			{ symbol: '399001.SZ', name: '深证成指' },
-			{ symbol: '399006.SZ', name: '创业板指' },
-			{ symbol: '000680.SH', name: '科创综指' },
+			{ symbol: '000001.SH', name: '上证指数', compactName: '上' },
+			{ symbol: '399001.SZ', name: '深证成指', compactName: '深' },
+			{ symbol: '399006.SZ', name: '创业板指', compactName: '创' },
+			{ symbol: '000680.SH', name: '科创综指', compactName: '科' },
 		],
 	},
 	HK: {
@@ -93,10 +102,10 @@ export const MARKET_CONTENT: Record<Market, MarketContent> = {
 		timeZone: 'Asia/Hong_Kong',
 		symbolPattern: /^[0-9]{5}\.HK$/,
 		coreIndexes: [
-			{ symbol: 'HSI', name: '恒生指数', shortName: '恒生指数' },
-			{ symbol: 'HSTECH', name: '恒生科技指数', shortName: '恒生科技' },
-			{ symbol: 'HSCEI', name: '恒生中国企业指数', shortName: '国企指数' },
-			{ symbol: 'HSCCI', name: '恒生香港中资企业指数', shortName: '中资企业' },
+			{ symbol: 'HSI', name: '恒生指数', shortName: '恒生指数', compactName: '恒指' },
+			{ symbol: 'HSTECH', name: '恒生科技指数', shortName: '恒生科技', compactName: '恒科' },
+			{ symbol: 'HSCEI', name: '恒生中国企业指数', shortName: '国企指数', compactName: '国企' },
+			{ symbol: 'HSCCI', name: '恒生香港中资企业指数', shortName: '中资企业', compactName: '中资' },
 		],
 	},
 }
@@ -141,4 +150,44 @@ export function coreIndexes(market?: unknown): readonly CoreIndex[] {
 /** 窄处展示名: 有短名用短名, 否则用权威全名。 */
 export function indexDisplayName(index: CoreIndex): string {
 	return index.shortName ?? index.name
+}
+
+/**
+ * 极窄处(1~2 字位)展示名: 查核心指数表的 `compactName`。
+ *
+ * **查不到返回 `null`, 不猜、不用「去后缀截前两字」兜底** —— 那正是复盘页旧缩写表
+ * 把「恒生科技指数」和「恒生中国企业指数」双双压成「恒生」的成因。调用方拿到
+ * `null` 后自己决定回退(复盘页回退到全名截断, 因为存量报告文本里会出现
+ * 「科创50」这类不在核心指数表里的旧名)。
+ *
+ * 🟡 遍历**所有**市场而不是要求调用方先给 market: 消费方(复盘页)读的是**存量
+ * 报告文本**, 里面没有市场字段可问。这属展示层查表, 按 `lib/market.ts` 的口径
+ * 允许跨市场兜底; 名称与代码在两个市场间不重叠, 不会串。
+ */
+export function indexCompactName(index: {
+	name?: string | null
+	symbol?: string | null
+}): string | null {
+	for (const market of MARKETS) {
+		for (const core of MARKET_CONTENT[market].coreIndexes) {
+			if (!core.compactName) continue
+			if ((index.name != null && core.name === index.name)
+				|| (index.symbol != null && core.symbol === index.symbol)) return core.compactName
+		}
+	}
+	return null
+}
+
+/**
+ * 全部核心指数的**权威全名**清单(跨市场, 按长度降序)。
+ *
+ * 供消费方拼「全名 → 紧凑名」的批量替换正则: 长度降序是必须的, 否则
+ * `恒生指数` 会先于 `恒生科技指数` 命中, 把后者替换成「恒指科技指数」。
+ */
+export function coreIndexFullNames(): string[] {
+	const names: string[] = []
+	for (const market of MARKETS) {
+		for (const core of MARKET_CONTENT[market].coreIndexes) names.push(core.name)
+	}
+	return [...new Set(names)].sort((a, b) => b.length - a.length)
 }

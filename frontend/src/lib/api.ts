@@ -4,6 +4,7 @@
 // Prod:同源(FastAPI 托管前端 dist)
 
 import { toast } from '@/components/Toast'
+import { type Market } from './market'
 import type { NavLayout } from './navLayout'
 
 const BASE = ''
@@ -2961,20 +2962,29 @@ export interface CapabilityRoute {
 	id: string
 	label: string
 	desc: string
-	field: ProviderField | null                    // null = 不可路由能力 (仅 TickFlow 提供)
+	field: ProviderField | null                    // null = 不可路由能力 (仅 TickFlow 提供 / 直连市场)
 	default: string
 	tf_tier: string                                  // TickFlow 所需最低订阅档位
 	tf_available: boolean                            // 当前 TickFlow 档位是否提供该能力
 	usable: boolean                                  // 生效源当前能否真正提供 (各页能力门控的统一判定)
-	current: string                                  // 原始偏好值
-	current_display: string
-	effective: string                                // 当前生效源 (独立路由, current 即生效)
-	effective_display: string
-	candidates: CapabilityCandidate[]                // 当前可用候选 (按当前 TickFlow 档位过滤)
+	// 🔴 直连市场 (routed=false, 如 HK) 没有偏好可路由, 以下四项为 null:
+	// 前端不得把它们当字符串直接 .toLowerCase() / 渲染路由下拉。
+	current: string | null                           // 原始偏好值
+	current_display: string | null
+	effective: string | null                         // 当前生效源 (路由市场: current 即生效; 直连市场: 声明的源)
+	effective_display: string | null
+	candidates: CapabilityCandidate[]                // 当前可用候选 (按当前 TickFlow 档位过滤; 直连市场恒空)
 	pending: CapabilityCandidate[]                   // 声明了该能力但未就绪的源 (置灰提示)
 	// P1-12 layer1: 静态互补 — TickFlow 缺能力且选定源未声明时, 免费内置源自动补授
 	complement?: string | null                       // 互补源名 (null = 无)
 	complement_display?: string | null               // 互补源展示名
+	// ===== market 维 (方案 §6): 后端 CAPABILITY_REGISTRY[*].markets 逐项声明 =====
+	market: Market                                   // 本行所属市场
+	routed: boolean                                  // false = 直连固定源, 无偏好路由 (HK)
+	market_supported: boolean                        // 该市场是否支持此能力
+	market_source: string | null                     // 直连市场声明的源名 (不支持时 null)
+	market_reason: string | null                     // 🔴 不支持时**必有**原因; 前端据此隐藏入口并说明
+	market_note: string | null                       // 支持时的口径备注 (如港股复权是加性偏移)
 }
 
 /** P1-12 layer2: 实时行情热备状态 (熔断→粘滞切备源→冷却半开探测→切回) */
@@ -2991,6 +3001,10 @@ export interface RealtimeFailoverStatus {
 
 export interface CapabilityMatrix {
 	tickflow_tier?: string                           // TickFlow 当前档位基础名 (none/free/...)
+	/** 本矩阵所属市场 (后端缺省 CN)。🔴 与 QK.capabilityMatrix(market) 必须一致, 否则缓存串市场。 */
+	market: Market
+	/** false = 直连固定源市场 (HK): 无偏好路由, 行内 field/candidates 恒空。 */
+	routed: boolean
 	capabilities: CapabilityRoute[]
 	// P1-12 layer2: 实时热备状态 + 备源偏好 (auto/off/具体源名)
 	realtime_failover?: RealtimeFailoverStatus
@@ -3993,7 +4007,19 @@ export const api = {
 			method: 'POST', body: JSON.stringify({ action, reset_routes: resetRoutes }), quiet: true,
 		}),
 	dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
-	capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
+	/**
+	 * 能力路由矩阵。
+	 *
+	 * 不传 market → 后端缺省 CN（设置页/引导页等既有调用零改动）。
+	 * 🔴 传了非法值**不做**客户端兜底，原样发给后端吃 400 —— 与
+	 * `GET /api/settings/capability-matrix` 的「非法 market 不静默回退 CN」同款教条。
+	 * 调用点一律写成 `queryFn: () => api.capabilityMatrix(...)`，不要直接把本函数
+	 * 当 queryFn 传（react-query 会把 QueryFunctionContext 塞进第一个实参）。
+	 */
+	capabilityMatrix: (market?: Market) =>
+		request<CapabilityMatrix>(
+			`/api/settings/capability-matrix${market ? `?market=${market}` : ''}`,
+		),
 	dataSource: (name: string) => request<CustomSourceConfig>(`/api/settings/data-sources/${encodeURIComponent(name)}`),
 	saveDataSource: (config: CustomSourceConfig) =>
 		request<DataSourcesResponse>('/api/settings/data-sources', {

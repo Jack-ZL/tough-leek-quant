@@ -180,7 +180,13 @@ def list_strategies(engine) -> dict[str, Any]:
 
 
 def list_data_capabilities() -> dict[str, Any]:
-    """返回能力目录及当前生效数据源的可用状态。"""
+    """返回能力目录及当前生效数据源的可用状态。
+
+    ⚠️ 固定按 **CN** 市场口径 (``resolve_capability_sources`` 的缺省值): 本工具
+    没有 market 入参, AI 助手链路目前也只服务 A 股。返回行里带 ``market`` /
+    ``market_supported`` / ``market_reason`` 字段, 消费方 (含 LLM) 可据此判断
+    口径; 将来接入港股时给 schema 加 market 参数即可, 不必改本函数体。
+    """
     from app.data_providers.capabilities import CAPABILITY_REGISTRY, resolve_capability_sources
     from app.tickflow import policy
 

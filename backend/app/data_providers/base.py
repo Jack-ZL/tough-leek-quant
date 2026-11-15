@@ -22,6 +22,15 @@ class ProviderRequestError(RuntimeError):
 
 @dataclass(frozen=True)
 class ProviderCapabilities:
+    """单个源「声明了哪些数据集」的布尔集。
+
+    ⚠️ 这里**没有** market 维, 是刻意的: 港股链路直连固定源 (东财 push2 /
+    datacenter-web、腾讯 ifzq), 不经 ``MarketDataProvider`` 插件路由, 给本类加
+    market 字段当下零消费方。市场支持度的唯一权威是
+    ``data_providers/capabilities.py`` 的 ``CAPABILITY_REGISTRY[*].markets``
+    (方案 §6)。将来港股改走插件路由时, 再把 market 维下沉到这里。
+    """
+
     instruments: bool = False
     daily: bool = False
     adj_factor: bool = False

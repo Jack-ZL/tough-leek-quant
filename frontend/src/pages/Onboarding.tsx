@@ -393,7 +393,7 @@ function DataSourceStep({ onNext, onBack }: { onNext: () => void; onBack: () => 
 		onSuccess: (data: any, vars) => {
 			qc.invalidateQueries({ queryKey: QK.dataSources })
 			qc.invalidateQueries({ queryKey: QK.capabilities })
-			qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+			qc.invalidateQueries({ queryKey: QK.capabilityMatrix() })
 			qc.invalidateQueries({ queryKey: QK.settings })   // TickFlow 脱敏串/档位随 settings 刷新
 			const setError = (msg: string | null) => setErrors(s => ({ ...s, [vars.name]: msg }))
 			const setSaved = (msg: string | null) => {
@@ -706,8 +706,8 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
 	const settings = useSettings()
 	const prefs = usePreferences()
 	const matrix = useQuery({
-		queryKey: QK.capabilityMatrix,
-		queryFn: api.capabilityMatrix,
+		queryKey: QK.capabilityMatrix(),
+		queryFn: () => api.capabilityMatrix(),
 		staleTime: 30_000,
 	})
 
@@ -741,7 +741,7 @@ function ResultStep({ onNext, onBack }: { onNext: () => void; onBack: () => void
 				setAppliedChanges(changes)
 				return qc.invalidateQueries({ queryKey: QK.preferences })
 			})
-			.then(() => qc.invalidateQueries({ queryKey: QK.capabilityMatrix }))
+			.then(() => qc.invalidateQueries({ queryKey: QK.capabilityMatrix() }))
 			.catch(e => setApplyError(`自动设置能力路由失败: ${(e as Error).message}`))
 	}, [matrix.data])   // eslint-disable-line react-hooks/exhaustive-deps
 

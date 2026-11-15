@@ -119,8 +119,12 @@ function tagCls(active: boolean, disabled = false, interactive = true) {
 		}`
 }
 
-/** 源名 → 展示名 (特殊值 + 候选/待就绪表查找, 找不到回退原始名) */
-function displayOfName(matrix: CapabilityMatrix | undefined, name: string): string {
+/** 源名 → 展示名 (特殊值 + 候选/待就绪表查找, 找不到回退原始名)
+ *  只吃 capabilities 一项: patchMatrix 乐观更新时手里只有行数组, 没有完整矩阵。 */
+function displayOfName(
+	matrix: Pick<CapabilityMatrix, 'capabilities'> | undefined,
+	name: string,
+): string {
 	if (name === 'tickflow') return 'TickFlow'
 	if (name === 'same_as_daily') return '跟随日K'
 	for (const cap of matrix?.capabilities ?? []) {
@@ -228,8 +232,10 @@ function HotStandbyBlock({ cap, failover, backupPref, onChange }: {
  *  candidates 只含当前可提供该能力的源; 未就绪源 (pending) 置灰提示;
  *  生效源无法提供该能力 (usable=False, 无论档位不足还是源未就绪) 时显示琥珀警示。
  *  P1-12 layer1: complement 非空 → 展示"静态互补"来源提示;
- *  P1-12 layer2: 实时卡额外渲染热备状态 + 备源偏好选择 (failover prop 仅实时卡传入)。 */
-function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBackupPrefChange }: {
+ *  P1-12 layer2: 实时卡额外渲染热备状态 + 备源偏好选择 (failover prop 仅实时卡传入)。
+ *  🔴 market 维: market_supported=false → 只渲染「X 不支持 + 原因」, 不渲染路由 UI
+ *  (方案 §6「明确声明不支持 + 前端隐藏 + 说明原因, 不显示假数据」)。 */
+export function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBackupPrefChange }: {
 	cap: CapabilityRoute
 	pendingKey: string | null
 	onSelect: (field: ProviderField, provider: string) => void
@@ -238,6 +244,33 @@ function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBac
 	onBackupPrefChange?: (value: string) => void
 }) {
 	const Icon = CAP_ICON[cap.id] ?? Database
+	// 🔴 market 维 (方案 §6): 该市场明确不支持此能力 → 只渲染原因, 不渲染路由 UI。
+	// 判定完全来自后端 market_supported/market_reason, 前端不硬编码任何能力名单。
+	if (cap.market_supported === false) {
+		return (
+			<div
+				className="rounded-lg border border-border/40 bg-elevated/10 px-3 py-2.5 flex flex-col opacity-80"
+				title={cap.market_reason ?? undefined}
+			>
+				<div className="flex items-center gap-1.5">
+					<span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted/15">
+						<Icon className="h-3 w-3 text-muted/60" />
+					</span>
+					<div className="text-xs font-medium text-muted/80 truncate">{cap.label}</div>
+					<span className="ml-auto text-[9px] font-medium uppercase tracking-wider text-muted/50 shrink-0">
+						{cap.market} 不支持
+					</span>
+				</div>
+				<div className="mt-1.5 flex items-start gap-1 text-[10px] leading-relaxed text-muted/70">
+					<AlertTriangle className="h-2.5 w-2.5 shrink-0 mt-0.5" />
+					<span>{cap.market_reason || '该市场未提供此能力'}</span>
+				</div>
+				{cap.market_note && (
+					<div className="mt-1 text-[10px] text-muted/60">{cap.market_note}</div>
+				)}
+			</div>
+		)
+	}
 	const busy = (provider: string) => pendingKey === `${cap.field}:${provider}`
 	// 能力中立判定: usable=False 即当前路由的源供不了 (TickFlow 档位不足或插件未就绪同待遇)
 	const unmet = !cap.usable
@@ -251,6 +284,16 @@ function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBac
 				<div className="text-xs font-medium text-foreground truncate">{cap.label}</div>
 			</div>
 			{cap.desc && <div className="mt-1 text-[10px] text-muted/70 truncate">{cap.desc}</div>}
+			{/* market 维: 直连市场的口径备注 (如港股复权是加性偏移、财报货币非统一 CNY)。
+			    这类坑必须显式可见, 不能只躺在后端注册表里。 */}
+			{cap.market_note && (
+				<div
+					className="mt-1 text-[10px] leading-relaxed text-muted/70"
+					title={`「${cap.label}」在 ${cap.market} 的数据口径`}
+				>
+					{cap.market_note}
+				</div>
+			)}
 
 			{/* 当前生效提供方 */}
 			<div className="mt-2 flex items-center gap-1.5 min-w-0">
@@ -348,11 +391,11 @@ function CapabilityCard({ cap, pendingKey, onSelect, failover, backupPref, onBac
 /** 能力路由区 (页面主视图): 每个能力一张卡, 点候选标签即刻切换 (乐观更新) */
 function CapabilityRoutingSection() {
 	const qc = useQueryClient()
-	const matrix = useQuery({ queryKey: QK.capabilityMatrix, queryFn: api.capabilityMatrix })
+	const matrix = useQuery({ queryKey: QK.capabilityMatrix(), queryFn: () => api.capabilityMatrix() })
 	const [pendingKey, setPendingKey] = useState<string | null>(null)
 
 	const invalidateRouting = () => {
-		qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+		qc.invalidateQueries({ queryKey: QK.capabilityMatrix() })
 		qc.invalidateQueries({ queryKey: QK.preferences })
 		qc.invalidateQueries({ queryKey: QK.capabilities })
 		qc.invalidateQueries({ queryKey: QK.quoteStatus })
@@ -360,15 +403,15 @@ function CapabilityRoutingSection() {
 
 	/** 切换前先把变更写进矩阵/偏好缓存, 界面零延迟响应; 失败回滚 */
 	const applyOptimistic = (changes: Partial<Record<ProviderField, string>>) => {
-		const prevMatrix = qc.getQueryData<CapabilityMatrix>(QK.capabilityMatrix)
+		const prevMatrix = qc.getQueryData<CapabilityMatrix>(QK.capabilityMatrix())
 		const prevPrefs = qc.getQueryData<Preferences>(QK.preferences)
-		if (prevMatrix) qc.setQueryData(QK.capabilityMatrix, patchMatrix(prevMatrix, changes))
+		if (prevMatrix) qc.setQueryData(QK.capabilityMatrix(), patchMatrix(prevMatrix, changes))
 		if (prevPrefs) qc.setQueryData(QK.preferences, { ...prevPrefs, ...changes })
 		return { prevMatrix, prevPrefs }
 	}
 
 	const rollback = (ctx: { prevMatrix?: CapabilityMatrix; prevPrefs?: Preferences } | undefined) => {
-		if (ctx?.prevMatrix) qc.setQueryData(QK.capabilityMatrix, ctx.prevMatrix)
+		if (ctx?.prevMatrix) qc.setQueryData(QK.capabilityMatrix(), ctx.prevMatrix)
 		if (ctx?.prevPrefs) qc.setQueryData(QK.preferences, ctx.prevPrefs)
 	}
 
@@ -378,7 +421,7 @@ function CapabilityRoutingSection() {
 			api.updateDataProviders({ [field]: provider } as Partial<Pick<Preferences, ProviderField>>),
 		onMutate: async (v) => {
 			setPendingKey(`${v.field}:${v.provider}`)
-			await qc.cancelQueries({ queryKey: QK.capabilityMatrix })
+			await qc.cancelQueries({ queryKey: QK.capabilityMatrix() })
 			await qc.cancelQueries({ queryKey: QK.preferences })
 			return applyOptimistic({ [v.field]: v.provider })
 		},
@@ -408,7 +451,7 @@ function CapabilityRoutingSection() {
 
 	const resetMut = useMutation({
 		mutationFn: () => api.updateDataProviders(DEFAULT_ROUTING), onMutate: async () => {
-			await qc.cancelQueries({ queryKey: QK.capabilityMatrix })
+			await qc.cancelQueries({ queryKey: QK.capabilityMatrix() })
 			await qc.cancelQueries({ queryKey: QK.preferences })
 			return applyOptimistic(DEFAULT_ROUTING)
 		},
@@ -496,7 +539,7 @@ export function PluginKeyConfig({ plugin }: { plugin: PluginDataSourceItem }) {
 
 	const invalidate = () => {
 		qc.invalidateQueries({ queryKey: QK.dataSources })
-		qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+		qc.invalidateQueries({ queryKey: QK.capabilityMatrix() })
 		qc.invalidateQueries({ queryKey: QK.capabilities })
 		qc.invalidateQueries({ queryKey: QK.quoteStatus })
 	}
@@ -698,7 +741,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
 	const qc = useQueryClient()
 	const prefs = usePreferences()
 	const sources = useQuery({ queryKey: QK.dataSources, queryFn: api.dataSources })
-	const matrix = useQuery({ queryKey: QK.capabilityMatrix, queryFn: api.capabilityMatrix })
+	const matrix = useQuery({ queryKey: QK.capabilityMatrix(), queryFn: () => api.capabilityMatrix() })
 	const [selected, setSelected] = useState<string>('tickflow') // 当前在下方配置的源 name
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
@@ -742,7 +785,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
 	// 数据源集合/插件可用性/档位变化都会改变能力候选集 → 统一连带失效
 	const invalidateSources = () => {
 		qc.invalidateQueries({ queryKey: QK.dataSources })
-		qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+		qc.invalidateQueries({ queryKey: QK.capabilityMatrix() })
 		qc.invalidateQueries({ queryKey: QK.preferences })
 		qc.invalidateQueries({ queryKey: QK.capabilities })
 		qc.invalidateQueries({ queryKey: QK.quoteStatus })

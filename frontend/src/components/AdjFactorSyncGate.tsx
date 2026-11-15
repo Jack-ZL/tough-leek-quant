@@ -19,8 +19,8 @@ const NO_REMIND_KEY = 'tsp_adj_factor_no_remind'
  */
 export function useAdjFactorSyncGate() {
 	const matrix = useQuery({
-		queryKey: QK.capabilityMatrix,
-		queryFn: api.capabilityMatrix,
+		queryKey: QK.capabilityMatrix(),
+		queryFn: () => api.capabilityMatrix(),
 		staleTime: 60_000,
 	})
 	const [pending, setPending] = useState<{ run: () => void } | null>(null)

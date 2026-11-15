@@ -116,8 +116,8 @@ def fake_client(monkeypatch):
 
 @pytest.fixture
 def stub_services(monkeypatch):
-    """把港股同步四步全部换成可编排的桩, 返回调用记录 + 行为控制开关。"""
-    from app.services import instrument_sync_hk, kline_sync_hk
+    """把港股同步各步全部换成可编排的桩, 返回调用记录 + 行为控制开关。"""
+    from app.services import index_sync_hk, instrument_sync_hk, kline_sync_hk
 
     calls: dict[str, Any] = {
         "order": [],
@@ -127,6 +127,8 @@ def stub_services(monkeypatch):
         "adj_rows": 3,
         "adj_failed": [],
         "enriched_written": 10,
+        "index_written": 7,
+        "index_failed": [],
         "raise": {},
         "kwargs": {},
     }
@@ -166,11 +168,18 @@ def stub_services(monkeypatch):
         _maybe_raise("enriched")
         return calls["enriched_written"]
 
+    def fake_index_daily(repo, **kw):
+        calls["order"].append("index_daily")
+        calls["kwargs"]["index_daily"] = kw
+        _maybe_raise("index_daily")
+        return calls["index_written"], list(calls["index_failed"])
+
     monkeypatch.setattr(instrument_sync_hk, "sync_instruments_hk", fake_instruments)
     monkeypatch.setattr(kline_sync_hk, "hk_daily_universe", fake_universe)
     monkeypatch.setattr(kline_sync_hk, "sync_hk_daily", fake_daily)
     monkeypatch.setattr(kline_sync_hk, "sync_hk_adj_factor", fake_adj)
     monkeypatch.setattr(kline_sync_hk, "sync_hk_enriched", fake_enriched)
+    monkeypatch.setattr(index_sync_hk, "sync_hk_index_daily", fake_index_daily)
     return calls
 
 
@@ -329,13 +338,42 @@ def test_hk_task_never_touches_job_store_or_run_slot(monkeypatch, no_active_job,
     assert slot_calls == [], f"港股不得占用重任务执行槽, 实际: {slot_calls}"
 
 
-def test_hk_task_swallows_unexpected_exception(monkeypatch, no_active_job):
+def test_hk_task_swallows_unexpected_exception(monkeypatch, no_active_job, stub_services):
     """港股任何未预期异常都只记日志, 绝不抛回 APScheduler。"""
     def boom(*a, **kw):
         raise RuntimeError("港股炸了")
 
     monkeypatch.setattr(hk_pipeline, "run_hk_sync", boom)
-    assert hk_pipeline.hk_sync_task(_FakeRepo(Path("/tmp/x"))) is None  # 不抛
+    result = hk_pipeline.hk_sync_task(_FakeRepo(Path("/tmp/x")))  # 不抛
+    # 🔴 个股阶段炸了, 指数阶段**仍须执行**: 两条链路源不同(东财 vs 腾讯)、表不同、
+    # 失败语义不同, 把指数挂在个股后面会让东财被封时指数页一起静默变陈旧。
+    assert "index_daily" in stub_services["order"]
+    assert result is not None
+    assert result["index_daily_written"] == stub_services["index_written"]
+
+
+def test_hk_task_returns_none_only_when_both_stages_raise(monkeypatch, no_active_job):
+    """个股与指数**都**炸时才返回 None —— 且仍然不抛。"""
+    def boom(*a, **kw):
+        raise RuntimeError("炸了")
+
+    monkeypatch.setattr(hk_pipeline, "run_hk_sync", boom)
+    monkeypatch.setattr(hk_pipeline, "run_hk_index_sync", boom)
+    assert hk_pipeline.hk_sync_task(_FakeRepo(Path("/tmp/x"))) is None
+
+
+def test_hk_task_merges_stock_and_index_results(monkeypatch, no_active_job, stub_services,
+                                                fake_client):
+    """返回 dict 同时含个股与指数计数(供日志/测试断言, 调度路径不消费)。"""
+    result = hk_pipeline.hk_sync_task(_FakeRepo(Path("/tmp/x")))
+    assert result is not None
+    assert result["daily_written"] == stub_services["daily_written"]
+    assert result["enriched_written"] == stub_services["enriched_written"]
+    assert result["index_daily_written"] == stub_services["index_written"]
+    assert result["index_failed"] == []
+    # 个股先、指数后: 指数不依赖个股产物, 但顺序固定便于日志比对
+    order = stub_services["order"]
+    assert order.index("index_daily") == len(order) - 1
 
 
 def test_hk_task_reads_include_cny_counter_from_prefs(monkeypatch, no_active_job,
@@ -350,6 +388,70 @@ def test_hk_task_reads_include_cny_counter_from_prefs(monkeypatch, no_active_job
     monkeypatch.setattr(hk_pipeline, "run_hk_sync", spy)
     hk_pipeline.hk_sync_task(_FakeRepo(Path("/tmp/x")))
     assert seen["include_cny_counter"] is True
+
+
+# ============================================================
+# 2b. run_hk_index_sync: 指数链路与个股链路解耦
+# ============================================================
+
+
+def test_index_sync_runs_even_when_universe_empty(tmp_path, stub_services, fake_client,
+                                                  no_active_job):
+    """🔴 个股硬中止(维表空)时指数仍同步 —— 指数不依赖个股维表。"""
+    stub_services["universe"] = []
+    result = hk_pipeline.hk_sync_task(_FakeRepo(tmp_path))
+    assert any("维表为空" in e for e in result["errors"]), "个股阶段应已硬中止"
+    assert "index_daily" in stub_services["order"]
+    assert result["index_daily_written"] == stub_services["index_written"]
+
+
+def test_index_sync_runs_even_when_adj_factor_incomplete(tmp_path, stub_services,
+                                                         fake_client, no_active_job):
+    """🔴 复权因子不完整 → 个股 fail-closed 跳过 enriched, 但指数照跑。
+
+    指数不做复权, 不存在「因子不完整 → 指标失真」这条依赖链。
+    """
+    stub_services["adj_failed"] = ["00700"]
+    result = hk_pipeline.hk_sync_task(_FakeRepo(tmp_path))
+    assert "enriched(复权因子不完整)" in result["skipped"]
+    assert "index_daily" in stub_services["order"]
+    assert result["index_daily_written"] == stub_services["index_written"]
+
+
+def test_index_sync_reports_written_and_failed(tmp_path, stub_services):
+    stub_services["index_written"] = 42
+    stub_services["index_failed"] = ["HSI", "HSTECH"]
+    result = hk_pipeline.run_hk_index_sync(_FakeRepo(tmp_path))
+    assert result == {"index_daily_written": 42, "index_failed": ["HSI", "HSTECH"]}
+
+
+def test_index_sync_swallows_service_exception(tmp_path, stub_services):
+    """指数阶段异常只记日志 + 进 errors, 绝不上抛(与个股阶段同款纪律)。"""
+    stub_services["raise"]["index_daily"] = RuntimeError("腾讯炸了")
+    result = hk_pipeline.run_hk_index_sync(_FakeRepo(tmp_path))
+    assert result["index_daily_written"] == 0
+    assert result["index_failed"] == []
+    assert any("指数" in e for e in result["errors"])
+
+
+def test_index_sync_passes_throttled_progress(tmp_path, stub_services):
+    """on_progress 必须接上节流日志器, 否则 27 个标的的进度无处可查。"""
+    hk_pipeline.run_hk_index_sync(_FakeRepo(tmp_path))
+    assert callable(stub_services["kwargs"]["index_daily"]["on_progress"])
+
+
+def test_index_sync_does_not_touch_job_store_or_run_slot(tmp_path, stub_services,
+                                                         no_active_job, monkeypatch):
+    """指数阶段同样不得进 job_store / 抢执行槽(隔离纪律覆盖整条港股链路)。"""
+    import app.services.pipeline_jobs as pj
+
+    slot_calls: list[str] = []
+    monkeypatch.setattr(
+        pj, "try_acquire_run_slot", lambda owner="": slot_calls.append(owner) or True
+    )
+    hk_pipeline.run_hk_index_sync(_FakeRepo(tmp_path))
+    assert no_active_job.created == 0
+    assert slot_calls == []
 
 
 # ============================================================

@@ -32,6 +32,7 @@ import type { ReportExportInput } from '@/lib/reportExport'
 import { toast } from '@/components/Toast'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { useReviewState } from '@/lib/useReviewStore'
+import { coreIndexFullNames, indexCompactName } from '@/lib/marketContent'
 import {
 	startReviewGeneration, resetReview, isReviewGenerating, cancelReviewGeneration,
 	type ReviewPhase,
@@ -783,21 +784,45 @@ export function ReviewPage() {
 // 仅一行:三大指数涨跌 · 情绪分 · 涨停结构 · 成交额
 // 详细数据请去 Dashboard 看,这里只给 AI 报告提供背景参照
 // ================================================================
-// 指数简称映射:全称太长(上证指数/深证成指/创业板指/科创综指)摘要条放不下,统一缩成单字
-const INDEX_SHORT: Record<string, string> = {
-	'上证指数': '上', '深证成指': '深', '创业板指': '创', '科创综指': '科', '科创50': '科',
-}
+// 指数紧凑名: 单一权威是 lib/marketContent.ts 的 CoreIndex.compactName(方案 §8 规则 2)。
+// 这里曾是**第三份**硬编码副本, 且回退算法(去后缀截前两字)把「恒生科技指数」和
+// 「恒生中国企业指数」双双压成「恒生」—— 两条并列显示同一个词。
+//
+// 本表只额外补**存量报告文本**里出现、却不在核心指数表里的旧别名: 摘要条要解析历史
+// summary, 那些字符串已经落盘, 改不了。
+const LEGACY_INDEX_ALIAS: Record<string, string> = { '科创50': '科' }
 
-function indexShort(name?: string | null, symbol?: string): string {
+const INDEX_SHORT: Record<string, string> = (() => {
+	const map: Record<string, string> = {}
+	for (const name of coreIndexFullNames()) {
+		const compact = indexCompactName({ name })
+		if (compact) map[name] = compact
+	}
+	return { ...map, ...LEGACY_INDEX_ALIAS }
+})()
+
+export function indexShort(name?: string | null, symbol?: string): string {
+	// 先查权威表(按名或按代码)。🔴 核心指数**永远不该**落到下面的回退分支 ——
+	// 落到了说明 marketContent 漏登记 compactName, 而不是这里该再猜一次。
+	const compact = indexCompactName({ name, symbol })
+	if (compact) return compact
 	if (!name) return symbol ?? '—'
 	return INDEX_SHORT[name] ?? (name.replace(/指数|成指|A股|综指|50/g, '').slice(0, 2) || name.slice(0, 1))
 }
 
-// 批量替换文本中的指数全称为简称(用于历史列表 summary 显示,
+// 批量替换文本中的指数全称为紧凑名(用于历史列表 summary 显示,
 // 兼容存量旧报告 —— 它们存盘时 summary 还是全称)。
-const _INDEX_FULL_RE = /上证指数|深证成指|创业板指|科创综指|科创50/g
+// 🔴 alternation 必须**长名在前**: 否则「恒生指数」会先命中, 把「恒生科技指数」
+// 替换成「恒指科技指数」。coreIndexFullNames() 已按长度降序, 合并别名后再排一次。
+const _INDEX_FULL_RE = new RegExp(
+	[...coreIndexFullNames(), ...Object.keys(LEGACY_INDEX_ALIAS)]
+		.sort((a, b) => b.length - a.length)
+		.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+		.join('|'),
+	'g',
+)
 
-function shortenIndexNames(text: string): string {
+export function shortenIndexNames(text: string): string {
 	return text.replace(_INDEX_FULL_RE, (m) => INDEX_SHORT[m] ?? m)
 }
 

@@ -49,7 +49,7 @@ export function useInvalidateTierRelated() {
 	return () => {
 		qc.invalidateQueries({ queryKey: QK.settings })
 		qc.invalidateQueries({ queryKey: QK.capabilities })
-		qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+		qc.invalidateQueries({ queryKey: QK.capabilityMatrix() })
 		// 档位变化会改变实时行情模式(none/watchlist/full_market), 立即刷新侧边栏状态
 		qc.invalidateQueries({ queryKey: QK.quoteStatus })
 	}

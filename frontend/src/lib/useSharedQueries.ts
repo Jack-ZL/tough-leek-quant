@@ -6,6 +6,7 @@
  */
 import {useQuery} from '@tanstack/react-query'
 import {api} from './api'
+import {type Market} from './market'
 import {QK} from './queryKeys'
 
 // ===== 全局共享 =====
@@ -24,10 +25,10 @@ export function useCapabilities() {
  * 判定 (usable), 路由到可用插件时同样可用。路由偏好 / 档位探测 / 插件装卸
  * 变化时由设置页失效, 各页共享同一缓存自动刷新。
  */
-export function useCapabilityMatrix() {
+export function useCapabilityMatrix(market?: Market) {
 	return useQuery({
-		queryKey: QK.capabilityMatrix,
-		queryFn: api.capabilityMatrix,
+		queryKey: QK.capabilityMatrix(market),
+		queryFn: () => api.capabilityMatrix(market),
 		// 矩阵仅在路由偏好/插件装卸时变化 (设置页会失效): 5 分钟新鲜度减少切页重拉
 		staleTime: 5 * 60_000,
 	})

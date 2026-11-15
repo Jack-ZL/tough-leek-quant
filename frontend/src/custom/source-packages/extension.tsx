@@ -32,7 +32,7 @@ export function InstallDialog({ onClose, onInstalled }: { onClose: () => void; o
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState('')
 	const [trusted, setTrusted] = useState(false)
-	const matrix = useQuery({ queryKey: QK.capabilityMatrix, queryFn: api.capabilityMatrix })
+	const matrix = useQuery({ queryKey: QK.capabilityMatrix(), queryFn: () => api.capabilityMatrix() })
 	const labels = new Map(matrix.data?.capabilities.map(c => [c.id, c.label]) ?? [])
 	async function inspect(candidate: File | undefined) {
 		if (!candidate || busy) return
@@ -91,12 +91,13 @@ export function PackageActions({ plugin, refresh }: FrontendSlotContextMap['sett
 	const [confirm, setConfirm] = useState<string | null>(null)
 	const [routing, setRouting] = useState(false)
 	const matrix = useQuery({
-		queryKey: QK.capabilityMatrix,
-		queryFn: api.capabilityMatrix,
+		queryKey: QK.capabilityMatrix(),
+		queryFn: () => api.capabilityMatrix(),
 		enabled: plugin.origin === 'external' && !plugin.pending_remove,
 		staleTime: 0,
 	})
-	const references = (matrix.data?.capabilities ?? []).filter(cap => cap.field && cap.current.toLowerCase() === plugin.name)
+	// cap.field 非空 ⇒ 该行来自路由市场(CN), current 必有值; 直连市场(HK)行 field 为 null 已被短路
+	const references = (matrix.data?.capabilities ?? []).filter(cap => cap.field && cap.current?.toLowerCase() === plugin.name)
 	const missingDefault = references.some(cap => !cap.candidates.some(candidate => candidate.name === cap.default))
 	if (plugin.origin !== 'external') return null
 	async function run(action: string) {
@@ -167,7 +168,7 @@ export function PackageActions({ plugin, refresh }: FrontendSlotContextMap['sett
 }
 
 function RoutingDialog({ plugin, onClose, onSaved }: { plugin: FrontendSlotContextMap['settings.data-sources.detail-actions']['plugin']; onClose: () => void; onSaved: () => void }) {
-	const matrix = useQuery({ queryKey: QK.capabilityMatrix, queryFn: api.capabilityMatrix })
+	const matrix = useQuery({ queryKey: QK.capabilityMatrix(), queryFn: () => api.capabilityMatrix() })
 	const [selected, setSelected] = useState<string[]>([])
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState('')
