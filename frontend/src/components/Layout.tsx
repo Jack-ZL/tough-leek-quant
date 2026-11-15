@@ -29,6 +29,8 @@ import { useStrategyLibrarySync } from '@/lib/strategyLibrary'
 import { getPageScale } from '@/lib/pageZoom'
 import { setKlineBatchLimits } from '@/lib/klineBatchLimits'
 import { seedHiddenForNewUser } from '@/lib/navOrder'
+import { DEFAULT_MARKET } from '@/lib/market'
+import { coreIndexes, indexDisplayName, type CoreIndex } from '@/lib/marketContent'
 import { navPageIds, resolveNavLayout, visibleNavLayout, type NavGroup } from '@/lib/navLayout'
 import { getNavigationEntries, type NavigationEntry } from '@/lib/navigation'
 import { NavFolder } from './navigation/NavFolder'
@@ -68,14 +70,9 @@ import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 // 品牌色统一由 Logo.tsx 的 BRAND 常量提供
 
 // 核心四只指数 — 与后端 index_const.py 单一权威对齐 (前端展示层固定清单)
-export const CORE_INDEXES = [
-	{ symbol: '000001.SH', name: '上证指数' },
-	{ symbol: '399001.SZ', name: '深证成指' },
-	{ symbol: '399006.SZ', name: '创业板指' },
-	{ symbol: '000680.SH', name: '科创综指' },
-] as const
-
-type CoreIndex = (typeof CORE_INDEXES)[number]
+// 清单本体住在 lib/marketContent.ts(市场差异的唯一居所); 此处按缺省市场取用,
+// 市场切换器落地后改为按当前 market 取。
+export const CORE_INDEXES = coreIndexes(DEFAULT_MARKET)
 
 /** 亮/暗主题切换 — 状态存 localStorage, 生效见 lib/theme.ts */
 function ThemeToggle() {
@@ -146,9 +143,12 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 					>
 						{/* 名称不换行 + 涨跌幅不压缩: 两列布局下单卡内容区仅 85px,
 						 「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
-						 指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
+						 指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。
+						 🔴 同一预算下港股全名长达 10 字(「恒生香港中资企业指数」≈100px)必然截断,
+						 故此处走 indexDisplayName() 取 shortName; A 股条目没有 shortName,
+						 该调用对 A 股是严格无操作。完整名保留在 title 里。 */}
 						<div className="flex items-center justify-between gap-1">
-							<span className="min-w-0 truncate text-[10px] text-secondary">{item.name}</span>
+							<span className="min-w-0 truncate text-[10px] text-secondary">{indexDisplayName(item)}</span>
 							<span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
 						</div>
 						<div className={`mt-0.5 truncate font-mono text-[10px] ${indexPctClass(pct)}`}>

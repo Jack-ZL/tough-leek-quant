@@ -241,6 +241,7 @@ The project has repository caches, enriched history caches, realtime aggregation
 - Reuse the request wrappers and types in `frontend/src/lib/api.ts`. Components must not scatter request URLs directly.
 - Use centrally defined TanStack Query keys. Parameters that affect results — asset type, date, timeframe, etc. — must be part of the query key.
 - After switching stock, ETF, date, or strategy, cached results from the previous context must not be treated as current results.
+- Market differences (CN / HK) are data, not control flow, mirroring §3.5. Components must not branch on the market: per-market endpoints, query keys, copy, and capability flags belong in a market adapter module. Display layers may fall back to the default market on an unknown value; filtering and request layers must not.
 - Realtime refresh must keep the last valid data until new data is ready, avoiding flicker where columns, counts, and lists disappear.
 - Opening and closing dialogs must correctly reset temporary form state. Create state and edit state must be separated.
 - Cross-page behaviors such as shared tabs, stock detail, and constituent stocks must use shared components. Do not duplicate interactions across multiple pages.
@@ -680,6 +681,7 @@ The measure of following this guide is not how much documentation is written, bu
 - 复用 `frontend/src/lib/api.ts` 中的请求封装和类型，禁止组件直接散落请求地址。
 - TanStack Query 查询键使用集中定义；资产类型、日期、周期等影响结果的参数必须进入查询键。
 - 切换股票、ETF、日期或策略后，不得把上一上下文的缓存结果当作当前结果。
+- 市场差异（A 股 / 港股）是数据而非控制流，与 §3.5 一致。组件内禁止按市场分支：各市场的端点、查询键、文案和能力开关都放在市场适配器模块里。展示层遇到未知市场可兜底到默认市场；过滤类和请求类不得兜底。
 - 实时刷新保留上一份有效数据直到新数据就绪，避免列、计数和列表闪烁消失。
 - 弹窗打开和关闭必须正确重置临时表单状态；新建态与编辑态分离。
 - 公共标签、个股详情、成分股等跨页面行为使用共享组件，不在多个页面复制交互。

@@ -2,12 +2,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, Loader2, Lock, RefreshCw } from 'lucide-react'
-import { api, type IndexInstrument, type KlineRow, type MinuteKlineRow } from '@/lib/api'
+import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useCapabilities } from '@/lib/useSharedQueries'
 import type { OHLC } from '@/lib/chart-types'
 import { LightweightDaily } from '@/components/charts/LightweightDaily'
 import { LightweightIntraday } from '@/components/charts/LightweightIntraday'
+import { QuoteDelayBadge } from '@/components/QuoteDelayBadge'
+import { MARKETS, normalizeMarket, type Market } from '@/lib/market'
+import { marketContent, type CoreIndex } from '@/lib/marketContent'
+import { indexPageParams, indexSource, type IndexChartRow } from '@/lib/index-market-adapter'
 
 function defaultRange() {
 	const now = new Date()
@@ -17,7 +21,7 @@ function defaultRange() {
 	return { start: s.toISOString().slice(0, 10), end }
 }
 
-function toOHLC(rows: KlineRow[]): OHLC[] {
+function toOHLC(rows: readonly IndexChartRow[]): OHLC[] {
 	return rows
 		.filter(r => r?.date != null && r.open != null && r.close != null)
 		.map(r => ({
@@ -55,32 +59,34 @@ function fmtNum(v: number | null | undefined, digits = 2) {
 	return Number(v).toFixed(digits)
 }
 
-const PINNED_INDEXES = [
-	{ symbol: '000001.SH', name: '上证指数' },
-	{ symbol: '399001.SZ', name: '深证成指' },
-	{ symbol: '399006.SZ', name: '创业板指' },
-	{ symbol: '000680.SH', name: '科创综指' },
-]
-
 export function Indices() {
 	const qc = useQueryClient()
 	const [searchParams, setSearchParams] = useSearchParams()
 	const symbolParam = searchParams.get('symbol') ?? ''
+	// 市场来自 URL(可分享、刷新不丢); 未知值兜底 CN, 见 lib/market.ts。
+	const market = normalizeMarket(searchParams.get('market'))
+	const src = indexSource(market)
 	const [selected, setSelected] = useState<string>(symbolParam)
 	const [range, setRange] = useState(defaultRange)
 	const [selectedDate, setSelectedDate] = useState<string | null>(null)
 	const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
 
-	// 分时数据依赖分钟K批量数据 (kline.minute.batch)
+	// 分时数据依赖分钟K批量数据 (kline.minute.batch); 港股根本没有指数分时端点。
 	const caps = useCapabilities()
 	const hasMinuteCap = !!caps.data?.capabilities?.['kline.minute.batch']
+	const minuteAvailable = hasMinuteCap && src.supportsMinute
 
-	// 指数标的固定核心四只 (产品契约, 不再提供全指数搜索/浏览)
-	const topRows: IndexInstrument[] = PINNED_INDEXES.map(p => ({
-		symbol: p.symbol, name: p.name, asset_type: 'index' as const,
-	}))
+	// 指数标的固定核心四只 (产品契约, 不再提供全指数搜索/浏览)。
+	// 清单住在 lib/marketContent.ts, 按当前市场取。
+	const pinnedSymbols = useMemo(() => new Set(src.pinned.map(i => i.symbol)), [src])
 
-	const selectedSymbol = selected || topRows[0]?.symbol || ''
+	// 🔴 URL 里的 symbol 可能属于另一个市场(例如 `?symbol=HSI` 却没带 market)。
+	// 过滤类请求不兜底(方案 §8 规则 6): 不属于当前市场就当没选, 回落第一只 ——
+	// 绝不拿港股代码去查 A 股指数目录(会静默返回空, 比报错难发现)。
+	const selectedSymbol = useMemo(() => {
+		const wanted = selected || symbolParam
+		return pinnedSymbols.has(wanted) ? wanted : (src.pinned[0]?.symbol ?? '')
+	}, [selected, symbolParam, pinnedSymbols, src])
 
 	useEffect(() => {
 		if (symbolParam && symbolParam !== selected) setSelected(symbolParam)
@@ -88,33 +94,46 @@ export function Indices() {
 
 	const selectIndex = (symbol: string) => {
 		setSelected(symbol)
-		setSearchParams({ symbol })
+		setSearchParams(indexPageParams(market, symbol))
+	}
+
+	const selectMarket = (next: Market) => {
+		if (next === market) return
+		// 切市场必须清掉选中标的: 两个市场的代码空间不通用。
+		setSelected('')
+		setSelectedDate(null)
+		setLinkedPrice(null)
+		setSearchParams(indexPageParams(next))
 	}
 
 	const quotes = useQuery({
-		queryKey: QK.indexQuotes,
-		queryFn: () => api.indexQuotes(),
-		placeholderData: (prev) => prev,
+		queryKey: src.quotesKey,
+		queryFn: () => src.fetchQuotes(),
+		// 🔴 跨市场不得沿用旧数据(否则港股页会短暂显示上证指数的数字, 正是方案 §8
+		// 引用的「标题改了、口径没改, 比不切换更误导」); 同市场内保留以避免闪烁。
+		placeholderData: (prev, prevQuery) =>
+			prevQuery?.queryKey[0] === src.quotesKey[0] ? prev : undefined,
 	})
 
+	const dailyKey = src.dailyKey(selectedSymbol, range.start, range.end)
 	const daily = useQuery({
-		queryKey: QK.indexDaily(selectedSymbol, range.start, range.end),
-		queryFn: () => api.indexDaily(selectedSymbol, 180, range),
+		queryKey: dailyKey,
+		queryFn: () => src.fetchDaily(selectedSymbol, range),
 		enabled: !!selectedSymbol,
-		placeholderData: (prev) => prev,
+		placeholderData: (prev, prevQuery) =>
+			prevQuery?.queryKey[0] === dailyKey[0] ? prev : undefined,
 	})
 
 	const minute = useQuery({
 		queryKey: QK.indexMinute(selectedSymbol, selectedDate ?? ''),
 		queryFn: () => api.indexMinute(selectedSymbol, selectedDate ?? undefined),
-		enabled: !!selectedSymbol && !!selectedDate && hasMinuteCap,
+		enabled: !!selectedSymbol && !!selectedDate && minuteAvailable,
 	})
 
 	const syncDaily = useMutation({
-		mutationFn: () => api.syncIndexDaily(365),
+		mutationFn: () => src.syncDaily(),
 		onSuccess: () => {
-			qc.invalidateQueries({ queryKey: QK.indexQuotes })
-			qc.invalidateQueries({ queryKey: ['index-daily'] })
+			for (const key of src.invalidateKeys) qc.invalidateQueries({ queryKey: key })
 		},
 	})
 
@@ -128,7 +147,8 @@ export function Indices() {
 	const selectedQuotePct = selectedQuote?.change_pct ?? selectedQuote?.pct
 
 	const chartRows = useMemo(() => toOHLC(daily.data?.rows ?? []), [daily.data?.rows])
-	const selectedInfo = topRows.find(r => r.symbol === selectedSymbol) || daily.data?.index_info
+	const selectedName = src.pinned.find(i => i.symbol === selectedSymbol)?.name
+		?? daily.data?.name ?? null
 	const minuteRows: MinuteKlineRow[] = minute.data?.symbol === selectedSymbol
 		&& minute.data?.date === selectedDate && daily.data?.symbol === selectedSymbol
 		? minute.data.rows : []
@@ -149,7 +169,7 @@ export function Indices() {
 			setSelectedDate(chartRows[chartRows.length - 1].date)
 		}
 	}, [chartRows, daily.data?.symbol, selectedDate, selectedSymbol])
-	const renderIndexItem = (item: IndexInstrument) => {
+	const renderIndexItem = (item: CoreIndex) => {
 		const q = quoteBySymbol.get(item.symbol)
 		const pct = q?.change_pct ?? q?.pct
 		const current = q?.last_price ?? q?.price ?? q?.close
@@ -175,13 +195,28 @@ export function Indices() {
 	return (
 		<div className="h-full overflow-auto bg-base p-4">
 			<div className="mb-4 flex items-center justify-between gap-3">
-				<div>
-					<h1 className="text-lg font-semibold text-foreground">指数</h1>
-					<p className="mt-1 text-xs text-muted">
-						指数使用独立 kline_index_* parquet，不进入股票策略链路。
-					</p>
+				<div className="min-w-0">
+					<div className="flex items-center gap-2">
+						<h1 className="text-lg font-semibold text-foreground">指数</h1>
+						{/* 市场切换。差异全在 lib/index-market-adapter.ts + marketContent.ts,
+						    本页不出现任何市场字面量分支(方案 §8 规则 2)。 */}
+						<div role="tablist" aria-label="市场" className="inline-flex shrink-0 rounded-btn border border-border p-0.5">
+							{MARKETS.map(m => (
+								<button
+									key={m}
+									role="tab"
+									aria-selected={m === market}
+									onClick={() => selectMarket(m)}
+									className={`rounded px-2 py-0.5 text-xs transition-colors ${m === market ? 'bg-accent text-white' : 'text-secondary hover:bg-elevated'}`}
+								>
+									{marketContent(m).label}
+								</button>
+							))}
+						</div>
+					</div>
+					<p className="mt-1 text-xs text-muted">{src.headerHint}</p>
 				</div>
-				<div className="flex items-center gap-2">
+				<div className="flex shrink-0 items-center gap-2">
 					<button
 						onClick={() => syncDaily.mutate()}
 						disabled={syncDaily.isPending}
@@ -189,7 +224,7 @@ export function Indices() {
 					>
 						{syncDaily.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
 							<RefreshCw className="h-3.5 w-3.5" />}
-						同步指数日K
+						{src.syncLabel}
 					</button>
 				</div>
 			</div>
@@ -198,7 +233,7 @@ export function Indices() {
 				<aside className="rounded-card border border-border bg-surface p-3">
 					<div className="mb-2 px-1 text-[11px] uppercase tracking-wider text-muted">核心指数</div>
 					<div className="space-y-1">
-						{topRows.map(renderIndexItem)}
+						{src.pinned.map(renderIndexItem)}
 					</div>
 				</aside>
 
@@ -208,7 +243,7 @@ export function Indices() {
 							<div className="flex items-center gap-2">
 								<Activity className="h-4 w-4 text-accent" />
 								<h2 className="truncate text-sm font-semibold text-foreground">
-									{selectedInfo?.name || selectedSymbol || '未选择指数'}
+									{selectedName || selectedSymbol || '未选择指数'}
 								</h2>
 								{selectedSymbol &&
 									<span className="font-mono text-xs text-muted">{selectedSymbol}</span>}
@@ -217,8 +252,11 @@ export function Indices() {
 								{selectedSymbol &&
 									<span className={`font-mono text-xs ${Number(selectedQuotePct ?? 0) >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPct(selectedQuotePct)}</span>}
 							</div>
-							<div className="mt-1 text-xs text-muted">
-								实时缓存 {quotes.data?.count ?? 0} 只指数 · 日K来源 {daily.data?.source ?? '--'}
+							<div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+								<span>{src.quoteSourceLabel(quotes.data)}</span>
+								{daily.data?.source && <span>· 日K来源 {daily.data.source}</span>}
+								{/* 🔴 分钟数只从接口 quote_delay_minutes 读; A 股为 null 故不渲染 */}
+								<QuoteDelayBadge minutes={quotes.data?.quoteDelayMinutes} />
 							</div>
 						</div>
 						<div className="flex items-center gap-2 text-xs">
@@ -242,7 +280,7 @@ export function Indices() {
 					{daily.isError && <div className="py-4 text-sm text-danger">指数日K加载失败</div>}
 					{!daily.isLoading && !daily.isError && chartRows.length === 0 && (
 						<div className="rounded-card bg-elevated p-6 text-center text-sm text-muted">
-							暂无日K数据。可以先同步指数日K，或选择其他指数。
+							{src.dailyEmptyHint}
 						</div>
 					)}
 					{chartRows.length > 0 && (
@@ -264,11 +302,11 @@ export function Indices() {
 								/>
 							</div>
 							<div className="min-w-0 flex-1 border-l border-border pl-3" style={{ height: 620 }}>
-								{!hasMinuteCap ? (
+								{!minuteAvailable ? (
 									<div className="flex h-full flex-col items-center justify-center gap-2 text-center">
 										<Lock className="h-5 w-5 text-muted" />
 										<div className="text-xs text-secondary">指数分时数据不可用</div>
-										<div className="text-[10px] text-muted">分钟K(批量)数据不可用</div>
+										<div className="text-[10px] text-muted">{src.minuteUnavailableHint}</div>
 									</div>
 								) : (
 									<>

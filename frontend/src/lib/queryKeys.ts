@@ -43,6 +43,8 @@ export const QK = {
 	marketTradingStatus: ['market-trading-status'] as const,
 	overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
 	indexQuotes: ['index-quotes'] as const,
+	// 港股指数走独立端点(见 lib/api.ts hkIndices)。symbols 影响结果 ⇒ 必须入 key。
+	hkIndexQuotes: (symbols: string) => ['hk-index-quotes', symbols] as const,
 
 	// Watchlist
 	watchlist: ['watchlist'] as const,
@@ -152,6 +154,9 @@ export const QK = {
 		['index-daily', symbol, start, end] as const,
 	indexMinute: (symbol: string, date: string) =>
 		['index-minute', symbol, date] as const,
+	// 港股指数只有日K(无分钟端点)。start/end/limit 均影响结果 ⇒ 全部入 key。
+	hkIndexDaily: (symbol: string, start: string, end: string, limit: number) =>
+		['hk-index-daily', symbol, start, end, limit] as const,
 
 	// Schema
 	extDataSchemaAll: ['ext-data-schema-all'] as const,

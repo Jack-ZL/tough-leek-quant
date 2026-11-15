@@ -623,6 +623,57 @@ export interface IndexQuote {
 	[key: string]: any
 }
 
+// ===== 港股指数 (PR3) =====
+/**
+ * `GET /api/hk/indices` 响应。形状与 `indexQuotes` 对齐(`rows`/`count`/`source`),
+ * 故渲染逻辑可跨市场复用; 多出的字段是港股专属语义。
+ */
+export interface HkIndexQuotesResponse {
+	rows: IndexQuote[]
+	count: number
+	/** `realtime` = 新浪快照(延时); `index_daily` = 降级读本地日K最新一根 */
+	source: 'realtime' | 'index_daily'
+	market: 'HK'
+	/**
+	 * 行情延时分钟数, 取自后端 `rules_for(Market.HK)`。
+	 * 🔴 这是「延时」标注的**唯一来源** —— 前端不得写死 15。
+	 */
+	quote_delay_minutes: number | null
+	currency: string
+}
+
+/** `GET /api/hk/index_daily` 的一行。指数无复权概念, 故无 `raw_*` / 复权列。 */
+export interface HkIndexDailyRow {
+	symbol: string
+	date: string
+	open: number | null
+	high: number | null
+	low: number | null
+	close: number | null
+	volume: number | null
+}
+
+export interface HkIndexDailyResponse {
+	symbol: string
+	/** 仅核心四只有名字(名称由快照响应字段 1 在运行时给, 不落库); 其余为 null, 展示回退代码 */
+	name: string | null
+	/**
+	 * 🔴 恒为 `null`, 不是遗漏: 新浪与腾讯对同一个量的口径互相矛盾(恰好差 1000 倍),
+	 * 无法判定真值 ⇒ 后端拒绝断言单位。前端**不得**据此做量能换算或标注「手/股」。
+	 */
+	volume_unit: string | null
+	currency: string
+	quote_delay_minutes: number | null
+	rows: HkIndexDailyRow[]
+}
+
+export interface HkIndexSyncResponse {
+	/** `partial` = 有写入但有真失败; 无覆盖的标的**不算**失败(实时快照仍可用) */
+	status: 'ok' | 'partial' | 'empty'
+	count: number
+	failed: string[]
+}
+
 // ===== Screener =====
 export interface ScreenerStrategy {
 	id: string
@@ -4133,6 +4184,24 @@ export const api = {
 		request<{ rows: IndexQuote[]; count: number }>(
 			`/api/intraday/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
 		),
+	// ===== 港股指数 (PR3) =====
+	// 独立端点, 刻意不在 /api/intraday/indices 上加 market 参数: 那条路由绑全局
+	// QuoteService 缓存、兜底读的是 A 股指数目录, 传 HSI 会静默返回空。
+	hkIndices: (symbols?: string[]) =>
+		request<HkIndexQuotesResponse>(
+			`/api/hk/indices${symbols?.length ? `?symbols=${encodeURIComponent(symbols.join(','))}` : ''}`,
+		),
+	hkIndexDaily: (symbol: string, opts?: { start?: string; end?: string; limit?: number }) => {
+		const q = new URLSearchParams({ symbol })
+		if (opts?.start) q.set('start', opts.start)
+		if (opts?.end) q.set('end', opts.end)
+		if (opts?.limit != null) q.set('limit', String(opts.limit))
+		return request<HkIndexDailyResponse>(`/api/hk/index_daily?${q.toString()}`)
+	},
+	hkSyncIndexDaily: (body?: { symbols?: string[]; count?: number }) =>
+		request<HkIndexSyncResponse>('/api/hk/sync_index_daily', {
+			method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+		}),
 	updateRealtimeMonitorConfig: (cfg: {
 		sse_refresh_pages?: Record<string, boolean>
 		strategy_monitor_enabled?: boolean

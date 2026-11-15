@@ -929,7 +929,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 ### PR3 完成情况（只读看盘 + 指数）—— 后端指数栈
 
-**状态：后端指数通路已完成并真机验证；前端未开始。** 本节只登记已完成的后端部分。
+**状态：后端指数通路已完成并真机验证；前端市场共享层 + 指数页港股接线已完成。** 本节登记后端部分，前端见下一节。
 
 #### 落地文件
 
@@ -984,17 +984,55 @@ HSI 2026-11-13 实测：新浪 成交量 `195857007` / 成交额 `11525719783`�
 
 `app/indicators/pipeline.py:1074-1088` 用 `(volume == 0) & (amount == 0)` 判停牌；polars 里 `null == 0` → `null`，`~null` → `null` → **该行被过滤掉**。实测 58 行 null 成交量 ⇒ `compute_enriched` 返回 **0 行（静默全量丢数）**；把 volume 填 `1.0` 后 58→58、enriched `(58, 64)`、`ma20` 正常。**完全省略 `amount` 列是安全的**（第二个谓词被跳过），**null 成交量不安全**。
 
-#### PR3 剩余（未开始）
+### PR3 完成情况（只读看盘 + 指数）—— 前端市场共享层 + 指数页
+
+**状态：已完成。** 指数页 CN/HK 共用一套组件，市场差异全部收敛在适配器文件里（方案 §8 规则 2：组件内禁止 `if (market === 'HK')`）。K线 / 自选 / 详情仍未开始。
+
+#### 落地文件
+
+| 文件 | 变更 |
+|---|---|
+| `frontend/src/lib/market.ts` | **新增**。`Market` / `MARKETS` / `DEFAULT_MARKET` / `isMarket` / `normalizeMarket`。文件头登记**刻意分裂的兜底方向**：展示层未知 market 兜底 CN（不白屏），过滤/请求层**不兜底**（静默返空比抛错难发现），与后端 `rules_for(None)` 抛错对齐 |
+| `frontend/src/lib/marketContent.ts` | **新增**。**唯一**允许存放市场内容差异的文件。`MARKET_CONTENT` / `coreIndexes()` / `indexDisplayName()`；核心四只名称与后端 `index_const.py` 逐字对齐 |
+| `frontend/src/components/QuoteDelayBadge.tsx` | **新增**。中性灰延时徽章，只读 `minutes` 入参 |
+| `frontend/src/lib/index-market-adapter.ts` | **新增（本轮核心）**。`IndexMarketSource` 接口 + CN/HK 两个实现 + `indexPageParams()`。保证日K升序、query key 市场互斥 |
+| `frontend/src/pages/Indices.tsx` | 改为完全由适配器驱动；删除 `PINNED_INDEXES`；新增市场 tablist；接入延时徽章 |
+| `frontend/src/lib/api.ts` | +4 个港股接口类型 + `hkIndices` / `hkIndexDaily` / `hkSyncIndexDaily` |
+| `frontend/src/lib/queryKeys.ts` | +`hkIndexQuotes` / `hkIndexDaily`。🔴 **刻意不加入 `DAILY_DATA_QUERY_PREFIXES`**（该集合驱动 A 股 SSE 失效，而港股指数日K只有显式同步端点会写） |
+| `frontend/src/components/Layout.tsx` | `CORE_INDEXES` 由硬编码改为 `coreIndexes(DEFAULT_MARKET)` |
+| 4 个测试文件 | **新增 74 例**（`marketContent` 22 / `QuoteDelayBadge` 12 / `index-market-adapter` 29 / `Indices.market` 11） |
+
+验证：`pnpm build` EXIT=0；`pnpm exec vitest run` **127 文件 / 929 例全绿**（本轮 +2 文件 / +40 例）。后端契约真机复核：`/api/hk/indices` 响应逐字段吻合 TS 类型，`change_pct` 为**小数口径**（实测 `-0.01545`，前端 `fmtPct` ×100 → `-1.55%`，与后端 `hk_index.py:273` 的「÷100」注释互验）；实库 `kline_hk_index_daily` 表不存在时 `/api/hk/index_daily` 返回 **200 + 空 rows**，正是空态文案覆盖的路径。
+
+#### 🔴 四个必须记住的陷阱
+
+| 陷阱 | 后果 | 处理 |
+|---|---|---|
+| `GET /api/hk/index_daily` 是 **`ORDER BY date DESC`**，而 A 股 `repo.get_index_daily` **没有显式 ORDER BY**（靠 parquet 升序扫描），页面按 `rows[rows.length-1]` 取最新一根 | 港股图表左右镜像、最新值取到最旧一根 | 适配器 `fetchDaily` 内**显式升序排序**，组件不感知 |
+| React Query `placeholderData: prev => prev` 会把**上一个 key** 的数据带到新 key | CN→HK 切换瞬间，港股页渲染上证指数的数字 —— 正是 §8 引用的「标题改了、口径没改，比不切换更误导」 | 两处 query 都加 `prevQuery?.queryKey[0] === 当前 key[0]` 守卫：同市场保留（防闪烁），跨市场丢弃 |
+| URL 可能带**另一个市场的 symbol**（`?symbol=HSI` 却没带 `market`） | 拿港股代码查 A 股指数目录 → 静默返空 | 过滤类请求不兜底：不在当前市场 `pinned` 里就当没选，回落第一只 |
+| `QuoteFreshnessBadge` 的 `'delayed'` 状态语义是**异常**（琥珀色 + 「请检查数据源与连接」） | 把交易所授权的正常延时渲染成故障告警 | **新建** `QuoteDelayBadge`，中性灰；测试里有**禁用类名护栏**（`text-warning`/`text-danger`/`amber`/`animate-pulse` 出现即失败） |
+
+#### 刻意不做的事
+
+- **`marketContent` 里没有延时分钟数**：必须读接口的 `quote_delay_minutes`，写死会与后端漂移。
+- **没有币种表**：接口已返回 `currency`。
+- **没有涨跌停 / 交易时段规则**：后端 `MarketTradingRules` 才是权威；前端 `lib/price-limit.ts` 兜底 0.10 会**编造**港股涨跌幅限制。
+- **`shortName` 是唯一例外**：港股全名长达 10 字（「恒生香港中资企业指数」），侧栏预算按 A 股 4 字名设计（**85px**），不缩写会截断。回归测试守住「恒生科技」与「恒生国企」不得压成同一个词（`review/Page.tsx` 曾双双压成「恒生」）。
+- **`indexPageParams` 在 `market === DEFAULT_MARKET` 时省略 `market` 参数**：保住侧栏既有的 `/indices?symbol=…` 链接不被改写。
+
+### PR3 剩余（未开始）
 
 | 项 | 状态 |
 |---|---|
-| 前端共享层 + `marketContent.ts` | ❌ 仓库中**不存在** `Market` 类型、`market=HK` 参数或市场切换器；⚠️ `Market*` 命名空间已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用，新名须避撞 |
+| ~~前端共享层 + `marketContent.ts`~~ | ✅ **已完成**（见上节）。⚠️ `Market*` 命名空间确已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用 → 新文件取小写 `lib/market.ts` 避撞 |
 | K线 / 自选 / 详情 | ❌ `lib/kline.ts:16-30` 是唯一权威 options 工厂且只指向 `/api/kline/daily`；🔴 `lib/stockPreviewStore.ts:17-18` 的正则 `/^\d{6}\.(SH\|SZ\|BJ)$/` **直接拒掉 5 位 `.HK`**，详情抽屉打不开（第一道硬墙） |
-| 15 分钟延时标注 | 🟡 后端已在两个新路由暴露 `quote_delay_minutes`；前端**零锚点**（全仓无「延时」二字），且 `QuoteFreshness.state='delayed'` 语义是**异常**（文案「请检查数据源与连接」）→ **不可复用**，需新建独立徽章 |
-| 空态契约文案 | ❌ 组件齐备（`EmptyState`/`ErrorState`/`MissingCapChip`），但「港股无概念板块数据源」文案不存在 |
+| 15 分钟延时标注 | 🟡 **指数页已完成**：新建 `QuoteDelayBadge`（中性灰，**不复用** `QuoteFreshnessBadge` —— 其 `'delayed'` 语义是异常，文案「请检查数据源与连接」），读接口 `quote_delay_minutes`。❌ K线 / 自选 / 详情页接入仍待做 |
+| 空态契约文案 | 🟡 **指数页已完成**：空态按市场分文案，港股注明「27 只白名单中仅 14 只有日K」并给出同步动作路径。❌「港股无概念板块数据源」文案仍不存在 |
 | 能力矩阵 market 维（`:918`） | ❌ PR2 刻意延后至此，仍未做 |
-| 指数同步接调度 | ❌ 未接线（当前只有手动 `POST /api/hk/sync_index_daily`） |
-| 前端三份硬编码指数副本 | ❌ `Layout.tsx:71-77` / `Indices.tsx:58-63` / `review/Page.tsx:787-801`；且 `review/Page.tsx:793` 的缩写表把**恒生科技指数**和**恒生中国企业指数**都压成「恒生」 |
+| 指数同步接调度 | ❌ 未接线（当前只有手动 `POST /api/hk/sync_index_daily`；前端指数页已提供对应同步按钮） |
+| 前端三份硬编码指数副本 | 🟡 `Layout.tsx` ✅ 改为 `coreIndexes(DEFAULT_MARKET)`、`Indices.tsx` ✅ `PINNED_INDEXES` 已删除；❌ `review/Page.tsx:787-801` 仍是第三份硬编码，且 `:793` 的缩写表把**恒生科技指数**和**恒生中国企业指数**都压成「恒生」（`marketContent.test.ts` 已加回归护栏，但**尚未修 `review/Page.tsx` 本身**） |
+| 侧栏指数条 market 感知 + 全局市场切换器 | ❌ 侧栏仍固定渲染 A 股核心四只；全局导航无市场切换器，当前只能在指数页内切换（方案 §8 规则 4「未就绪直接隐藏入口」—— K线/自选未接通前不放到全局） |
 
 ## 15. 风险
 
