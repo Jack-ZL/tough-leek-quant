@@ -1552,6 +1552,17 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
 
+    # 港股同步: 独立 job, 默认关闭。注册过程整体兜底 —— 港股是增量功能,
+    # 它注册失败绝不能连带 A 股调度起不来 (方案 §14「不能危及 A 股关键路径」)。
+    # 隔离细节(不进 job_store / 不占执行槽 / 单向让路)见 app.jobs.hk_pipeline 模块 docstring。
+    try:
+        from app.jobs import hk_pipeline
+
+        if hk_pipeline.register_hk_job(scheduler, repo):
+            logger.info("hk_daily_sync registered")
+    except Exception:
+        logger.exception("港股调度注册失败(已隔离, A 股调度不受影响)")
+
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",
                 inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"],

@@ -792,6 +792,55 @@ def set_review_schedule(enabled: bool, hour: int, minute: int) -> dict:
     return {"enabled": bool(enabled), "hour": h, "minute": m}
 
 
+# 港股同步默认时刻: 港股 16:00 收盘(半日市 12:00), 留 40 分钟等东财日K结算落定。
+# 与 A 股盘后管道(默认 15:35)错开, 避免两条链路同时打 push2 抢限流配额。
+_HK_SYNC_DEFAULTS = {"enabled": False, "hour": 16, "minute": 40, "include_cny_counter": False}
+
+
+def get_hk_sync_schedule() -> dict:
+    """港股定时同步调度。默认**关闭**。
+
+    返回 ``{"enabled", "hour", "minute", "include_cny_counter"}``。
+
+    默认关闭的理由: 港股是可选增量功能, 且维表口径 ``FS_HK_EQUITY`` (t:3 主板 +
+    t:4 GEM) 的各 ``t:`` 子类语义尚待联网复测(见 ``plugins/eastmoney/hk.py`` 的
+    ⚠️ 注释与 docs/hk-market-plan.md §3.1.1)。默认开启会让每天 ~2900 个标的的
+    拉取在用户尚未确认口径前就跑起来, 白白消耗 push2 限流配额。
+    """
+    d = load().get("hk_sync_schedule") or {}
+    if not isinstance(d, dict):
+        d = {}
+    return {
+        "enabled": bool(d.get("enabled", _HK_SYNC_DEFAULTS["enabled"])),
+        "hour": int(d.get("hour", _HK_SYNC_DEFAULTS["hour"])),
+        "minute": int(d.get("minute", _HK_SYNC_DEFAULTS["minute"])),
+        "include_cny_counter": bool(
+            d.get("include_cny_counter", _HK_SYNC_DEFAULTS["include_cny_counter"])
+        ),
+    }
+
+
+def set_hk_sync_schedule(
+    enabled: bool, hour: int, minute: int, include_cny_counter: bool = False
+) -> dict:
+    """保存港股定时同步调度。
+
+    与 :func:`set_review_schedule` 不同, **不设时间下限**: 港股有半日市(12:00 收盘),
+    且用户可能只想在盘中拉一次快照; 时刻是否合适由用户判断, 这里只做 0-23/0-59 钳制。
+    enabled=False 时时间仍保存(下次开启可沿用), 但调度器不会注册 job。
+    """
+    h = max(0, min(23, int(hour)))
+    m = max(0, min(59, int(minute)))
+    sched = {
+        "enabled": bool(enabled),
+        "hour": h,
+        "minute": m,
+        "include_cny_counter": bool(include_cny_counter),
+    }
+    save({"hk_sync_schedule": sched})
+    return sched
+
+
 # 复盘系统提示词长度上限: 默认模板约 2.4k 字符, 留足自定义余量同时防止误存超长文本
 MARKET_RECAP_PROMPT_MAX_CHARS = 32_000
 

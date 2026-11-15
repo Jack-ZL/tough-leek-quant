@@ -1007,6 +1007,8 @@ def get_preferences() -> dict:
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
+        # 港股定时同步 (默认关闭; 独立 job, 与 A 股盘后管道单向让路)
+        "hk_sync_schedule": preferences.get_hk_sync_schedule(),
         "review_push_channels": preferences.get_review_push_channels(),
         "review_push_mode": preferences.get_review_push_mode(),
         "market_recap_system_prompt": preferences.get_market_recap_system_prompt(),
@@ -2836,6 +2838,47 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
                 logger.info("scheduled_review disabled (job removed)")
             except Exception:
                 pass  # job 本就不存在(从未开过), 无需处理
+
+    return sched
+
+
+class HkSyncScheduleIn(BaseModel):
+    enabled: bool
+    hour: int
+    minute: int
+    include_cny_counter: bool = False
+
+
+@router.put("/preferences/hk-sync-schedule")
+def update_hk_sync_schedule(req: HkSyncScheduleIn, request: Request) -> dict:
+    """保存港股定时同步调度并立即更新 APScheduler job。
+
+    - enabled=True: 注册/更新 job(工作日定时同步港股维表/日K/复权因子/enriched)
+    - enabled=False: 移除 job
+
+    与定时复盘不同, 这里**不做前置依赖校验**: 港股同步不需要 AI Key, 维表为空时
+    job 自身会 fail closed 并记日志(不会写坏数据), 没必要挡住用户开启。
+
+    时刻不设下限(港股有半日市 12:00 收盘, 且用户可能只想盘中拉一次快照),
+    仅由 preferences 层钳制到 0-23 / 0-59。
+
+    港股 job 与 A 股盘后管道**单向让路**: 港股开跑前若发现有活跃数据任务就跳过本轮,
+    反过来 A 股永远看不到港股任务, 不会被港股挤掉。隔离实现见 app.jobs.hk_pipeline。
+    """
+    from app.services import preferences
+
+    sched = preferences.set_hk_sync_schedule(
+        req.enabled, req.hour, req.minute, req.include_cny_counter
+    )
+
+    from app.jobs import hk_pipeline
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        if sched["enabled"]:
+            hk_pipeline.register_hk_job(scheduler, request.app.state.repo)
+        else:
+            hk_pipeline.unregister_hk_job(scheduler)
 
     return sched
 
