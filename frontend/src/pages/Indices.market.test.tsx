@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_MARKET } from '@/lib/market'
+import { getMarket, setMarket } from '@/lib/marketStore'
 import { Indices } from './Indices'
 
 const mocks = vi.hoisted(() => ({
@@ -36,6 +38,11 @@ let client: QueryClient
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.clearAllMocks()
+  // 🔴 全局市场 store 是**模块级**状态, 会跨用例残留: 上一个用例把市场切到港股后,
+  // 下一个用例渲染 `/indices`(不带 market 参数) 会跟随 store 变成港股, 于是
+  // 「缺省 = A 股」和「跨市场 symbol 不兜底」两组断言全部错位。这里显式复位。
+  localStorage.removeItem('tf-market')
+  setMarket(DEFAULT_MARKET)
   mocks.indexQuotes.mockResolvedValue({
     rows: [{ symbol: '000001.SH', name: '上证指数', last_price: 3900.12, change_pct: 0.36 }],
     count: 1,
@@ -201,5 +208,80 @@ describe('市场切换', () => {
     const cnTab = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(b => b.textContent === 'A股')
     await act(async () => cnTab!.click())
     expect(mocks.indexDaily.mock.calls.length).toBe(before)
+  })
+})
+
+// ===== URL ↔ 全局市场 store 双向对齐 =====
+// 侧栏切换器把市场写进 store, 指数页把市场写进 URL; 两边都能是入口, 所以必须
+// 幂等地互相同步, 且**URL 优先**(可分享链接不能被本地偏好覆盖)。
+
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-loc>{loc.search}</div>
+}
+
+async function renderWithProbe(route: string) {
+  await act(async () => root.render(
+    <MemoryRouter initialEntries={[route]}>
+      <LocationProbe />
+      <QueryClientProvider client={client}><Indices /></QueryClientProvider>
+    </MemoryRouter>,
+  ))
+  for (let i = 0; i < 5; i++) {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+}
+
+const search = () => host.querySelector<HTMLElement>('[data-loc]')?.textContent ?? ''
+const clickTab = async (label: string) => {
+  const btn = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(b => b.textContent === label)
+  await act(async () => btn!.click())
+  for (let i = 0; i < 5; i++) {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+}
+
+describe('URL ↔ 全局市场 store 双向对齐', () => {
+  it('带 market=HK 进来 → 写回全局 store (侧栏切换器跟着变港股)', async () => {
+    await renderWithProbe('/indices?market=HK')
+    expect(getMarket()).toBe('HK')
+    expect(tab('港股')).toBe(true)
+    // URL 已带参数, 不该再重复改写
+    expect(search()).toBe('?market=HK')
+  })
+
+  it('store 是港股但 URL 没带 market → 补进 URL (链接可分享)', async () => {
+    setMarket('HK')
+    await renderWithProbe('/indices')
+    expect(search()).toContain('market=HK')
+    expect(tab('港股')).toBe(true)
+  })
+
+  it('🔴 URL 优先于 store: ?market=CN + store=HK → 停在 A 股并把 store 拉回', async () => {
+    setMarket('HK')
+    await renderWithProbe('/indices?market=CN')
+    expect(tab('A股')).toBe(true)
+    expect(getMarket()).toBe('CN')
+    expect(text()).toContain('上证指数')
+    expect(text()).not.toContain('恒生指数')
+  })
+
+  it('🔴 切回 A 股后不会被打回港股 (selectMarket 必须同时写 store)', async () => {
+    // 回归: A 股的 indexPageParams 不带 market 参数, 若 selectMarket 漏写 store,
+    // 对齐 effect 会立刻把 market=HK 塞回 URL, 页内切换器等于点不动。
+    setMarket('HK')
+    await renderWithProbe('/indices')
+    expect(search()).toContain('market=HK')
+    await clickTab('A股')
+    expect(tab('A股')).toBe(true)
+    expect(getMarket()).toBe('CN')
+    expect(search()).not.toContain('market=HK')
+    expect(text()).toContain('上证指数')
+  })
+
+  it('A 股态下 URL 保持干净 (缺省不写 market 参数)', async () => {
+    await renderWithProbe('/indices')
+    expect(search()).toBe('')
+    expect(getMarket()).toBe('CN')
   })
 })

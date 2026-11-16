@@ -9,9 +9,10 @@ import type { OHLC } from '@/lib/chart-types'
 import { LightweightDaily } from '@/components/charts/LightweightDaily'
 import { LightweightIntraday } from '@/components/charts/LightweightIntraday'
 import { QuoteDelayBadge } from '@/components/QuoteDelayBadge'
-import { MARKETS, normalizeMarket, type Market } from '@/lib/market'
+import { DEFAULT_MARKET, MARKETS, normalizeMarket, type Market } from '@/lib/market'
 import { marketContent, type CoreIndex } from '@/lib/marketContent'
 import { indexPageParams, indexSource, type IndexChartRow } from '@/lib/index-market-adapter'
+import { setMarket, useMarket } from '@/lib/marketStore'
 
 function defaultRange() {
 	const now = new Date()
@@ -63,8 +64,12 @@ export function Indices() {
 	const qc = useQueryClient()
 	const [searchParams, setSearchParams] = useSearchParams()
 	const symbolParam = searchParams.get('symbol') ?? ''
-	// 市场来自 URL(可分享、刷新不丢); 未知值兜底 CN, 见 lib/market.ts。
-	const market = normalizeMarket(searchParams.get('market'))
+	const urlMarket = searchParams.get('market')
+	const globalMarket = useMarket()
+	// 市场优先取 URL(可分享、刷新不丢); URL 未声明时跟随侧栏全局切换器。
+	// 未知值兜底 CN —— 这是**展示层**读取, 允许兜底 (lib/market.ts 分流铁律);
+	// 真正拼请求参数时走的是 src.* 适配器, 不吃这个兜底。
+	const market = normalizeMarket(urlMarket ?? globalMarket)
 	const src = indexSource(market)
 	const [selected, setSelected] = useState<string>(symbolParam)
 	const [range, setRange] = useState(defaultRange)
@@ -92,6 +97,21 @@ export function Indices() {
 		if (symbolParam && symbolParam !== selected) setSelected(symbolParam)
 	}, [selected, symbolParam])
 
+	// URL ↔ 全局市场 store 双向对齐 (两个方向都必须幂等, 否则会互相触发成死循环):
+	//  - URL 显式带 market → 以 URL 为准, 回写 store, 让侧栏指数条与本页同市场;
+	//  - URL 没带但 store 已是港股 → 用 replace 把 market 补进 URL, 否则这条链接
+	//    分享/刷新出去会静默退回 A 股(用户明明在侧栏切了港股)。
+	useEffect(() => {
+		if (urlMarket != null) {
+			const fromUrl = normalizeMarket(urlMarket)
+			if (fromUrl !== globalMarket) setMarket(fromUrl)
+			return
+		}
+		if (globalMarket !== DEFAULT_MARKET) {
+			setSearchParams(indexPageParams(globalMarket, symbolParam || undefined), { replace: true })
+		}
+	}, [urlMarket, globalMarket, symbolParam, setSearchParams])
+
 	const selectIndex = (symbol: string) => {
 		setSelected(symbol)
 		setSearchParams(indexPageParams(market, symbol))
@@ -103,6 +123,10 @@ export function Indices() {
 		setSelected('')
 		setSelectedDate(null)
 		setLinkedPrice(null)
+		// 🔴 必须同步写全局 store: 切回 A 股时 indexPageParams 会把 market 从 URL 里
+		// 省掉(保持旧链接形态), 若 store 还停在 HK, 上面的对齐 effect 会立刻把
+		// market=HK 写回 URL —— 页内切换器就切不动了。
+		setMarket(next)
 		setSearchParams(indexPageParams(next))
 	}
 

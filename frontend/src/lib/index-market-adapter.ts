@@ -87,7 +87,13 @@ export interface IndexMarketSource {
 	readonly dailyEmptyHint: string
 	readonly syncLabel: string
 	readonly quotesKey: readonly unknown[]
-	fetchQuotes(): Promise<IndexQuotesResult>
+	/**
+	 * 拉取指数快照。`symbols` 可选, 供只需要清单子集的调用方收窄请求 (侧栏指数条
+	 * 只要核心四只)。🔴 **由各市场自己决定怎么用它**, 调用方不做市场分支:
+	 * A 股端点支持 `?symbols=` 过滤; 港股端点本来就只请求核心四只, 传不传等价
+	 * (故 HK 实现直接不声明该形参)。缺省 = 该市场的全量口径(与指数页一致)。
+	 */
+	fetchQuotes(symbols?: readonly string[]): Promise<IndexQuotesResult>
 	dailyKey(symbol: string, start: string, end: string): readonly unknown[]
 	fetchDaily(symbol: string, range: { start: string; end: string }): Promise<IndexDailyResult>
 	syncDaily(): Promise<unknown>
@@ -114,8 +120,9 @@ const CN_SOURCE: IndexMarketSource = {
 	dailyEmptyHint: '暂无日K数据。可以先同步指数日K，或选择其他指数。',
 	syncLabel: '同步指数日K',
 	quotesKey: QK.indexQuotes,
-	async fetchQuotes() {
-		const r = await api.indexQuotes()
+	async fetchQuotes(symbols) {
+		// 侧栏指数条只要核心四只 ⇒ 透传收窄请求; 指数页不传, 保持既有全量口径不变。
+		const r = await api.indexQuotes(symbols?.length ? [...symbols] : undefined)
 		// A 股是实时行情, 无延时字段 ⇒ null(徽章不渲染)。
 		return { rows: r.rows ?? [], count: r.count ?? 0, source: null, quoteDelayMinutes: null }
 	},

@@ -29,8 +29,10 @@ import { useStrategyLibrarySync } from '@/lib/strategyLibrary'
 import { getPageScale } from '@/lib/pageZoom'
 import { setKlineBatchLimits } from '@/lib/klineBatchLimits'
 import { seedHiddenForNewUser } from '@/lib/navOrder'
-import { DEFAULT_MARKET } from '@/lib/market'
-import { coreIndexes, indexDisplayName, type CoreIndex } from '@/lib/marketContent'
+import { DEFAULT_MARKET, MARKETS, type Market } from '@/lib/market'
+import { coreIndexes, indexDisplayName, marketContent, type CoreIndex } from '@/lib/marketContent'
+import { indexPageParams, indexSource } from '@/lib/index-market-adapter'
+import { MARKET_SWITCHER_SCOPE_HINT, setMarket, useMarket } from '@/lib/marketStore'
 import { navPageIds, resolveNavLayout, visibleNavLayout, type NavGroup } from '@/lib/navLayout'
 import { getNavigationEntries, type NavigationEntry } from '@/lib/navigation'
 import { NavFolder } from './navigation/NavFolder'
@@ -70,8 +72,11 @@ import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 // 品牌色统一由 Logo.tsx 的 BRAND 常量提供
 
 // 核心四只指数 — 与后端 index_const.py 单一权威对齐 (前端展示层固定清单)
-// 清单本体住在 lib/marketContent.ts(市场差异的唯一居所); 此处按缺省市场取用,
-// 市场切换器落地后改为按当前 market 取。
+// 清单本体住在 lib/marketContent.ts(市场差异的唯一居所)。
+//
+// 🔴 这份**恒为 A 股**, 不要改成跟随全局市场: 唯一消费者是 SectorRotationCard
+// (板块轮动), 而板块数据只有 A 股源 (见 lib/board-market-support.ts)。侧栏指数条
+// 已改为按当前 market 走 indexSource(market).pinned, 不再读这里。
 export const CORE_INDEXES = coreIndexes(DEFAULT_MARKET)
 
 /** 亮/暗主题切换 — 状态存 localStorage, 生效见 lib/theme.ts */
@@ -125,7 +130,7 @@ function MonitorBadge({ active }: { active: boolean }) {
 	)
 }
 
-function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; items: readonly CoreIndex[] }) {
+function SidebarIndexQuotes({ rows, items, market }: { rows: IndexQuote[] | undefined; items: readonly CoreIndex[]; market: Market }) {
 	if (items.length === 0) return null
 	const quoteBySymbol = new Map((rows ?? []).map(q => [q.symbol, q]))
 	return (
@@ -137,7 +142,9 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 				return (
 					<NavLink
 						key={item.symbol}
-						to={`/indices?symbol=${encodeURIComponent(item.symbol)}`}
+						// 🔴 必须带 market: 港股指数点进去若落到缺省 (CN) 指数页, 页面会拿
+						// HSI 去查 A 股指数接口 —— 静默返回空, 比报错难发现 (market.ts 分流铁律)。
+						to={{ pathname: '/indices', search: `?${new URLSearchParams(indexPageParams(market, item.symbol))}` }}
 						className="block rounded bg-elevated/60 px-1.5 py-1.5 transition-colors hover:bg-elevated"
 						title={`${item.name} ${item.symbol}`}
 					>
@@ -157,6 +164,42 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
 					</NavLink>
 				)
 			})}
+		</div>
+	)
+}
+
+// ===== 侧栏市场切换器 =====
+// 🔴 作用范围是**收窄**的: 只驱动指数条与指数页, 不过滤导航条目 (理由见
+// lib/marketStore.ts 头注)。因此切到非缺省市场时必须在下方明写作用范围 ——
+// 否则用户会以为整个 App 都切了, 而看板/自选/策略/因子/回测/市场环境/数据
+// 这 7 个核心页仍是 A 股链路, 正是 §15 登记过的串市场事故。
+function SidebarMarketSwitcher({ railMode }: { railMode: boolean }) {
+	const market = useMarket()
+	return (
+		<div className="mt-2 border-t border-border/60 pt-2">
+			<div role="tablist" aria-label="市场" className={railMode ? 'flex flex-col items-center gap-1' : 'flex gap-1'}>
+				{MARKETS.map(m => (
+					<button
+						key={m}
+						type="button"
+						role="tab"
+						aria-selected={m === market}
+						onClick={() => setMarket(m)}
+						// 图标条放不下说明文案, 退到 tooltip; 展开态直接渲染在下方。
+						title={railMode ? `${marketContent(m).label}｜${MARKET_SWITCHER_SCOPE_HINT}` : undefined}
+						className={cn(
+							'rounded px-1.5 py-0.5 text-[10px] transition-colors',
+							railMode && 'w-full text-center',
+							m === market ? 'bg-accent text-white' : 'text-secondary hover:bg-elevated',
+						)}
+					>
+						{marketContent(m).label}
+					</button>
+				))}
+			</div>
+			{!railMode && market !== DEFAULT_MARKET && (
+				<div className="mt-1 text-[9px] leading-snug text-muted">{MARKET_SWITCHER_SCOPE_HINT}</div>
+			)}
 		</div>
 	)
 }
@@ -643,13 +686,22 @@ export function Layout() {
 	const toggleNavCollapsed = () => {
 		setNavStatePersist(navState === 'expanded' ? 'rail' : 'expanded')
 	}
-	// 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示
-	const sidebarIndexes = CORE_INDEXES
+	// 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示。
+	// market 感知: 清单与取数都走 indexSource(market) —— 🔴 不能复用 A 股的
+	// api.indexQuotes(HSI), 那会拿港股代码查 A 股指数接口并静默返回空。
+	const market = useMarket()
+	const indexSrc = indexSource(market)
+	const sidebarIndexes = indexSrc.pinned
 	const { data: sidebarIndexQuotes } = useQuery({
-		queryKey: [...QK.indexQuotes, 'sidebar', 'core'] as const,
-		queryFn: () => api.indexQuotes(sidebarIndexes.map(p => p.symbol)),
+		// 🔴 key 必须含 market: 缺了就会 A 股/港股共用一条缓存, 切市场时读到上一个
+		// 市场的行情 (方案「缓存不串市场」)。indexSrc.quotesKey 两侧本就不同源,
+		// 再显式带上 market 是为了让 key 自身可读、可被 invalidate 精确命中。
+		queryKey: [...indexSrc.quotesKey, 'sidebar', market] as const,
+		queryFn: () => indexSrc.fetchQuotes(sidebarIndexes.map(p => p.symbol)),
 		enabled: sidebarIndexes.length > 0,
-		placeholderData: (prev) => prev,
+		// 🔴 刻意**不设** placeholderData: (prev) => prev。它的 prev 来自上一个
+		// queryKey, 而 key 里现在含 market ⇒ 切市场那一帧会把 A 股行情当港股渲染。
+		// 同一 key 的后台刷新本来就保留旧 data, 去掉它只影响切换瞬间(短暂空条)。
 	})
 
 	// SSE: 行情更新时自动刷新相关 queries + 告警通知
@@ -1226,8 +1278,16 @@ export function Layout() {
 								</div>
 							)}
 						{!isWatchlistMode && (!realtimeUnavailable || !!realtimeProviderName) && (
-							<SidebarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} />
+							<SidebarIndexQuotes rows={sidebarIndexQuotes?.rows} items={sidebarIndexes} market={market} />
 						)}
+					</div>
+				)}
+
+				{/* 市场切换器 — 放在底部工具条上方独立一行: 展开态能容下作用范围说明,
+				    图标条退化为竖排 + tooltip。不进导航区, 避免被误读成「切了整站」。 */}
+				{sidebarFullyVisible && (
+					<div className="shrink-0 px-2 pb-2">
+						<SidebarMarketSwitcher railMode={railMode} />
 					</div>
 				)}
 

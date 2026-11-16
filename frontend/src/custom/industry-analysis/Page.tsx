@@ -28,6 +28,9 @@ import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { boardNoSourceCopy } from '@/lib/board-market-support'
+import { marketContent } from '@/lib/marketContent'
+import { useMarket } from '@/lib/marketStore'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
 
@@ -292,6 +295,12 @@ function groupByIndustryLevel(groups: DimensionGroup[], level: IndustryLevel): D
 // ===== 主页面 =====
 
 export function IndustryAnalysis() {
+	const market = useMarket()
+	// 无行业源的市场 (方案 §3.4): 整页只给空态文案, 不渲染 A 股行业。
+	// 🔴 提前算出来是为了**同时关掉下面三个查询** —— 港股态还去拉 A 股行业表/行情
+	// 快照既是白拉, 也让「不显示假数据」只停在渲染层。与 concept-analysis 同口径。
+	const noSourceCopy = boardNoSourceCopy('industry', market)
+	const boardReady = noSourceCopy === null
 	const [fieldConfig, setFieldConfig] = useState<AnalysisFieldConfig>(loadConfig)
 	const [showConfig, setShowConfig] = useState(false)
 	const [search, setSearch] = useState('')
@@ -307,7 +316,7 @@ export function IndustryAnalysis() {
 	}, [])
 	const [showRps, setShowRps] = useState(false)
 
-	const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList })
+	const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList, enabled: boardReady })
 	const availableConfigs = configsQuery.data?.items ?? []
 	// 用户配置的 configId 可能已失效 (扩展数据被删除), 此时回退到自动选择,
 	// 避免用失效 ID 请求接口报错; 用户仍可点配置按钮重新选择。
@@ -319,7 +328,7 @@ export function IndustryAnalysis() {
 	const rowsQuery = useQuery({
 		queryKey: QK.extDataRows(activeConfigId, undefined, PAGE_LIMIT),
 		queryFn: () => api.extDataRows(activeConfigId, { limit: PAGE_LIMIT }),
-		enabled: !!activeConfigId,
+		enabled: boardReady && !!activeConfigId,
 	})
 
 	// 内置行业预设 (ext_hy_ths) 无数据时的一键拉取: 走通用拉取端点
@@ -341,6 +350,7 @@ export function IndustryAnalysis() {
 		queryKey: QK.marketSnapshot,
 		queryFn: api.marketSnapshot,
 		staleTime: 60_000,
+		enabled: boardReady,
 	})
 
 	const marketMap = useMemo(() => buildMarketMap(marketQuery.data?.rows ?? []), [marketQuery.data?.rows])
@@ -408,6 +418,18 @@ export function IndustryAnalysis() {
 		setFieldConfig(c)
 		saveConfig(c)
 		setSelectedKey(null)
+	}
+
+	// 与 custom/concept-analysis 共用 lib/board-market-support.ts 的结论与文案。
+	// 🔴 这个 return 必须放在所有 hook 之后 —— 提前 return 会让市场切换时 hook 数量
+	// 变化, React 直接报「Rendered fewer hooks than expected」。
+	if (noSourceCopy) {
+		return (
+			<div className="flex h-full flex-col">
+				<PageHeader title="行业板块" subtitle={marketContent(market).label} />
+				<EmptyState icon={Layers3} title={noSourceCopy.title} hint={noSourceCopy.hint} />
+			</div>
+		)
 	}
 
 	if (configsQuery.isLoading) {
