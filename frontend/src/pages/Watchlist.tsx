@@ -21,6 +21,7 @@ import { computeGroupPcts, loadGroupStatsConfig, type GroupStatsConfigPatch } fr
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { QuoteDelayBadge } from '@/components/QuoteDelayBadge'
 import { QuoteFreshnessBadge } from '@/components/QuoteFreshnessBadge'
 import { toNavItems, uniqueBy, type NavItem } from '@/lib/listNav'
 import {
@@ -602,6 +603,9 @@ const StockCard = React.memo(function StockCard({
 						<span className="text-xs text-secondary truncate">{name}</span>
 					)}
 					<QuoteFreshnessBadge freshness={r.quote_freshness} compact />
+					{/* 延时角标与新鲜度徽章语义相反: 前者是「交易所授权的正常延时」(港股),
+					    后者是「数据可能坏了」。A 股 quote_delay_minutes=0 → 不渲染。 */}
+					<QuoteDelayBadge minutes={r.quote_delay_minutes} />
 					{board && (
 						<span className={`shrink-0 inline-flex items-center justify-center px-1 h-[16px] rounded text-[9px] font-bold leading-none ${board.color}`}>
 							{board.label}
@@ -1868,6 +1872,8 @@ export function Watchlist() {
 													{monitoredSymbols.has(r.symbol) && <span className="ml-2"><RealtimeDot /></span>}
 												</button>
 												<QuoteFreshnessBadge freshness={r.quote_freshness} compact />
+												{/* 延时角标(港股 15 分钟, 交易所授权的正常状态); A 股为 0 不渲染 */}
+												<QuoteDelayBadge minutes={r.quote_delay_minutes} />
 												{/* 删除入口：从分组移除 + 从自选移除(二次确认) + 移到顶部 */}
 												<div className="ml-auto pl-1 shrink-0">
 													{confirmRemove === r.symbol ? (

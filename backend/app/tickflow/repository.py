@@ -19,8 +19,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
 
@@ -51,6 +51,12 @@ logger = logging.getLogger(__name__)
 # 为空, K 线接口逐请求现算指标。仅 warmup 线程用, 同步/懒加载路径单次。
 _ENRICHED_WARMUP_MAX_ATTEMPTS = 3
 _ENRICHED_WARMUP_PUBLISH_WAIT_SECONDS = 5.0
+
+# 港股 enriched 读时重算的预热窗 (日历天)。最长指标是 MA60/EMA60 ≈ 60 交易日
+# ≈ 150 日历日。🔴 单标的 (:meth:`Repository.get_hk_daily`) 与全量最新日快照
+# (:meth:`Repository.get_hk_enriched_latest`) **必须共用这一个常量**: 窗口一旦分叉,
+# 自选列表那一行与详情抽屉最后一根蜡烛的 MA/MACD 就会给出两个都「看起来对」的值。
+_HK_ENRICHED_WARMUP_DAYS = 150
 
 
 def replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay_s: float = 0.5) -> None:
@@ -459,6 +465,12 @@ class KlineRepository:
         self._etf_symbol_set_cache: set[str] | None = None
         self._index_enriched_cache: pl.DataFrame | None = None
         self._index_enriched_cache_date: date | None = None
+        # 港股 enriched「最新日全量快照」缓存。与 A 股 _enriched_cache 刻意**分开**:
+        # ① 港股没有实时行情注入/世代快照那套机械 (只有显式同步落盘的数据);
+        # ② 指标口径不同 (volume 单位按「股」、限价列恒 null), 混进同一张缓存会让
+        #    A 股消费方读到港股行 —— 正是 CONTRIBUTING §3 的「看起来对但错」。
+        self._hk_enriched_cache: pl.DataFrame | None = None
+        self._hk_enriched_cache_date: date | None = None
 
         # ---- enriched 后台预热 ----
         # 启动时 compute_indicators (107万行, 低配机 50s+) 移出 lifespan 关键路径,
@@ -583,6 +595,8 @@ class KlineRepository:
         # 指数 enriched 同样只失效不重建 (懒加载)
         self._index_enriched_cache = None
         self._index_enriched_cache_date = None
+        # 港股 enriched 最新日快照同理 (没有港股自选的用户不该白付全量重算)
+        self.invalidate_hk_enriched()
 
         if background:
             logger.info("cache refresh: enriched 推后台线程预热")
@@ -684,6 +698,8 @@ class KlineRepository:
         self._name_map_cache = None
         self._index_enriched_cache = None
         self._index_enriched_cache_date = None
+        self._hk_enriched_cache = None
+        self._hk_enriched_cache_date = None
 
     def _refresh_enriched(self) -> bool:
         """刷新 enriched 内存缓存。返回 True 表示因数据换代被丢弃、可重试。
@@ -2356,7 +2372,9 @@ class KlineRepository:
         """
         from datetime import timedelta
 
-        df = self._scan_hk_enriched_symbol(symbol, start - timedelta(days=150), end)
+        df = self._scan_hk_enriched_symbol(
+            symbol, start - timedelta(days=_HK_ENRICHED_WARMUP_DAYS), end
+        )
         if df.is_empty():
             return df
         df = self._compute_hk_enriched_range(df)
@@ -2381,6 +2399,104 @@ class KlineRepository:
         except Exception as e:  # noqa: BLE001
             logger.debug("港股原始日K计数失败 (可能尚未同步): %s", e)
             return 0
+
+    def _refresh_hk_enriched(self) -> None:
+        """扫 ``kline_hk_enriched`` → **最新日全量快照** (每标的一行, 含全套指标)。
+
+        与 :meth:`_refresh_index_enriched` 同构 (枚举日分区 → 读最新日 → scan 预热窗
+        重算指标 → filter 回最新日), 两处差别都是**市场差异住在数据里**而不是分支里:
+        ① 目录经 :func:`enriched_dirname` 查 ``_DIRNAMES`` 得出, 不写字面量;
+        ② 指标重算走 :meth:`_compute_hk_enriched_range` (维表 ``instruments_hk`` +
+        ``market=Market.HK`` → 换手率 volume 单位按「股」、限价列恒 null)。
+
+        磁盘只有 14 列存储窄表, 所以**必须** scan 预热窗重算 —— 直接读最新日分区
+        会得到一张没有任何指标列的表, 自选/监控规则无列可评估。
+
+        失败一律降级为「缓存置空」而不抛: 港股 enriched 从未同步过是正常状态
+        (与 :meth:`_scan_hk_enriched_symbol` 同口径), 由调用方如实报「无数据」。
+        """
+        try:
+            enriched_dir = self.store.data_dir / enriched_dirname("stock", market=Market.HK)
+            dates = (
+                sorted(
+                    p.name[len("date="):]
+                    for p in enriched_dir.glob("date=*")
+                    if p.is_dir() and p.name.startswith("date=")
+                )
+                if enriched_dir.exists()
+                else []
+            )
+            if not dates:
+                self._hk_enriched_cache = None
+                self._hk_enriched_cache_date = None
+                return
+            latest = date.fromisoformat(dates[-1])
+            df_latest = pl.read_parquet(enriched_dir / f"date={dates[-1]}" / "part.parquet")
+            if df_latest.is_empty():
+                self._hk_enriched_cache = None
+                self._hk_enriched_cache_date = None
+                return
+
+            df_hist = guarded_collect(
+                scan_enriched_parquet(
+                    self._hk_enriched_glob,
+                    cast_options=pl.ScanCastOptions(integer_cast="allow-float"),
+                )
+                .filter(pl.col("date") >= latest - timedelta(days=_HK_ENRICHED_WARMUP_DAYS))
+                .sort(["symbol", "date"]),
+                priority="background",
+            )
+            if df_hist.is_empty():
+                self._hk_enriched_cache = None
+                self._hk_enriched_cache_date = None
+                return
+            df_full = self._compute_hk_enriched_range(df_hist)
+            self._hk_enriched_cache = df_full.filter(pl.col("date") == latest).sort(["symbol"])
+            self._hk_enriched_cache_date = latest
+        except Exception as e:  # noqa: BLE001
+            logger.debug("港股 enriched 最新日缓存刷新跳过: %s", e)
+            self._hk_enriched_cache = None
+            self._hk_enriched_cache_date = None
+
+    def get_hk_enriched_latest(
+        self, *, symbols: Sequence[str] | None = None, refresh: bool = True
+    ) -> tuple[pl.DataFrame, date | None]:
+        """港股 enriched **最新日全量快照** + 该日日期。缓存冷时懒加载。
+
+        这是 :meth:`get_enriched_latest` 的港股对位物 —— 自选/监控这类「每标的一行」
+        的消费方需要它; 此前港股只有逐标的的 :meth:`get_hk_daily`, 拿最新日全量
+        只能 N 次单标的 scan + N 次重算。
+
+        ``refresh=False``: 缓存冷时**不**触发同步重建, 直接返回空表。供行情轮询
+        这类热路径使用 (与 :meth:`get_enriched_latest_asset` 的 ``refresh`` 同语义),
+        避免在 tick 线程上做 scan+compute 阻塞 A 股行情。
+
+        ⚠️ 刻意**不**调 :meth:`_assert_daily_usable`: ``daily_health.assert_usable``
+        只有 ``asset_type`` 维、没有 market 维, 拿它闸港股会去读 A 股的完整性凭据。
+        港股的空态归因走 :meth:`hk_daily_row_count`。
+
+        🔴 返回的帧**只含港股行**, 且与 A 股缓存物理隔离 (见 ``_hk_enriched_cache``
+        声明处注释): 混表会让 A 股消费方静默读到港股行。
+        """
+        if self._hk_enriched_cache is None:
+            if not refresh:
+                return pl.DataFrame(), self._hk_enriched_cache_date
+            self._refresh_hk_enriched()
+        if self._hk_enriched_cache is None:
+            return pl.DataFrame(), self._hk_enriched_cache_date
+        frame = self._hk_enriched_cache
+        if symbols is not None:
+            frame = frame.filter(pl.col("symbol").is_in(list(symbols)))
+        return frame, self._hk_enriched_cache_date
+
+    def invalidate_hk_enriched(self) -> None:
+        """失效港股 enriched 最新日快照; 下次读取按新落盘数据懒加载。
+
+        与 ETF/指数同款「只失效不重建」: 没有港股自选的用户不该在同步管道后
+        白付一次全量 scan+compute。
+        """
+        self._hk_enriched_cache = None
+        self._hk_enriched_cache_date = None
 
     def _filter_cached(
         self, cached: pl.DataFrame, symbol: str, columns: list[str] | None
@@ -2757,6 +2873,9 @@ class KlineRepository:
         storage_cols = [c for c in ENRICHED_STORAGE_COLS if c in df.columns]
         df_storage = df.select(storage_cols)
         self._write_daily_partition(df_storage, enriched_dirname("stock", market=Market.HK))
+        # 落盘即失效最新日快照: 否则同步完自选仍读旧缓存 (与 save_index_instruments
+        # 写完即失效维表缓存同一纪律)。
+        self.invalidate_hk_enriched()
 
     def append_hk_index_enriched(self, df: pl.DataFrame) -> None:
         """按日分区写入**港股指数** enriched → ``kline_hk_index_enriched/``。

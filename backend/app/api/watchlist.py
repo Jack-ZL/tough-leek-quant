@@ -13,6 +13,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.db_safe import quote_ident
+from app.market import Market, is_hk_symbol, rules_for
 from app.market_time import CN_TZ, cn_today
 from app.price_limits import (
     polars_is_risk_warning_name,
@@ -111,12 +112,35 @@ class ImportCodesRequest(BaseModel):
     text: str
 
 
+def _name_map_with_hk(repo, symbols: list[str]) -> dict[str, str]:
+    """``get_name_map`` + 港股维表补名。
+
+    🔴 ``repo.get_name_map`` 只合并 A 股那三份维表 (股票/ETF/指数), 而自选是**一张
+    跨市场平表** —— 不补港股维表, 港股行的名称恒为 null, 前端只能显示代码。
+    刻意不改 ``get_name_map`` 本身: 它被大量 A 股热路径共用, 且合入港股会让每个
+    没同步过港股维表的用户在冷启动时吃一条「港股维表不存在」的 warning。
+    这里先判有没有港股代码, 没有就原样返回, A 股用户零额外开销。
+    """
+    name_map = repo.get_name_map(symbols)
+    if not any(is_hk_symbol(s) for s in symbols):
+        return name_map
+    df_hk = repo.get_hk_instruments()
+    if df_hk.is_empty() or not {"symbol", "name"} <= set(df_hk.columns):
+        return name_map
+    for sym, nm in df_hk.select(["symbol", "name"]).iter_rows():
+        name_map.setdefault(sym, nm)
+    return name_map
+
+
 def _with_names(rows: list[dict], request: Request) -> list[dict]:
     if not rows:
         return rows
     try:
-        # 股票 + ETF 名称统一由 repo.get_name_map 解析, 自选列表可混合持有
-        name_by_symbol = request.app.state.repo.get_name_map([r.get("symbol") for r in rows])
+        # 股票 + ETF 名称统一由 repo.get_name_map 解析, 自选列表可混合持有;
+        # 港股名称走港股维表 (见 _name_map_with_hk)。
+        name_by_symbol = _name_map_with_hk(
+            request.app.state.repo, [r.get("symbol") for r in rows]
+        )
         if not name_by_symbol:
             return rows
         return [{**row, "name": name_by_symbol.get(row.get("symbol"))} for row in rows]
@@ -567,15 +591,22 @@ def watchlist_enriched(
     symbols = [r["symbol"] for r in entries]
     if not symbols:
         return {"rows": [], "as_of": None, "elapsed_ms": 0,
-                "dates": {"stock": None, "etf": None, "index": None}}
+                "dates": {"stock": None, "etf": None, "index": None, "hk": None}}
 
     # 按资产拆分自选 symbol; ETF enriched 是独立缓存, 仅自选真的含 ETF 才去加载
     # (避免无 ETF 用户在缓存冷启动时触发 ETF 全量懒加载)
+    #
+    # 🔴 港股先摘出来: 自选是**一张跨市场平表** (services/watchlist.py 无 market 列),
+    # 港股代码不在 A 股 etf/index 集合里, 不先摘就会落进 stock_symbols, 再去 LEFT JOIN
+    # A 股 enriched 缓存 —— 结果是一整行 null, 前端渲染 "—", 看起来像「没同步」而不是
+    # 「读错了表」。归属判定走 app.market.is_hk_symbol (契约), 不在这里写代码形状字面量。
+    hk_symbols = [s for s in symbols if is_hk_symbol(s)]
+    hk_set = set(hk_symbols)
     etf_set = repo.get_etf_symbol_set()
     index_set = repo.get_index_symbol_set()
-    etf_symbols = [s for s in symbols if s in etf_set]
-    index_symbols = [s for s in symbols if s not in etf_set and s in index_set]
-    stock_symbols = [s for s in symbols if s not in etf_set and s not in index_set]
+    etf_symbols = [s for s in symbols if s in etf_set and s not in hk_set]
+    index_symbols = [s for s in symbols if s not in etf_set and s in index_set and s not in hk_set]
+    stock_symbols = [s for s in symbols if s not in etf_set and s not in index_set and s not in hk_set]
 
     df_e, cache_date = repo.get_enriched_latest()
 
@@ -615,8 +646,26 @@ def watchlist_enriched(
             df_idx = idx_watchlist_df
         df = df_idx if df.is_empty() else pl.concat([df, df_idx], how="diagonal_relaxed")
 
-    # as_of 取三类缓存中较旧者
-    dates = [d for d in (cache_date if stock_symbols else None, etf_date, index_date) if d is not None]
+    # 港股行合并 (镜像 ETF/指数分支)。数据来自**独立的港股最新日快照缓存**
+    # (get_hk_enriched_latest): 港股 enriched 与 A 股 enriched 物理隔离, 指标口径也不同
+    # (换手率按股、无涨跌停)。与 stock 分支的 get_enriched_latest() 同语义 —— 冷缓存
+    # 时懒加载一次, 之后走缓存; 本端点在 tick 热路径上, 不做逐标的历史 scan 兜底。
+    hk_date = None
+    if hk_symbols:
+        df_hk_all, hk_date = repo.get_hk_enriched_latest(symbols=hk_symbols)
+        hk_watchlist_df = pl.DataFrame({"symbol": hk_symbols})
+        if not df_hk_all.is_empty():
+            # 同样以自选为主表 LEFT JOIN: 未同步的港股标的留 null 行, 不静默丢弃
+            df_hk = hk_watchlist_df.join(_latest_watchlist_rows(df_hk_all, hk_symbols), on="symbol", how="left")
+        else:
+            df_hk = hk_watchlist_df
+        df = df_hk if df.is_empty() else pl.concat([df, df_hk], how="diagonal_relaxed")
+
+    # as_of 取各资产缓存中较旧者
+    dates = [
+        d for d in (cache_date if stock_symbols else None, etf_date, index_date, hk_date)
+        if d is not None
+    ]
     as_of = min(dates) if dates else None
     # 按资产类型的行情日期 (ISO): as_of 是三类取 min 的全局值, 分不清哪类过期。
     # 前端分时缩略图续画据此判定「该类行情是否为当日」—— ETF 未开实时拉取时
@@ -626,17 +675,29 @@ def watchlist_enriched(
         "stock": str(cache_date) if cache_date else None,
         "etf": str(etf_date) if etf_date else None,
         "index": str(index_date) if index_date else None,
+        "hk": str(hk_date) if hk_date else None,
     }
     if df.is_empty():
         return {"rows": [], "as_of": str(as_of) if as_of else None,
                 "elapsed_ms": 0, "dates": quote_dates}
 
     # JOIN float_shares (仅股票有) + 名称 (股票/ETF 统一走 get_name_map)
+    # 🔴 港股不在 A 股那三份维表里, get_name_map / get_instruments 都覆盖不到 ——
+    # 名称与流通股本必须从港股维表补, 否则自选里的港股行名称恒为 null。
+    df_hk_dim = repo.get_hk_instruments() if hk_symbols else pl.DataFrame()
     df_i = repo.get_instruments()
-    if not df_i.is_empty() and "float_shares" in df_i.columns:
-        shares = df_i.select(["symbol", "float_shares"]).unique(subset=["symbol"], keep="first")
+    shares_parts = [
+        d.select(["symbol", "float_shares"]).unique(subset=["symbol"], keep="first")
+        for d in (df_i, df_hk_dim)
+        if not d.is_empty() and "float_shares" in d.columns
+    ]
+    if shares_parts:
+        shares = (
+            pl.concat(shares_parts, how="vertical_relaxed")
+            .unique(subset=["symbol"], keep="first")
+        )
         df = df.join(shares, on="symbol", how="left")
-    name_map = repo.get_name_map(df["symbol"].to_list())
+    name_map = _name_map_with_hk(repo, df["symbol"].to_list())
     df = df.with_columns(
         pl.col("symbol").replace_strict(name_map, default=None, return_dtype=pl.Utf8).alias("name")
     )
@@ -671,6 +732,17 @@ def watchlist_enriched(
     keep = [c for c in _WATCHLIST_COLS + ["name", "float_shares", "asset_type", "prepared_daily"] if c in df.columns]
     df = df.select(keep)
 
+    # 每行自带行情延时分钟数。港股免费源是**交易所授权的延时行情**, 属正常状态而非
+    # 故障, 前端 QuoteDelayBadge 据此出中性色角标 (刻意不复用 QuoteFreshnessBadge —
+    # 那套的 delayed 语义是「数据源坏了」)。A 股为 0 → 徽章不渲染。
+    # 🔴 数值取自 rules_for(), 不在这里写字面量: 写死会在源侧调整延时后静默说谎。
+    df = df.with_columns(
+        pl.when(pl.col("symbol").is_in(hk_symbols))
+        .then(pl.lit(rules_for(Market.HK).quote_delay_minutes))
+        .otherwise(pl.lit(rules_for(Market.CN).quote_delay_minutes))
+        .alias("quote_delay_minutes")
+    )
+
     # 涨跌停价 (交易所整数分半进位口径, 仅股票): prev_close/名称已在行上, 对自选的
     # 几十~几百行向量化现算为亚毫秒级, 不写回 enriched 存储。ETF (跨境/债券 5% 等)
     # 与指数的涨跌幅规则不在 price_limits 覆盖内, 置 null 由前端渲染 "—"。
@@ -686,7 +758,14 @@ def watchlist_enriched(
             pl.lit(as_of_date),
             polars_is_risk_warning_name(pl.col("name")),
         )
-        stock_with_prev = (pl.col("asset_type") == "stock") & pl.col("prev_close").is_not_null()
+        # 🔴 港股排除: 港股无涨跌停制度, 而 polars_price_limit_pct 只认 A 股规则 ——
+        # 拿它算 .HK 会得出一个「看起来对」的 ±10% 限价 (CONTRIBUTING §3 要拦的形状)。
+        # 港股行限价列保持 null, 前端渲染 "—"。
+        stock_with_prev = (
+            (pl.col("asset_type") == "stock")
+            & pl.col("prev_close").is_not_null()
+            & ~pl.col("symbol").is_in(hk_symbols)
+        )
         df = df.with_columns(
             pl.when(stock_with_prev)
             .then(polars_limit_price(pl.col("prev_close"), pct, up=True))
@@ -710,6 +789,9 @@ def watchlist_enriched(
             schema={"symbol": pl.Utf8, "added_at": pl.Utf8},
         )
         with_base = df.join(added_at_df, on="symbol", how="left")
+        # 🔴 基准价只覆盖 A 股股票 (_added_base_closes 走 A 股 enriched 历史缓存)。
+        # 港股没有对应的历史区间读取器, 故 hk_symbols 不在集合里 → pct_since_added
+        # 如实为 null (前端渲染 "—"), 不拿 A 股缓存去凑一个数。
         base_df = _added_base_closes(repo, _added_dates_bj(entries), set(stock_symbols))
         if base_df.is_empty():
             # 无基准价 (缓存冷 / 全为 ETF 或超窗): 整列降级为 null

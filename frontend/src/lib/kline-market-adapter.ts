@@ -51,7 +51,12 @@ import { QK } from '@/lib/queryKeys'
 export interface KlineCapabilities {
 	/** 分时(分钟K)链路。港股无实时行情源(方案 §3.4) ⇒ false。 */
 	readonly minute: boolean
-	/** 加入/移出自选。后端 `api/watchlist.py` 目前零市场感知 ⇒ 港股 false。 */
+	/**
+	 * 加入/移出自选。后端 `/api/watchlist/enriched` 已按 `is_hk_symbol` 把港股行分流到
+	 * 港股最新日快照缓存 ⇒ 港股 true。
+	 * ⚠️ 自选页的**搜索框**仍只查 A 股维表(`instrumentSearch('stock,etf,index')`),
+	 * 港股标的目前只能从详情抽屉加入 —— 入口开着但搜不到, 是已知缺口而非回归。
+	 */
 	readonly watchlist: boolean
 	/** 监控规则与点位提醒。监控引擎只跑 A 股信号 ⇒ 港股 false。 */
 	readonly monitor: boolean
@@ -115,9 +120,11 @@ const HK_SOURCE: KlineMarketSource = {
 	market: 'HK',
 	content: marketContent('HK'),
 	// 港股没有实时行情链路(方案 §3.4): 分时、最新一根增量、盘中轮询都不存在。
-	// 自选与监控的后端目前零市场感知(见 KlineCapabilities 文档), 属**未就绪**而非
-	// 「不支持」—— 后端补齐后把对应开关翻成 true 即可, 弹窗代码不用动。
-	capabilities: { minute: false, watchlist: false, monitor: false, abnormal: false },
+	// 监控引擎与异动仍只跑 A 股信号链路 ⇒ **未就绪**而非「不支持」, 后端补齐后把
+	// 开关翻成 true 即可, 弹窗代码不用动。
+	// 自选已就绪: `/api/watchlist/enriched` 按 is_hk_symbol 分流到港股最新日快照,
+	// 名称/流通股本走港股维表, 且港股行不套 A 股涨跌停价(港股无涨跌停制度)。
+	capabilities: { minute: false, watchlist: true, monitor: false, abnormal: false },
 	dailyQueryOptions: (symbol, range) => ({
 		queryKey: QK.hkDaily(symbol, range.start, range.end, HK_DAILY_LIMIT),
 		queryFn: () => api.hkDaily(symbol, {

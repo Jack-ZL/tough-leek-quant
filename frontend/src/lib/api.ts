@@ -4820,7 +4820,7 @@ export const api = {
 			as_of: string | null
 			elapsed_ms: number
 			/** 按资产类型的行情日期 (ISO); 缺失 (旧后端) 时前端按不新鲜处理 */
-			dates?: { stock: string | null; etf: string | null; index: string | null }
+			dates?: { stock: string | null; etf: string | null; index: string | null; hk?: string | null }
 		}>(
 			extColumns
 				? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`

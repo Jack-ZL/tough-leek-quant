@@ -100,8 +100,8 @@ describe('capabilities: 未就绪的能力直接隐藏入口(方案 §8 规则 4
     expect(cn.capabilities).toEqual({ minute: true, watchlist: true, monitor: true, abnormal: true })
   })
 
-  it('港股四项全关: 无实时行情链路, 且自选/监控后端零市场感知', () => {
-    expect(hk.capabilities).toEqual({ minute: false, watchlist: false, monitor: false, abnormal: false })
+  it('港股: 无实时行情链路 ⇒ 分时/监控/异动关; 自选已接通 ⇒ 开', () => {
+    expect(hk.capabilities).toEqual({ minute: false, watchlist: true, monitor: false, abnormal: false })
   })
 
   it('能力表字段齐全(新增能力时两个市场都必须表态, 否则 TS 报缺 key)', () => {

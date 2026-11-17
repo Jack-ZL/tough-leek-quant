@@ -142,9 +142,10 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
 	const qc = useQueryClient()
 	const backdrop = useDialogBackdrop(onClose)
 
-	// 自选 / 监控 / 异动三套后端目前都零市场感知(只认 A 股)。能力关闭时**连请求都
-	// 不发**: 异动那条尤其重要 —— `abnormalOverview` 是全市场累计偏离计算, 为一个
-	// 港股代码触发它既拿不到结果又白烧一次重计算。
+	// 监控 / 异动两套后端目前零市场感知(只认 A 股); 自选已接通港股(后端 enriched
+	// 端点按代码分流, 见 `lib/kline-market-adapter.ts` 的 `capabilities.watchlist`)。
+	// 能力关闭时**连请求都不发**: 异动那条尤其重要 —— `abnormalOverview` 是全市场
+	// 累计偏离计算, 为一个港股代码触发它既拿不到结果又白烧一次重计算。
 	const watchlist = useQuery({
 		queryKey: QK.watchlist,
 		queryFn: api.watchlistList,

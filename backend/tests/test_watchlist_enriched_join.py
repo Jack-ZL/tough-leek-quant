@@ -567,7 +567,7 @@ def test_pct_since_added_null_for_invalid_baseline(monkeypatch):
 
 
 def test_empty_watchlist_returns_no_rows(monkeypatch):
-    """空自选: 保持既有早退契约, 不因新字段改变响应结构。"""
+    """空自选: 保持既有早退契约, dates 四键齐全 (含 hk)。"""
     monkeypatch.setattr(wl_api.watchlist, "list_symbols", lambda: [])
     repo = _FakeRepo(
         enriched_df=_enriched_df([("600519.SH", 11.0, 1.0, 1e9)]),
@@ -577,7 +577,7 @@ def test_empty_watchlist_returns_no_rows(monkeypatch):
 
     res = wl_api.watchlist_enriched(_make_request(repo), ext_columns=None)
     assert res == {"rows": [], "as_of": None, "elapsed_ms": 0,
-                   "dates": {"stock": None, "etf": None, "index": None}}
+                   "dates": {"stock": None, "etf": None, "index": None, "hk": None}}
 
 
 # ===== 按资产类型行情日期 (dates) =====
@@ -600,7 +600,9 @@ def test_dates_reports_per_asset_type_quote_dates(monkeypatch):
 
     res = wl_api.watchlist_enriched(_make_request(repo), ext_columns=None)
 
-    assert res["dates"] == {"stock": "2026-10-08", "etf": "2026-09-29", "index": None}
+    assert res["dates"] == {
+        "stock": "2026-10-08", "etf": "2026-09-29", "index": None, "hk": None,
+    }
     # 全局 as_of 取 min, 与分类型 dates 各自独立 (as_of 分不清哪类过期)
     assert res["as_of"] == "2026-09-29"
 

@@ -165,8 +165,11 @@ it('单个懒加载扩展的加载和渲染失败局限于面板，仍能切回�
 
 // ===== 港股详情: 能力开关驱动, 弹窗内没有一处 `market === 'HK'` =====
 
-/** 自选 / 加监控 / 异动条这三个 A 股专属入口是否渲染。 */
-function aShareOnlyAffordances() {
+/** 自选 / 加监控 / 异动条这三个入口是否渲染。
+ *
+ * 🔴 不再叫 `aShareOnlyAffordances`: 自选已接通港股(`capabilities.watchlist = true`),
+ * 只有加监控与异动条仍是 A 股专属。 */
+function marketAffordances() {
   return {
     watchlist: host.querySelector('[aria-label*="自选"]'),
     monitor: host.querySelector('[title="加监控"]'),
@@ -176,19 +179,21 @@ function aShareOnlyAffordances() {
 
 it('A 股详情保留自选与加监控入口(能力全开时的对照)', async () => {
   await setup()
-  const affordances = aShareOnlyAffordances()
+  const affordances = marketAffordances()
   expect(affordances.watchlist).not.toBeNull()
   expect(affordances.monitor).not.toBeNull()
   expect(tabs()).toEqual(['日 K', '分时'])
 })
 
-it('港股详情: 分时/自选/加监控入口全部隐藏, 主体走港股实现', async () => {
+it('港股详情: 分时/加监控入口隐藏, 自选入口保留, 主体走港股实现', async () => {
   const render = await setup()
   await render(hkFirst)
   // 分时 tab 被能力开关过滤掉(未就绪直接隐藏入口, 方案 §8 规则 4)
   expect(tabs()).toEqual(['日 K'])
-  const affordances = aShareOnlyAffordances()
-  expect(affordances.watchlist).toBeNull()
+  const affordances = marketAffordances()
+  // 自选已接通(enriched 端点按代码分流到港股快照) ⇒ 入口必须出现;
+  // 加监控 / 异动条依赖 A 股实时链路, 仍 fail-closed 隐藏。
+  expect(affordances.watchlist).not.toBeNull()
   expect(affordances.monitor).toBeNull()
   expect(affordances.abnormalBar).toBeNull()
   // 主体由 StockDetailBody 的注册表选中港股实现; A 股 StockPanel 的 mock 会把
