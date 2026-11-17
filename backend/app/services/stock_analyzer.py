@@ -26,6 +26,7 @@ from app.indicators.levels import compute_levels, summarize_levels
 from app.market import Market, infer_market
 from app.market_time import cn_today, market_today
 from app.services.financial_sync import get_financial_df
+from app.services.market_guardrail import guardrail_prompt, prompt_market_label
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
     return rows
 
 
-def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
+def _load_financials_cn(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
     """读取该标的核心财务指标 + 利润表(只取最有信息量的两张表)。
 
     财务面只需要关键指标(ROE / 增速 / 毛利率 等),不需要把 4 张表全塞进上下文
@@ -175,13 +176,56 @@ def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
     return out
 
 
+def _load_financials_hk(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
+    """港股: AI 链路暂不读财务, 直接返回空。
+
+    🔴 不是「懒得接」, 是**读了会错**: ``get_financial_df`` 读的是 A 股财务宽表
+    (``metrics`` / ``income``), 港股代码在里面**一行都没有**, 拿到的永远是空帧 ——
+    白扫一遍全表, 然后 ``_build_user_prompt`` 据此输出「当前为 Free 模式或尚未
+    同步财务报表」。对港股这是**错误建议**: 用户去开 Free 模式 / 点同步永远修不好,
+    真实原因是港股财报口径与报告货币不同, 需要 PR5 单独接入。
+
+    返回空 dict 让调用方走 ``financial_missing_note(Market.HK)`` 的正确文案。
+    """
+    return {}
+
+
+#: 按 market 的财务读取器。港股注册成「明确返回空」而不是「不注册」:
+#: 不注册会走 fail-closed 抛错, 而港股无财务是**已知且正确**的现状 (PR5 才接),
+#: 不该让整个分析流程报错。新市场忘了注册才该抛错。
+_FINANCIAL_LOADERS: dict[Market, Callable[[Path, str], dict[str, list[dict]]]] = {
+    Market.CN: _load_financials_cn,
+    Market.HK: _load_financials_hk,
+}
+
+
+def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
+    """按 symbol 所属市场分派财务读取。
+
+    签名**刻意保持两参数不变**: ``ai_audit.py:292`` 与
+    ``tests/test_ai_audit_ledger.py`` 都以 ``(data_dir, symbol)`` 调用/打桩,
+    加参数会让既有 monkeypatch 的 lambda 静默失配。市场由 symbol 唯一决定
+    (``infer_market``), 无需外部传入。
+    """
+    market = infer_market(symbol)
+    loader = _FINANCIAL_LOADERS.get(market)
+    if loader is None:  # 新市场忘了注册: 当场报错, 不静默按 A 股读
+        raise ValueError(f"市场 {market} 未注册 AI 财务读取器")
+    return loader(data_dir, symbol)
+
+
 # ================================================================
 # 系统提示词 —— 客观技术分析四维框架(与财务分析明确区分)
 # 重要原则:只描述"指标/价位处于什么客观状态",不输出"应该怎么操作"。
 # 本报告定位为客观行情分析,不提供任何买卖建议、仓位建议或交易指令。
 # ================================================================
 
-_SYSTEM_PROMPT_HEAD = """你是一位拥有 15 年 A 股一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
+#: 系统提示词开头 (人设 + 红线 + 输出规范 §1-§4)。
+#:
+#: ``{MARKET_LABEL}`` 是**唯一**的市场占位符, 由 ``_build_system_prompt`` 用
+#: ``market_guardrail.prompt_market_label`` 填充。用 ``str.replace`` 而不是
+#: ``str.format``: 正文里有大量 Markdown 花括号风险, replace 不需要转义。
+_SYSTEM_PROMPT_HEAD_TMPL = """你是一位拥有 15 年{MARKET_LABEL}一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
 
 ## 核心红线(务必遵守)
 
@@ -276,19 +320,37 @@ _SYSTEM_PROMPT_TAIL = """### 6. ⚖️ 综合研判与风险提示
 现在请基于下方数据进行分析。"""
 
 
-def _build_system_prompt(web_search: bool) -> str:
-    """按是否启用联网搜索拼装系统提示词(第 5 节双变体)。
+def _build_system_prompt(web_search: bool, market: Market | str | None = Market.CN) -> str:
+    """按是否启用联网搜索 + 市场拼装系统提示词(第 5 节双变体 + 市场护栏)。
 
     web_search 取值须与实际请求参数一致(ai_provider.web_search_supported),
     否则提示词声称的能力与模型真实能力矛盾, 会诱发编造"搜索结果"。
+
+    market 决定两处: ① 人设里的市场称谓 (``15 年 A 股 / 港股 一线研究经验``);
+    ② 是否追加 ``market_guardrail`` 护栏 —— **A 股返回空串, 提示词逐字不变**
+    (既有 A 股测试与 ``_SYSTEM_PROMPT`` 兼容常量都依赖这一点)。
+
+    护栏插在 ``_SYSTEM_PROMPT_TAIL`` 之后、``NUMBER_RULE_PROMPT`` /
+    ``VERDICT_PROMPT`` **之前**: 后两者是「输出契约」(数字出处纪律 + 机读答题卡),
+    必须留在最贴近用户消息的位置; 护栏属于**领域口径**, 与分析准则同层。
     """
     section = _NEWS_SECTION_SEARCH if web_search else _NEWS_SECTION_OFFLINE
     # 数字出处纪律 (ai_number_gate 配套提示词): 让模型主动写出算式, 显著降低打码率
     # 研判答题卡 (ai_verdict 配套提示词): 结论以机读标记输出, 程序直接读、不靠猜
     from app.services.ai_number_gate import NUMBER_RULE_PROMPT
     from app.services.ai_verdict import VERDICT_PROMPT
-    return _SYSTEM_PROMPT_HEAD + section + _SYSTEM_PROMPT_TAIL + NUMBER_RULE_PROMPT + VERDICT_PROMPT
+    head = _SYSTEM_PROMPT_HEAD_TMPL.replace("{MARKET_LABEL}", prompt_market_label(market))
+    return (
+        head + section + _SYSTEM_PROMPT_TAIL
+        + guardrail_prompt(market) + NUMBER_RULE_PROMPT + VERDICT_PROMPT
+    )
 
+
+# 兼容旧引用/测试: A 股渲染结果, 逐字等于引入 market 维之前的 _SYSTEM_PROMPT_HEAD。
+# 称谓走 prompt_market_label 单一来源 (值里自带前导空格), 不在这里手写 "A 股"。
+_SYSTEM_PROMPT_HEAD = _SYSTEM_PROMPT_HEAD_TMPL.replace(
+    "{MARKET_LABEL}", prompt_market_label(Market.CN)
+)
 
 # 兼容旧引用/测试: 默认无联网变体
 _SYSTEM_PROMPT = _build_system_prompt(False)
@@ -340,6 +402,7 @@ def _build_user_prompt(
     web_search: bool = False,
     scorecard_context: str = "",
     quality_context: str = "",
+    market: Market | str | None = Market.CN,
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
@@ -348,6 +411,8 @@ def _build_user_prompt(
     scorecard_context (P0-7): AI 历史战绩块, 空串不注入; 放用户提示词的原因同
     market_recap._build_user_prompt (自定义系统提示词快照会覆盖注入)。
     quality_context (P1-11): 数据体检块, 空串不注入; 同上放用户提示词。
+    market (PR4 f3): 决定「无财务数据」兜底文案 —— A 股是「Free 模式或尚未同步」,
+    港股是「财报尚未接入 AI 链路」。**加在参数表末尾**以免动到既有位置参数调用方。
     """
     news_hint = (
         "消息面维度可结合联网检索到的相关新闻/公告与价量异动交叉验证。"
@@ -390,11 +455,8 @@ def _build_user_prompt(
             f"{news_hint})",
         ])
     else:
-        parts.extend([
-            "",
-            "(该标的暂无财务数据:当前为 Free 模式或尚未同步财务报表。"
-            "请按系统提示词第 4 节的说明,在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据。)",
-        ])
+        from app.services.market_guardrail import financial_missing_note
+        parts.extend(["", financial_missing_note(market)])
 
     from app.services.ai_provider import build_focus_instruction
     focus_instruction = build_focus_instruction(focus, report_name="个股分析报告")
@@ -468,6 +530,8 @@ async def analyze_stock_stream(
     close = float(df.tail(1)["close"][0]) if "close" in df.columns else None
 
     # 3. 财务(辅助)。ETF/指数无公司报表, 跳过扫描, 由提示词走对应常态文案。
+    # market 由 symbol 唯一决定, 供财务读取分派与提示词护栏共用 (PR4 f3)。
+    market = infer_market(symbol)
     asset_type = repo.resolve_asset_type(symbol)
     fins = {} if asset_type in {"etf", "index"} else _load_financials(data_dir, symbol)
 
@@ -540,7 +604,7 @@ async def analyze_stock_stream(
         # 浮盈口径用 raw: 持仓成本不复权, 与前复权 close 混算会在除权后失真
         raw_close = float(df.tail(1)["raw_close"][0]) if "raw_close" in df.columns else None
 
-        system_prompt = _build_system_prompt(search_on)
+        system_prompt = _build_system_prompt(search_on, market)
         # P0-7 AI 历史战绩: 纯读台账不触发结算, 失败给空串 — 注入不了不影响分析主流程
         from app.services import ai_scorecard
         try:
@@ -554,7 +618,9 @@ async def analyze_stock_stream(
                                          raw_close=raw_close, web_search=search_on,
                                          scorecard_context=scorecard_ctx,
                                          # P1-11 数据体检块 (无问题时空串不注入)
-                                         quality_context=ai_data_quality.prompt_block(quality))
+                                         quality_context=ai_data_quality.prompt_block(quality),
+                                         # PR4 f3 市场护栏: 决定「无财务数据」兜底文案
+                                         market=market)
         # 机器人等平台可追加长度限制提示 (默认空, 前端调用行为不变)
         user_content = user_prompt + length_hint
 

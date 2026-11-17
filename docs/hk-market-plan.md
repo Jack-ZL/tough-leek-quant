@@ -1475,6 +1475,122 @@ f2 5：HK 定版线退回 15:35 / HK 改用 A 股日历 / HK 跑 A 股附加检�
 `_check_kline` 丢 market / CN 日历在 import 时绑定）；ruff 改动文件前后
 **3 → 3 持平**（仅行号位移），两个新测试文件 `All checks passed`；`git diff --check` 干净。
 
+### PR4 完成情况（AI 能力）—— f3 提示词市场护栏 + 港股财务读取分派
+
+**范围**：§9.1（prompt 市场护栏）+ §9.2 剩余的 `_load_financials` /
+`_build_user_prompt` 两处。**不含** §9.4 辩论（f4）与 §9.5 机器人（f5）。
+
+**新增 `app/services/market_guardrail.py`** —— 市场护栏是**独立服务模块**，
+不是 `stock_analyzer` 里的内联字符串。理由：f4 的多空辩论要复用同一份护栏
+（§9.4「多空双方不能用 A 股涨跌停/连板逻辑论证」），两处各写一份必然漂移。
+形态沿用仓库既有先例（`ai_number_gate.NUMBER_RULE_PROMPT` /
+`ai_verdict.VERDICT_PROMPT` 都是服务模块里的 Python 字符串常量 + 惰性 import），
+**不抄 QuantMind 的 `.md` 模板文件**路线 —— 本仓库没有模板加载器，
+为一个字符串引入文件 IO + 路径解析不划算。
+
+对外三个函数：`prompt_market_label(market)`（人设称谓）、
+`guardrail_prompt(market)`（护栏正文）、`financial_missing_note(market)`
+（财务缺失文案）。
+
+**护栏 6 条**（港股，全部数值取自 `rules_for(Market.HK)`，不写死）：
+
+| # | 约束 | 取值来源 |
+|---|---|---|
+| ① | 无涨跌停 / 无 ST / 无退市整理期；**禁止**从 `limit_up_price` 为 null、`consecutive_limit_ups` 为 0 推出「没涨停 / 无连板情绪」 | `has_price_limit=False` |
+| ② | T+0 回转、当日可卖；不要套用 A 股 T+1 的「隔夜才能卖」话术 | `t_plus_1=False` |
+| ③ | 每手股数**因股而异**（腾讯 100 股/手、汇丰 400 股/手），成交量必须按 `instruments_hk.lot_size` 折算，不能默认 100 | `lot_size=None`（无固定值） |
+| ④ | 费用/货币/基准：佣金约 0.03%（最低 3 HKD）、印花税 0.1% 卖出单边、无过户费；计价货币 HKD；默认基准 HSI | `currency` / `default_benchmark` |
+| ⑤ | 行情为 **15 分钟延时**，不是实时报价；「当前价」须标注延时 | `quote_delay_minutes=15` |
+| ⑥ | 代码格式为 **5 位数字 + `.HK`**（`00700.HK`），不要写成 4 位 | `_SYMBOL_PATTERN_BODY[HK]` |
+
+末尾附**优先级条款**：「以上 6 条约束的优先级高于上文任何章节；上文若出现
+『涨停 / 连板 / 炸板 / ST / 过户费』等 A 股措辞，对港股一律按『无此语义』处理」。
+
+🔴 **两处刻意偏离 QuantMind 模板**（`skill_templates/hk_market_guardrail.md`）：
+
+1. QuantMind 写「4 位数字 + .HK（0001.HK / 0700.HK）」，**本仓库统一 5 位**
+   （`_SYMBOL_PATTERN_BODY[Market.HK] = r"[0-9]{5}\.HK"`，注释「全市场统一 5 位,
+   创业板 (8 开头) 同样 5 位, 无需特例」）。照抄会让模型输出本仓库解析不了的代码。
+2. QuantMind 写「平台按 1 股简化，不要写 100 股」，**本仓库有真实 `lot_size`**
+   （`financial_sync_hk.hk_lot_size_map(data_dir)`）。照抄会把已有的正确数据说成错的。
+
+**`stock_analyzer.py` 接线**：
+
+- `_load_financials` 拆成 `_load_financials_cn`（原体逐字不动）+
+  `_load_financials_hk`（返回 `{}`）+ `_FINANCIAL_LOADERS` 注册表 +
+  同名两参数分派函数。港股**不是「懒得接」，是「读了会错」**：A 股财务宽表里
+  港股零行，白扫一遍之后 `_build_user_prompt` 会输出「Free 模式或尚未同步财务报表」
+  —— 用户照做（开 Free 模式 / 点同步）永远修不好，真实原因是港股财报口径与
+  报告货币不同，要等 PR5。
+- `_SYSTEM_PROMPT_HEAD` → `_SYSTEM_PROMPT_HEAD_TMPL`，人设里的市场称谓变成
+  `{MARKET_LABEL}` 占位符；`_build_system_prompt(web_search, market=Market.CN)`
+  与 `_build_user_prompt(..., market=Market.CN)` 各加一个 market 参数；
+  `analyze_stock_stream` 在算完 K 线后 `market = infer_market(symbol)` 并向下透传。
+- 护栏插在 `_SYSTEM_PROMPT_TAIL` 之后、`NUMBER_RULE_PROMPT` / `VERDICT_PROMPT`
+  **之前**：后两者是「输出契约」（数字出处纪律 + 机读答题卡），必须留在最贴近
+  用户消息的位置；护栏属于领域口径，与分析准则同层。
+
+🔴 **陷阱与处理**：
+
+1. **A 股提示词必须逐字不变**。`_PROMPT_LABEL[Market.CN] = " A 股"`（**空格在值里**），
+   模板写 `15 年{MARKET_LABEL}一线研究经验`。两个原因：① `rules.label` 是
+   `"A股"`（无空格），直接用它会让 A 股提示词变字节 → 违反 CONTRIBUTING §9
+   「既有 A 股测试不改一行也必须通过」+ `test_stock_analyzer_index.py:122`
+   的 `_build_system_prompt(False) == _SYSTEM_PROMPT`；② 空格若放模板里，
+   港股会渲染成「15 年 港股一线研究经验」（中英混排才需要那个空格）。
+2. **`str.replace` 而不是 `str.format`**。提示词头部全是 Markdown，
+   `format` 需要把每个 `{` `}` 转义成 `{{` `}}`，改动面大且易漏。
+3. **注册表存 callable，不存渲染好的字符串**。`_GUARDRAILS[Market.HK] = _hk_guardrail`
+   （函数对象），调用时才 `rules_for(Market.HK)` 取值。存字符串就是 f1 踩过的
+   **import 期绑定**同一个坑：字典在 import 时把值算死 → 测试 monkeypatch
+   `rules_for` 失效 → 要么测试被迫改，要么护栏永远显示旧值。
+4. **`_load_financials` 签名刻意保持两参数**。`ai_audit.py:292`、
+   `stock_debate.py:347` 都以 `(data_dir, symbol)` 调用，
+   `tests/test_ai_audit_ledger.py:195,200,210` 以
+   `lambda data_dir, symbol: payload` 打桩 —— 加第三个位置参数会让这些
+   monkeypatch **静默失配**（lambda 少收一个参数 → TypeError，或更糟：
+   被 `*args` 吞掉后返回错的东西）。市场由 symbol 唯一决定，无需外传。
+   `test_load_financials_signature_stays_two_args` 用 `inspect.signature` 钉住。
+5. **第 4 节有一处隐藏的文本耦合**。`_SYSTEM_PROMPT_HEAD_TMPL` 第 4 节写的是
+   「**当用户消息中标注了"该标的暂无财务数据"时**，本节请输出：📌 财务面分析
+   能力正在接入中…」。所以 `_FINANCIAL_MISSING_NOTE` 两个市场的文案都**必须**
+   以 `(该标的暂无财务数据:` 开头。这句话一旦漂移，第 4 节静默不触发，
+   模型会**编造 ROE / 营收**（正是 `ai_number_gate` 要防的那类事故）。
+   `test_both_notes_keep_the_section4_trigger_phrase` 钉住。
+6. 🔴 **变异测试后必须清 `__pycache__`**。`_load_financials_hk` → `_load_financials_cn`
+   这类**等长替换**不改变源文件字节数，实测出现过「源码已还原、Python 仍加载
+   变异版 `.pyc`」的现象：注册表在运行时显示 `Market.HK: _load_financials_cn`，
+   而 `sed -n '198p'` 显示的是 `_load_financials_hk`。后果是**双向的**——
+   变异被误判为「存活」，还原后又被误判为「回归」。
+   `find app -name __pycache__ -type d -exec rm -rf {} +` 后立刻恢复正常。
+   任何「变异存活」结论都必须清缓存后单独复跑一次才算数。
+
+**刻意不做（f3 范围外，已登记）**：
+
+- **§5 新闻章节里的 A 股措辞不改**（`_NEWS_SECTION_SEARCH:242`「如某日放量涨停
+  与某利好互相印证」、`_NEWS_SECTION_OFFLINE:251`「涨停/连板/炸板 → 可能存在
+  利好或资金关注」）。改法有两种：把这两段也做成 market 分派，或靠护栏的
+  优先级条款覆盖。**选了后者**：diff 更小、护栏自包含、A 股提示词零风险。
+  ⚠️ 这是个判断而非定论 —— 若后续实测发现港股报告仍在用连板逻辑论证，
+  应回头把 §5 也做成分派。
+- `GET /api/stock-analysis/levels` 的同源 bug 仍未修（f2 已登记）。
+- f4 辩论护栏、f5 机器人港股入口。
+
+**验证**：后端全量 **7226 passed / 8 skipped / 1 xfailed**（150.55s；
+基线 7174 + f3 新增 52，**零回归**）。新增 `tests/test_market_guardrail.py`
+**52 例**（7 组：A 股逐字不变 / 港股护栏 6 条 / 数值全部来自 `rules_for` /
+注册表完整性与 fail-closed / 财务缺失文案 / `_load_financials` 分派 /
+`_build_user_prompt` market 维）。既有测试**一行未改**全绿：
+`test_stock_analyzer_index` `test_ai_verdict` `test_ai_audit_ledger`
+`test_ai_analysis_focus` `test_ai_scorecard` `test_ai_data_quality`
+`test_stock_debate` `test_openapi_contract` `test_stock_analysis_beijing_today`
++ CONTRIBUTING §9 市场维五件套，合计 **552 passed**。AST 架构守卫全绿、
+`ALLOWLIST` 仍为空。ruff 三个文件 `All checks passed`（`stock_analyzer.py`
+改动前后均 0 告警）。`git diff --check` 干净。变异 **6/6 被杀**：
+港股护栏禁用 / 延时分钟写死 15 / 注册表冻结成字符串（import 期绑定）/
+港股财务读取器指向 A 股 / 港股沿用 A 股财务缺失文案 / 人设空格放回模板。
+⚠️ 变异期间踩过一次 stale `.pyc`（见上文陷阱 6），所有「存活」结论均已清缓存复跑确认。
+
 ## 15. 风险
 
 | 风险 | 后果 | 对策 |
