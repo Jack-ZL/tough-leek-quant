@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
-from datetime import timedelta
+from collections.abc import AsyncIterator, Callable
+from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
 
 from app.indicators.levels import compute_levels, summarize_levels
-from app.market_time import cn_today
+from app.market import Market, infer_market
+from app.market_time import cn_today, market_today
 from app.services.financial_sync import get_financial_df
 
 logger = logging.getLogger(__name__)
@@ -38,15 +39,79 @@ _MAX_PERIODS = 4
 # 数据加载
 # ================================================================
 
+def _load_kline_cn(repo, symbol: str, start: date, end: date) -> pl.DataFrame:
+    """A 股: 按资产类型分流, ETF/指数走独立 enriched 存储 (无财务数据,
+    提示词已有兜底)。"""
+    return repo.get_daily_asset(repo.resolve_asset_type(symbol), symbol, start, end)
+
+
+def _load_kline_hk(repo, symbol: str, start: date, end: date) -> pl.DataFrame:
+    """港股: 只读 ``kline_hk_enriched`` (``get_hk_daily`` 内部已外扩 150 天预热窗)。
+
+    🔴 **绝不能走 ``get_daily_asset``**: ``resolve_asset_type("00700.HK")`` 返回
+    ``"stock"`` (港股既不在 ETF 也不在指数符号集里), 于是会去读 **A 股** enriched
+    存储 → 空帧 → 分析直接报「暂无日 K 数据, 请先同步」。看起来像「没同步」,
+    实际是**读错了表**, 用户去点同步按钮永远修不好。
+
+    港股没有 ETF/指数分流: 指数走独立的 ``hk_index_daily`` 且代码过不了股票符号
+    校验 (``infer_market("HSI")`` 兜底成 CN, 见 ``services/index_const`` 的说明),
+    不会走到这里。
+    """
+    return repo.get_hk_daily(symbol, start, end)
+
+
+#: market → 日K读取器。🔴 用**字典分派**而不是 ``if market == "HK"``: 后者会被
+#: ``tests/test_market_architecture_guard.py`` 的 AST 守卫拦下, 且新增一个市场本该
+#: 是**注册一行**而不是**改一处分支** (CONTRIBUTING §3.5「市场差异是数据不是控制流」)。
+_KLINE_LOADERS: dict[Market, Callable[..., pl.DataFrame]] = {
+    Market.CN: _load_kline_cn,
+    Market.HK: _load_kline_hk,
+}
+
+
+#: market → 「今天」的取法 (日K窗口右端)。
+#:
+#: 🔴 CN 那项**必须**继续走 ``cn_today`` 而不是 ``market_today(Market.CN)``,
+#: 尽管两者取值逐字相同 (``market_time`` 里 ``market_today`` 就是
+#: ``datetime.now(rules_for(market).tz).date()``, CN 的 tz 即 ``CN_TZ``)。
+#: 理由是 ``tests/test_stock_analysis_beijing_today.py`` 用
+#: ``monkeypatch.setattr(stock_analyzer, "cn_today", ...)`` 钉住
+#: 「窗口右端必须是北京日期, 不能用服务器本地 date.today()」(CONTRIBUTING §3.3)。
+#: 换成 ``market_today`` 会让那个补丁钉到空气上 —— 契约其实仍被遵守, 但**证明没了**,
+#: 而 CONTRIBUTING §9 要求「既有 A 股测试不改一行也必须通过」。
+#:
+#: 🔴 同理这里写成 lambda 而不是直接存 ``cn_today`` 函数对象: 字典在 import 时
+#: 绑定的是原函数, monkeypatch 改的是模块属性, 直接存会让补丁失效。
+#: lambda 在调用时才查模块全局 → 补丁生效。
+_TODAY_BY_MARKET: dict[Market, Callable[[], date]] = {
+    Market.CN: lambda: cn_today(),
+    Market.HK: lambda: market_today(Market.HK),
+}
+
+
 def _load_kline(repo, symbol: str) -> pl.DataFrame:
     """读取该标的最近 N 根日 K(已含技术指标 / 信号)。
 
     repo: KlineRepository;走内存缓存,性能可控。
+
+    市场由 symbol 推断 —— ``infer_market`` 是**路由专用**判据 (宽松: 大小写/空白
+    归一, 未知代码兜底 CN), 与存储边界用的严格 ``is_valid_symbol`` 刻意不同,
+    见 CONTRIBUTING §3.5 的三档严格度表。
+
+    🔴 个股分析与多空辩论**共用本函数** (``stock_debate.build_materials`` 直接调
+    ``stock_analyzer._load_kline``), 所以市场分派只需在这一处落地, 两条 AI 链路
+    同时生效 —— 这也是「辩论与分析必须看同一份材料」的既有约束。
     """
-    end = cn_today()
+    market = infer_market(symbol)
+    loader = _KLINE_LOADERS.get(market)
+    if loader is None:  # 新市场忘了注册读取器: 当场报错, 不静默回退 A 股
+        raise ValueError(f"市场 {market} 未注册 AI 日K读取器")
+    today_of = _TODAY_BY_MARKET.get(market)
+    if today_of is None:  # 同上: 「今天」的取法也按市场注册, 漏了就报错
+        raise ValueError(f"市场 {market} 未注册 AI 日K窗口右端取法")
+    end = today_of()
     start = end - timedelta(days=_KLINE_WINDOW * 2)  # 多取一些保证交易日够
-    # 按资产类型分流: ETF/指数走独立 enriched 存储 (无财务数据, 提示词已有兜底)
-    df = repo.get_daily_asset(repo.resolve_asset_type(symbol), symbol, start, end)
+    df = loader(repo, symbol, start, end)
     if df.is_empty():
         return df
     return df.tail(_KLINE_WINDOW)

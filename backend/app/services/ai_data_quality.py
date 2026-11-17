@@ -23,11 +23,13 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 
+from app.market import Market, infer_market, rules_for
 from app.market_time import cn_now, cn_today
 
 logger = logging.getLogger(__name__)
@@ -61,10 +63,57 @@ def _grade_of(score: int) -> str:
 
 # ===== 交易日历 (复用 data_integrity 的年份日历缓存, 取不到回退工作日近似) =====
 
+#: market → 交易日历来源。``None`` = 该市场**没有**日历端点, 回退工作日近似。
+#:
+#: 🔴 港股没有日历源 —— ``services/trading_day.py`` 的探测链表里明确记着
+#: 「fuyao 无港股日历端点」, 港股链只有实时戳探测那一环。所以港股的停更天数
+#: 只能按工作日近似: 港股独有假日 (复活节 / 佛诞 / 圣诞等) 会被当成交易日,
+#: 停更天数**偏高**。
+#:
+#: 这是**诚实降级不是 bug**: 与其拿 A 股日历去算港股 (两个市场节假日不同,
+#: 错得没有方向 —— A 股休市港股开市时会漏报, 反过来会误报), 不如用工作日近似
+#: (只在港股独有假日前后偏保守)。与 PR1 半日市表刻意留空同一口径:
+#: 宁可保守告警, 不可静默算错。
+#:
+#: 🔴 CN 那项必须写成 lambda 而不是直接存 ``_trading_calendar`` 函数对象:
+#: 现有 A 股用例靠 ``monkeypatch.setattr(adq, "_trading_calendar", ...)`` 摆脱
+#: fuyao 年份表依赖。字典在 import 时绑定的是**原函数对象**, 直接存会让
+#: monkeypatch 失效 → 既有测试挂掉或被迫修改, 违反 CONTRIBUTING §9
+#: 「既有 A 股测试不改一行也必须通过」。lambda 在调用时才查模块全局, 补丁生效。
 def _trading_calendar() -> set[date] | None:
     """A 股交易日集合; None = 日历不可用 (回退周几近似, 节假日会误判为交易日)。"""
     from app.services import data_integrity
     return data_integrity._trading_calendar()
+
+
+_CALENDAR_SOURCES: dict[Market, Callable[[], set[date] | None] | None] = {
+    Market.CN: lambda: _trading_calendar(),
+    Market.HK: None,
+}
+
+
+def _calendar_for(market: Market) -> set[date] | None:
+    """该市场的交易日集合; None = 无日历 (调用方回退周几近似)。"""
+    source = _CALENDAR_SOURCES.get(market)
+    if source is None:
+        return None
+    return source()
+
+#: market → 盘后数据定版线 (该时刻**之前**, 「应有的最后交易日」是上一交易日)。
+#:
+#: 🔴 又一处「市场差异住在数据里」: 旧实现把 ``(15, 35)`` 写死在函数体内, 那是
+#: **A 股**的口径 (15:00 收盘 + 35 分钟管道缓冲, 与 ``jobs/daily_pipeline`` 的
+#: 默认时刻同源)。港股 16:00 收盘, 同步默认 **16:40** (``preferences`` 的
+#: ``_HK_SYNC_DEFAULTS``, 刻意与 A 股错开以免两条链路同时打 push2 抢限流配额)。
+#:
+#: 写死 15:35 的后果: 港股在**每个交易日 15:35-16:40 之间**都被误判「日K停更」,
+#: 半日市 (12:00 收盘) 更是整个下午都在误判。而停更告警会随落后天数一路升级到
+#: ``high`` 硬伤 → ``hard=True`` → 用户开启 ``ai_quality_block_enabled`` 时
+#: **直接拒绝分析** (方案 §9.2 点名的「静默错误, 最阴险」)。
+_DATA_CUTOFF: dict[Market, tuple[int, int]] = {
+    Market.CN: (15, 35),
+    Market.HK: (16, 40),
+}
 
 
 def _is_trading_day(d: date, calendar: set[date] | None) -> bool:
@@ -73,17 +122,19 @@ def _is_trading_day(d: date, calendar: set[date] | None) -> bool:
     return d.weekday() < 5
 
 
-def _expected_last_trading_day(today: date, now_hm: tuple[int, int]) -> date:
-    """当前时刻"数据应更新到的最后交易日"。
+def _expected_last_trading_day(
+    today: date, now_hm: tuple[int, int], market: Market = Market.CN
+) -> date:
+    """当前时刻"数据应更新到的最后交易日" (按该市场的定版线与日历)。
 
-    盘后管道 15:35 才写今天 → 15:35 前期望值是上一交易日, 否则今天。
-    与 data_integrity 的尾盘定版线口径一致 (见其模块 docstring)。
+    盘后管道过了 :data:`_DATA_CUTOFF` 才写今天 → 定版线前期望值是上一交易日,
+    否则今天。与 data_integrity 的尾盘定版线口径一致 (见其模块 docstring)。
     """
-    cutoff = (15, 35)
+    cutoff = _DATA_CUTOFF[market]
     d = today
     if now_hm < cutoff:
         d = today - timedelta(days=1)
-    calendar = _trading_calendar()
+    calendar = _calendar_for(market)
     # 往回找最近一个交易日; 日历缺失时按工作日回退, 上限 15 天防死循环
     for _ in range(15):
         if _is_trading_day(d, calendar):
@@ -92,11 +143,11 @@ def _expected_last_trading_day(today: date, now_hm: tuple[int, int]) -> date:
     return d
 
 
-def _trading_days_between(start: date, end: date) -> int:
-    """(start, end] 区间内的交易日数; start >= end 时为 0。"""
+def _trading_days_between(start: date, end: date, market: Market = Market.CN) -> int:
+    """(start, end] 区间内**该市场**的交易日数; start >= end 时为 0。"""
     if start >= end:
         return 0
-    calendar = _trading_calendar()
+    calendar = _calendar_for(market)
     n, d = 0, start + timedelta(days=1)
     while d <= end:
         if _is_trading_day(d, calendar):
@@ -194,17 +245,28 @@ def score_symbol(
     *,
     now: datetime | None = None,
     use_cache: bool = True,
+    market: str | Market | None = None,
 ) -> dict:
     """对"即将喂给 AI 的数据"打分。df/fins 就是分析流程已加载的同一份数据 —
     体检对象与 AI 实际看到的内容严格一致, 不存在第二套口径。
+
+    ``market`` 缺省从 symbol 推断 (与 ``stock_analyzer._load_kline`` 同口径),
+    决定两件事: 停更判定用哪条定版线/日历 (:data:`_DATA_CUTOFF`), 以及跑哪些
+    附加体检项 (:data:`_EXTRA_CHECKS` —— 财务/分钟/全市场报告是 A 股专属存储)。
 
     now 参数仅供测试注入; use_cache=False 强制重算 (测试用)。
     返回 {version, symbol, score, grade, hard, issues, checked_at}。
     """
     now = now or cn_now()
     today = now.date()
+    # 🔴 rules_for 会把 "hk"/"HK" 等别名归一; 非法值抛 ValueError (fail-closed),
+    # 不静默回落 A 股 —— 回落会让港股按 15:35 定版线误判停更。
+    resolved = infer_market(symbol) if market is None else rules_for(market).market
 
-    # 缓存指纹: 行数 + 最后日期 + 财务最新报告期 — 数据没变则直接复用结果
+    # 缓存指纹: 行数 + 最后日期 + 财务最新报告期 — 数据没变则直接复用结果。
+    # 🔴 缓存键是 symbol 本身, 而 market 由 symbol 唯一决定 (infer_market),
+    # 所以不存在「同一 symbol 跨市场串缓存」—— 与前端 queryKey 必须显式带 market
+    # 的情况不同 (那里同一关键词在两个市场都合法)。
     last_d = _to_date(df["date"][-1]) if len(df) and "date" in df.columns else None
     fin_period = _latest_period_end(fins) if asset_type == "stock" else None
     fingerprint = f"{len(df)}|{last_d}|{fin_period}"
@@ -215,11 +277,11 @@ def score_symbol(
                 return hit[2]
 
     issues: list[dict] = []
-    issues.extend(_check_kline(df, last_d, today, now))
-    if asset_type == "stock":
-        issues.extend(_check_financials(fins, fin_period, today))
-        issues.extend(_check_minute_gaps(data_dir, symbol))
-    issues.extend(_check_market_report(data_dir, symbol))
+    issues.extend(_check_kline(df, last_d, today, now, resolved))
+    extra = _EXTRA_CHECKS.get(resolved)
+    if extra is None:
+        raise ValueError(f"市场 {resolved} 未注册 AI 数据体检附加项")
+    issues.extend(extra(data_dir, symbol, fins, fin_period, today, asset_type))
 
     score = 100 - sum(DEDUCTIONS.get(i["severity"], 0) for i in issues)
     score = max(0, min(100, score))
@@ -238,8 +300,15 @@ def score_symbol(
     return report
 
 
-def _check_kline(df: pl.DataFrame, last_d: date | None, today: date, now: datetime) -> list[dict]:
-    """日K检查: 行数 / 停更 / 零成交尾巴 / 指标缺失 / 日期乱序。"""
+def _check_kline(
+    df: pl.DataFrame, last_d: date | None, today: date, now: datetime,
+    market: Market = Market.CN,
+) -> list[dict]:
+    """日K检查: 行数 / 停更 / 零成交尾巴 / 指标缺失 / 日期乱序。
+
+    停更判定按 ``market`` 取定版线与日历 —— 见 :data:`_DATA_CUTOFF` /
+    :data:`_CALENDAR_SOURCES` 的 🔴 注释 (写死 A 股 15:35 会让港股每天下午误报)。
+    """
     out: list[dict] = []
     n = len(df)
     # 1) 行数: MA60 需要 60 根才有意义, 30 根以下长周期指标全不可信 → 硬伤
@@ -251,9 +320,9 @@ def _check_kline(df: pl.DataFrame, last_d: date | None, today: date, now: dateti
                           f"日K仅 {n} 根 (不足 60), 长周期指标 (MA60) 可能缺失或失真"))
     # 2) 停更: 与"当前时刻应有的最后交易日"比, 按交易日计龄
     if last_d is not None:
-        expected = _expected_last_trading_day(today, (now.hour, now.minute))
+        expected = _expected_last_trading_day(today, (now.hour, now.minute), market)
         if last_d < expected:
-            stale = _trading_days_between(last_d, expected)
+            stale = _trading_days_between(last_d, expected, market)
             if stale > 5:
                 out.append(_issue("kline_stale", "high",
                                   f"日K停更 {stale} 个交易日 (最后 {last_d.isoformat()}), 价格/指标严重过期"))
@@ -335,6 +404,61 @@ def _check_market_report(data_dir: Path, symbol: str) -> list[dict]:
                            f"该标的在全市场数据体检中被标记: {row.get('date')} {row.get('kind_label', '')}")]
     total = len(report.get("issues", []))
     return [_issue("integrity_global", "info", f"全市场数据体检存在 {total} 处待修复问题")]
+
+
+# ===== 附加体检项按市场注册 =====
+#
+# 🔴 财务报表 / 分钟缺口快照 / 全市场体检报告都是 **A 股专属存储**:
+#   * 财务表来自 financial_sync (东财 A 股三大报表), 港股财务链路是 PR5;
+#   * minute_gaps_latest.json 由 A 股分钟体检接口落盘;
+#   * integrity_check 的全市场报告扫的是 A 股 enriched 目录。
+#
+# 旧实现用 `asset_type == "stock"` 做判据决定跑不跑这些检查 —— 而港股代码在
+# `repository.resolve_asset_type` 里既不在 ETF 集也不在指数集, **兜底返回 "stock"**。
+# 于是港股被当成「缺财务的 A 股」: 报 fin_missing、去 A 股分钟快照里找它、
+# 把 A 股全市场体检的问题注入港股分析的提示词。方案 §9.2 点名这是
+# 「静默错误, 最阴险」—— 开启 ai_quality_block_enabled 时会直接拒绝分析。
+#
+# 改成注册表 (与 api/kline._SEARCH_FRAMES、stock_analyzer._KLINE_LOADERS、
+# trading_day._PROBE_CHAIN_NAMES 同一口径): 按**构造**排除, 不在函数里判市场,
+# AST 架构守卫无需 ALLOWLIST。
+
+def _extra_checks_cn(
+    data_dir: Path, symbol: str, fins: dict[str, list[dict]] | None,
+    fin_period: date | None, today: date, asset_type: str,
+) -> list[dict]:
+    """A 股: 财务 + 分钟缺口 (仅 stock) + 全市场体检报告 (全资产类型)。
+
+    🔴 ``asset_type`` 这道闸是**既有契约**, 不能因为加了 market 维就顺手抹掉:
+    ETF/指数没有财务报表也没有分钟体检语义, 旧实现正是靠它跳过这两项
+    (``tests/test_ai_data_quality.py::test_etf_skips_financial_and_minute_checks``
+    钉着)。market 维解决的是「港股被当成缺财务的 A 股」, 与资产类型闸**正交** ——
+    两者都要在。``_check_market_report`` 历来在闸外 (全市场报告对 ETF 同样有意义)。
+    """
+    out = list(_check_market_report(data_dir, symbol))
+    if asset_type == "stock":
+        out[:0] = _check_financials(fins, fin_period, today)
+        out.extend(_check_minute_gaps(data_dir, symbol))
+    return out
+
+
+def _extra_checks_hk(
+    data_dir: Path, symbol: str, fins: dict[str, list[dict]] | None,
+    fin_period: date | None, today: date, asset_type: str,
+) -> list[dict]:
+    """港股: 三项存储都不存在 → 一律不跑, 且**不报成「该标的缺数据」**。
+
+    只留一条 info 说明「本市场暂无这些体检链路」(info 不扣分, 且 prompt_block
+    与前端徽章都过滤 info, 不会污染提示词)。财务链路补齐见 PR5。
+    """
+    return [_issue("checks_not_applicable", "info",
+                   "港股暂无财务/分钟/全市场体检链路, 相关项未纳入评分 (非该标的缺数据)")]
+
+
+_EXTRA_CHECKS: dict[Market, Callable[..., list[dict]]] = {
+    Market.CN: _extra_checks_cn,
+    Market.HK: _extra_checks_hk,
+}
 
 
 # ===== prompt 注入 =====

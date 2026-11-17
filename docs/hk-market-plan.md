@@ -1363,6 +1363,118 @@ ruff 改动文件前后错误数持平。
 | 前端三份硬编码指数副本 | ✅ **已完成**（见下节）。`Layout.tsx` / `Indices.tsx` / `review/Page.tsx` 三份副本全部收敛到 `lib/marketContent.ts`；`review/Page.tsx:793` 把恒生科技与恒生中国企业都压成「恒生」的缩写冲突已修（`indexShort` 派生自 `CoreIndex.compactName`，另留 `LEGACY_INDEX_ALIAS` 兼容旧文案） |
 | 侧栏指数条 market 感知 + 全局市场切换器 | ✅ **已完成（作用范围刻意收窄）**。侧栏指数条改为 `indexSource(market)` 驱动（`pinned` 取列表、`fetchQuotes()` 取数、`queryKey: [...quotesKey, 'sidebar', market]`），链接走 `indexPageParams(market, symbol)`。全局切换器 = 新建 `frontend/src/lib/marketStore.ts`（`useSyncExternalStore` + localStorage `tf-market` + `storage` 事件跨标签页同步，照 `lib/theme.ts` 的既有写法；🔴 读路径用**严格** `isMarket` 而非 `normalizeMarket` —— 该值会进查询参数，遵循 `lib/market.ts` 的分层兜底原则）。**收窄决策（用户拍板）**：切换器**只**驱动已就绪的面（侧栏指数条 / 指数页），**导航条目不按市场过滤**；防误导机制是切换器上明写作用范围 `MARKET_SWITCHER_SCOPE_HINT`「当前仅指数与个股详情支持港股，其余页面仍为 A 股」（rail 折叠态降级为按钮 `title`）。理由：8 个核心导航里只有 `/indices` 真正就绪，过滤掉其余 7 个等于把产品砍空；不过滤 + 明示范围则诚实、可验证、不会让用户在别的页看到串市场数据。指数页 URL ↔ store **双向幂等对齐**，URL 优先（可分享链接不被本地偏好覆盖）。🔴 两处易错：① 侧栏查询**必须去掉** `placeholderData: (prev) => prev` —— `prev` 来自上一个 queryKey，market 进 key 后会在切换那一帧把 A 股行情当港股渲染；② `selectMarket` **必须同时** `setMarket(next)` —— A 股的 `indexPageParams` 不带 `market` 参数，漏写 store 会让对齐 effect 立刻把 `market=HK` 塞回 URL，页内切换器等于点不动。⚠️ `CORE_INDEXES`（`Layout.tsx`）刻意保持 **A 股专用**，唯一残留消费者是 `SectorRotationCard`。附带修一处性能回归：`IndexSource.fetchQuotes` 签名放宽为 `(symbols?: readonly string[])`，否则侧栏会从「只查 4 只核心指数」变成全量查询 |
 
+### PR4 完成情况（AI 能力）—— f1 日K读取分派 + f2 数据体检 market 维
+
+PR4 拆五项：f1 AI 链路日K按 market 分派、f2 `ai_data_quality` 加 market 维、
+f3 `hk_market_guardrail` 护栏模板、f4 辩论注入护栏、f5 机器人港股入口。
+**本节记 f1 + f2**（同一类根因：AI 链路整条只有 A 股口径），f3–f5 见后续小节。
+
+#### f1：`stock_analyzer._load_kline` 按 market 分派
+
+| 落地文件 | 内容 |
+|---|---|
+| `backend/app/services/stock_analyzer.py` | 拆出 `_load_kline_cn`（原逻辑逐字保留）/ `_load_kline_hk`（走 `repo.get_hk_daily`）+ 两张注册表 `_KLINE_LOADERS`（读取器）/ `_TODAY_BY_MARKET`（窗口右端取法）；`_load_kline` 改为 `infer_market(symbol)` → 查表 → 定窗口 |
+| `backend/tests/test_ai_market_dispatch.py` | **新增** 12 例 |
+
+🔴 **踩到的坑：「今天」的取法不能顺手统一成 `market_today(market)`。**
+第一版把 `cn_today()` 换成 `market_today(market)`（两者对 CN **取值逐字相同**：
+`market_today` 就是 `datetime.now(rules_for(market).tz).date()`，CN 的 tz 即 `CN_TZ`），
+全量套件立刻红了 `tests/test_stock_analysis_beijing_today.py::test_load_kline_window_ends_on_beijing_today`
+—— 它靠 `monkeypatch.setattr(stock_analyzer, "cn_today", lambda: BJ, raising=False)`
+证明「窗口右端是北京日期而非服务器本地 `date.today()`」（CONTRIBUTING §3.3）。
+换符号后补丁钉到空气上：**契约其实仍被遵守，但证明没了**。
+按 CONTRIBUTING §9「既有 A 股测试不改一行也必须通过」，改实现而不是改测试 ——
+`_TODAY_BY_MARKET[Market.CN]` 继续走 `cn_today`，HK 走 `market_today(Market.HK)`。
+
+⚠️ 同一个坑的**第二层**：注册表里 CN 那项必须写成 `lambda: cn_today()` 而不是直接存
+`cn_today` 函数对象 —— 字典在 import 时绑定的是**原函数**，monkeypatch 改的是模块属性，
+直接存会让补丁静默失效（且那个测试用 `raising=False`，钉空了也不报错）。
+`test_cn_today_registry_entry_is_late_bound` 把「补丁真的生效」变成显式断言，
+变异 M6（绑死函数对象）同时被它和既有北京日期测试杀掉。
+f2 的 `_CALENDAR_SOURCES[Market.CN]` 是**完全相同**的陷阱与相同的解法（变异 M5）。
+
+🔴 **修的是「看起来对但错」**：旧实现 `repo.get_daily_asset(repo.resolve_asset_type(symbol), ...)`，
+而 `resolve_asset_type` 对港股**既不在 ETF 集也不在指数集 → 兜底返回 `"stock"`**，
+于是拿港股代码去读 **A 股** enriched 存储，得到空帧，分析直接 yield
+「标的 X 暂无日 K 数据，请先同步」。用户看到的是「没同步」，真实原因是「读错了表」，
+**去点同步按钮永远修不好**。
+
+一处修好覆盖两条链：`stock_debate.build_materials` 直接调 `stock_analyzer._load_kline`
+（其 docstring 明写「辩论与个股分析必须看同一份材料，数据口径不允许出现第二套」），
+所以分派只落一处，`test_ai_market_dispatch.py` 末例专门钉住这个共用关系不被悄悄打破。
+
+⚠️ 未注册市场 **fail-closed 抛 `ValueError`**，不静默回落 `_load_kline_cn` ——
+回落正是本 bug 的成因。`_KLINE_LOADERS` 用 dict 而非 `if market == "HK"`，
+AST 架构守卫（`test_market_architecture_guard.py`）无需 ALLOWLIST。
+
+#### f2：`ai_data_quality` 加 market 维（§9.2 点名项）
+
+| 落地文件 | 内容 |
+|---|---|
+| `backend/app/services/ai_data_quality.py` | 三张按 market 的注册表：`_DATA_CUTOFF`（盘后定版线）/ `_CALENDAR_SOURCES`（日历源）/ `_EXTRA_CHECKS`（附加体检项）；`score_symbol` 新增 `market=` 入参（缺省从 symbol 推断），`_check_kline` / `_expected_last_trading_day` / `_trading_days_between` 全部带 market |
+| `backend/tests/test_ai_data_quality_market.py` | **新增** 24 例 |
+
+§9.2 只点了 `:209,219` 的 `asset_type == "stock"` 闸，实测下来**同一根因有三处**，
+一并修掉（都是「A 股口径套到港股头上」）：
+
+1. 🔴 **定版线写死 `(15, 35)`** —— 那是 A 股口径（15:00 收盘 + 35 分钟管道缓冲）。
+   港股 16:00 收盘、同步默认 **16:40**（`preferences._HK_SYNC_DEFAULTS`，刻意与 A 股
+   错开以免两条链路同时打 push2 抢限流配额）。后果是港股在**每个交易日
+   15:35–16:40 之间**都被误判「日K停更」，半日市（12:00 收盘）整个下午都在误判。
+   实测：15:50 同一份「最后一根 = 昨天」的帧，A 股 97 分（`kline_stale` low），
+   港股修复前同样 97 分、修复后 **100 分**。
+2. 🔴 **日历取 fuyao A 股年份表** —— 两个市场节假日不同，错得**没有方向**
+   （A 股休市港股开市时漏报，反过来误报）。港股**没有**日历端点
+   （`trading_day.py` 探测链表明写「fuyao 无港股日历端点」），故 `_CALENDAR_SOURCES[HK] = None`
+   → 回退工作日近似 → 港股独有假日被当成交易日、停更天数**偏高（偏保守）**。
+   这是**诚实降级不是 bug**，与 PR1 半日市表刻意留空同一口径：宁可保守告警，不可静默算错。
+3. 🔴 **`asset_type == "stock"` 闸** —— 港股 `resolve_asset_type` 兜底正是 `"stock"`，
+   于是被当成「缺财务的 A 股」：报 `fin_missing`（文案还写着「Free 模式或尚未同步」，
+   对港股是**错误建议**）、去 A 股分钟快照里找它、把 A 股全市场体检的问题注入
+   港股分析的提示词。改为 `_EXTRA_CHECKS` 注册表：CN 跑三项，HK 一律不跑，
+   只留一条 `checks_not_applicable` **info**（0 扣分，且 `prompt_block` 与前端徽章
+   都过滤 info，不污染提示词）说明「本市场没有这条链路」而非「该标的缺数据」。
+
+⚠️ **三处刻意保留的既有契约**（都被测试钉住）：
+
+- **`asset_type` 闸与 market 维正交**，加了 market 不能把 asset_type 闸抹掉 ——
+  A 股 ETF/指数依旧跳过财务+分钟检查（`test_etf_skips_financial_and_minute_checks`），
+  `_check_market_report` 历来在闸外（全市场报告对 ETF 同样有意义）。
+  第一版实现把三项一起塞进 `_extra_checks_cn` 就踩了这个坑，既有测试立刻红。
+- **`_trading_calendar()` 必须保持零参且可 monkeypatch** —— 既有 A 股用例靠
+  `monkeypatch.setattr(adq, "_trading_calendar", lambda: None)` 摆脱 fuyao 依赖。
+  所以 `_CALENDAR_SOURCES[CN]` 写成 **lambda 延迟查模块全局**，而不是直接存函数对象
+  （字典在 import 时绑定原函数 → 补丁失效 → 既有测试被迫修改，违反 CONTRIBUTING §9
+  「既有 A 股测试不改一行也必须通过」）。变异 M5 专门杀这一条。
+- **修误报不能把检查阉割掉** —— 港股真停更 8 个交易日照样 `high` + `hard=True`
+  （75 分 B 档，与 A 股同帧同档）。`test_hk_stale_after_hk_cutoff` /
+  `test_hk_real_staleness_still_hard` 是反向断言。
+
+⚠️ **缓存键刻意不加 market 维**：`_cache` 键是完整 symbol，而 market 由 symbol
+唯一决定（`infer_market`），不存在「同 symbol 跨市场串缓存」。这与前端 queryKey
+**必须**显式带 market 的情况不同 —— 那里同一个关键词在两个市场都是合法查询
+（搜 `007` 在 A 股/港股各有结果）。`test_cache_key_needs_no_market_dimension`
+钉住这个前提：将来若出现「同 symbol 跨市场」口径，缓存键必须改。
+
+**刻意不做（f2 范围外，已登记）**：
+
+- `GET /api/stock-analysis/levels`（`stock_analysis.py:113-160`）**仍有同一个
+  `get_daily_asset(resolve_asset_type(...))` bug**，且用 `cn_today()`。它不走
+  `_load_kline`，是独立读取点，喂的是同一支标的的图表 markLines。
+- `_load_financials` 对港股仍会去读 A 股财务表（结果为空，无副作用但白跑一次），
+  且 `_build_user_prompt` 会据此输出「Free 模式或尚未同步财务报表」的错误文案 ——
+  归 **f3 护栏**一并处理（市场专属提示词文案的自然归属）。
+
+**验证**：后端全量 **7174 passed / 8 skipped / 1 xfailed**（基线 7138 + f1 12 + f2 24，
+**零回归**；`test_stock_analysis_beijing_today.py` 既有 2 例一行未改全绿）；
+`test_ai_data_quality.py` 既有 30 例**一行未改**全绿；AST 架构守卫 + OpenAPI 契约
+全绿、`ALLOWLIST` 仍为空；变异 **12/12 被杀**（f1 7：HK 分派到 A 股读取器 /
+未注册市场静默回落读取器 / `market_today` 丢 market / 丢 `.tail(_KLINE_WINDOW)` /
+CN「今天」在 import 时绑死 / HK「今天」退回 `cn_today` / 未注册「今天」静默回落；
+f2 5：HK 定版线退回 15:35 / HK 改用 A 股日历 / HK 跑 A 股附加检查 /
+`_check_kline` 丢 market / CN 日历在 import 时绑定）；ruff 改动文件前后
+**3 → 3 持平**（仅行号位移），两个新测试文件 `All checks passed`；`git diff --check` 干净。
+
 ## 15. 风险
 
 | 风险 | 后果 | 对策 |
