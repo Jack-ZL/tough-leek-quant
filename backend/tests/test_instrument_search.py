@@ -13,14 +13,24 @@ from app.api.kline import search_instruments
 
 
 class _FakeRepo:
-    """最小 repo 桩: 只实现 search_instruments 依赖的 get_instruments_asset。"""
+    """最小 repo 桩: 只实现 search_instruments 依赖的两个维表读取器。
 
-    def __init__(self, by_asset: dict[str, pl.DataFrame]) -> None:
+    ``hk_calls`` 用来钉「纯 A 股调用方不得触发港股维表读取」—— 没同步过港股维表的
+    用户会因此吃一条「港股维表不存在」的 warning, 属无谓噪音。
+    """
+
+    def __init__(self, by_asset: dict[str, pl.DataFrame], hk: pl.DataFrame | None = None) -> None:
         self.store = types.SimpleNamespace(data_dir="data")
         self._by_asset = by_asset
+        self._hk = pl.DataFrame() if hk is None else hk
+        self.hk_calls = 0
 
     def get_instruments_asset(self, asset_type: str) -> pl.DataFrame:
         return self._by_asset.get(asset_type, pl.DataFrame())
+
+    def get_hk_instruments(self) -> pl.DataFrame:
+        self.hk_calls += 1
+        return self._hk
 
 
 def _request(repo: _FakeRepo) -> types.SimpleNamespace:
@@ -146,3 +156,121 @@ def test_cache_returns_same_result_across_calls():
     r2 = search_instruments(req, q="payh", limit=20, asset_types="stock")["results"]
     assert r1 == r2
     assert [r["symbol"] for r in r1] == ["000001.SZ"]
+
+
+# ===== market 维: 港股走自己的维表 (自选页搜索框接通港股) =====
+
+HK_STOCKS = pl.DataFrame({
+    "symbol": ["00700.HK", "09988.HK", "00005.HK"],
+    "code": ["00700", "09988", "00005"],
+    "name": ["腾讯控股", "阿里巴巴-W", "汇丰控股"],
+    "type": ["stock", "stock", "stock"],
+})
+
+
+def _search_hk(q: str, asset_types: str = "stock,etf,index", limit: int = 20) -> list[dict]:
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    return search_instruments(
+        _request(repo), q=q, limit=limit, asset_types=asset_types, market="HK"
+    )["results"]
+
+
+def test_hk_market_searches_hk_dim():
+    """market=HK 按代码搜到港股标的。"""
+    rows = _search_hk("00700")
+    assert [r["symbol"] for r in rows] == ["00700.HK"]
+    assert rows[0]["asset_type"] == "stock"
+
+
+def test_hk_market_searches_chinese_name():
+    assert [r["symbol"] for r in _search_hk("控股")] == ["00700.HK", "00005.HK"]
+
+
+def test_hk_market_never_returns_ashare_rows():
+    """🔴 串市场闸门: market=HK 时 A 股维表一行都不该出现。
+
+    合并全市场搜索在方案 §16 属明确不做 —— 两个市场的代码空间与名称都可能撞,
+    混在一个结果列表里用户无法分辨自己加进自选的是哪个市场的标的。
+    """
+    assert _search_hk("600000") == []
+    assert _search_hk("平安") == []
+
+
+def test_ashare_market_never_returns_hk_rows():
+    """反向闸门: 缺省(CN)时港股一行都不该出现。"""
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    rows = search_instruments(
+        _request(repo), q="00700", limit=20, asset_types="stock,etf,index"
+    )["results"]
+    assert rows == []
+
+
+def test_default_market_does_not_touch_hk_dim():
+    """既有调用方(不传 market)零影响: 连港股维表都不读。"""
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    search_instruments(_request(repo), q="payh", limit=20, asset_types="stock")
+    assert repo.hk_calls == 0, "纯 A 股搜索却读了港股维表 (会给未同步用户一条无谓 warning)"
+
+
+def test_explicit_cn_market_does_not_touch_hk_dim():
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    search_instruments(_request(repo), q="payh", limit=20, asset_types="stock", market="CN")
+    assert repo.hk_calls == 0
+
+
+def test_hk_market_is_case_insensitive_alias():
+    """market 值大小写/别名归一由 parse_market 负责, 端点不自己判等。"""
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    rows = search_instruments(
+        _request(repo), q="00700", limit=20, asset_types="stock", market="hk"
+    )["results"]
+    assert [r["symbol"] for r in rows] == ["00700.HK"]
+
+
+def test_unknown_market_returns_400_not_silent_cn_fallback():
+    """🔴 非法 market 必须 400。静默回退 CN 会让用户以为搜的是港股。"""
+    from fastapi import HTTPException
+
+    repo = _FakeRepo({"stock": STOCKS}, hk=HK_STOCKS)
+    with pytest.raises(HTTPException) as exc:
+        search_instruments(_request(repo), q="007", limit=20, asset_types="stock", market="US")
+    assert exc.value.status_code == 400
+    assert "US" in str(exc.value.detail)
+
+
+def test_missing_hk_dim_returns_empty_not_500():
+    """港股维表未同步 → 空结果 (与 A 股维表缺失时行为一致), 不抛异常。"""
+    repo = _FakeRepo({"stock": STOCKS})  # hk 缺省 = 空帧
+    rows = search_instruments(
+        _request(repo), q="00700", limit=20, asset_types="stock", market="HK"
+    )["results"]
+    assert rows == []
+
+
+def test_hk_asset_types_without_stock_returns_empty():
+    """港股维表目前只有股票; asset_types 不含 stock 时不该硬塞结果。"""
+    assert _search_hk("00700", asset_types="etf,index") == []
+
+
+def test_hk_null_name_is_searchable_by_code_only():
+    """东财名称占位 '-' 已被清洗成 None; null 名不得误命中任意关键词。"""
+    dim = pl.DataFrame({
+        "symbol": ["00700.HK", "01234.HK"],
+        "code": ["00700", "01234"],
+        "name": ["腾讯控股", None],
+        "type": ["stock", "stock"],
+    })
+    repo = _FakeRepo({"stock": STOCKS}, hk=dim)
+    rows = search_instruments(
+        _request(repo), q="控", limit=20, asset_types="stock", market="HK"
+    )["results"]
+    assert [r["symbol"] for r in rows] == ["00700.HK"]
+    by_code = search_instruments(
+        _request(repo), q="01234", limit=20, asset_types="stock", market="HK"
+    )["results"]
+    assert [r["symbol"] for r in by_code] == ["01234.HK"]
+
+
+def test_hk_respects_limit():
+    rows = _search_hk("0", limit=2)
+    assert len(rows) == 2

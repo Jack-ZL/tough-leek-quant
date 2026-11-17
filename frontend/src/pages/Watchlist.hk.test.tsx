@@ -12,6 +12,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
+import { DEFAULT_MARKET } from '@/lib/market'
+import { setMarket } from '@/lib/marketStore'
 import { Watchlist } from './Watchlist'
 
 vi.mock('@/extensions/ExtensionSlot', () => ({ ExtensionSlot: () => null }))
@@ -44,6 +46,8 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.useFakeTimers()
   localStorage.clear()
+  // 🔴 marketStore 是模块级单例, 不清会在用例间泄漏市场态
+  setMarket(DEFAULT_MARKET)
   document.body.append(host)
   root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -127,4 +131,53 @@ it('旧后端不返回该字段时不渲染 (不得凭空补默认延时)', asyn
   await render()
 
   expect(host.querySelector('span[aria-label^="延时"]')).toBeNull()
+})
+
+// ===== 搜索框跟随全局市场 =====
+
+function typeIntoSearch(text: string) {
+  const input = host.querySelector<HTMLInputElement>('input[placeholder="搜索…"]')!
+  return act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+function resultSymbols(): string[] {
+  return [...host.querySelectorAll('button[aria-label^="快速加入自选"]')]
+    .map(el => (el.getAttribute('aria-label') ?? '').replace('快速加入自选 ', ''))
+}
+
+it('搜索按当前市场传参: A 股态 CN, 港股态 HK', async () => {
+  mockRows([])
+  const search = vi.spyOn(api, 'instrumentSearch').mockResolvedValue({ results: [] })
+  await render()
+  await typeIntoSearch('007')
+  await settle()
+  expect(search.mock.calls[0][3]).toBe('CN')
+
+  await act(async () => setMarket('HK'))
+  await settle()
+  await typeIntoSearch('0070')
+  await settle()
+  expect(search.mock.calls.at(-1)![3]).toBe('HK')
+})
+
+it('🔴 切市场不复用上一个市场的搜索结果(串市场)', async () => {
+  // 同一个关键词在两个市场返回不同标的; queryKey 漏了 market 的话, 切到港股那一帧
+  // react-query 会直接把 A 股缓存当港股结果渲染(staleTime 内连请求都不发)。
+  vi.spyOn(api, 'instrumentSearch').mockImplementation(async (_q, _l, _t, market) => ({
+    results: market === 'HK'
+      ? [{ symbol: '00700.HK', name: '腾讯控股', code: '00700' }]
+      : [{ symbol: '600000.SH', name: '浦发银行', code: '600000' }],
+  }))
+  mockRows([])
+  await render()
+  await typeIntoSearch('007')
+  await settle()
+  expect(resultSymbols()).toEqual(['600000.SH'])
+
+  await act(async () => setMarket('HK'))
+  await settle()
+  expect(resultSymbols()).toEqual(['00700.HK'])
 })

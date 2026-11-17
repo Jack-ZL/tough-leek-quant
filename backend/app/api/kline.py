@@ -6,9 +6,10 @@ import gzip
 import json
 import logging
 import math
+from collections.abc import Callable
 from datetime import date, timedelta
 from functools import lru_cache, partial
-from typing import Optional
+from typing import Annotated, Optional
 from zoneinfo import ZoneInfo
 
 import anyio
@@ -16,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app.db_safe import is_valid_ext_ident
 from app.indicators.pipeline import compute_enriched_single
+from app.market import Market, parse_market
 from app.market_time import cn_now, cn_today, in_continuous_session
 from app.price_limits import (
     is_no_limit_day,
@@ -234,26 +236,11 @@ def _match_pinyin(name: str, keyword: str) -> bool:
     return any(k.startswith(keyword) for k in _name_pinyin_keys(name))
 
 
-@router.get("/instruments/search")
-def search_instruments(
-    request: Request,
-    q: str = Query("", min_length=0, max_length=50, description="搜索关键词"),
-    limit: int = Query(20, ge=1, le=50),
-    asset_types: str = Query("stock", description="逗号分隔的资产类型: stock,etf"),
-):
-    """模糊搜索标的 (代码 / 名称)。从内存 instruments 缓存中查。
-
-    默认只搜股票, 保持既有调用方行为不变; 自选等场景传 asset_types=stock,etf
-    可一并搜出 ETF, 结果附带 asset_type 字段供前端区分。
-    """
-    if not q.strip():
-        return {"results": []}
-
-    repo = request.app.state.repo
+def _search_frames_cn(repo, types: list[str]):
+    """A 股搜索源: 按 asset_type 逐份取内存维表缓存 (股票 / ETF / 指数)。"""
     import polars as pl
 
-    types = [t.strip() for t in asset_types.split(",") if t.strip()]
-    parts: list[pl.DataFrame] = []
+    parts = []
     for t in types:
         df_t = repo.get_instruments_asset(t)
         if df_t.is_empty() or "symbol" not in df_t.columns:
@@ -273,6 +260,90 @@ def search_instruments(
                 ]
             ).select(["symbol", "name", "code", "asset_type"])
         )
+    return parts
+
+
+def _search_frames_hk(repo, types: list[str]):
+    """港股搜索源: 单份 ``instruments_hk`` 维表, 目前只有股票一种资产类型。
+
+    🔴 维表缺失/损坏时 ``get_hk_instruments()`` 返回**空帧**(刻意不猜默认值), 这里
+    如实返回空列表 —— 调用方得到「无结果」而不是 500, 与 A 股维表未同步时一致。
+    ``name`` 列在港股维表里可为 null (东财占位 ``'-'`` 已清洗成 None), null 参与
+    ``str.contains`` 得 null → 被过滤掉, 即无名标的只能按代码搜到, 不会误命中。
+    """
+    import polars as pl
+
+    if "stock" not in types:
+        return []
+    df_t = repo.get_hk_instruments()
+    if df_t.is_empty() or "symbol" not in df_t.columns:
+        return []
+    return [
+        df_t.with_columns(
+            [
+                pl.col("symbol").cast(pl.Utf8).alias("symbol"),
+                (pl.col("name").cast(pl.Utf8) if "name" in df_t.columns else pl.lit("")).alias(
+                    "name"
+                ),
+                (pl.col("code").cast(pl.Utf8) if "code" in df_t.columns else pl.lit("")).alias(
+                    "code"
+                ),
+                # 用维表自带的 type 列而不是写死 "stock": 将来港股扩 ETF 不用改这里
+                (
+                    pl.col("type").cast(pl.Utf8)
+                    if "type" in df_t.columns
+                    else pl.lit("stock")
+                ).alias("asset_type"),
+            ]
+        ).select(["symbol", "name", "code", "asset_type"])
+    ]
+
+
+#: market → 搜索源。🔴 用**字典分派**而不是 ``if market == "HK"``: 后者会被 AST
+#: 架构守卫 (``tests/test_market_architecture_guard.py``) 判为串市场风险, 且新增
+#: 市场时应该加一行注册而不是改分支。
+_SEARCH_FRAMES: dict[Market, Callable[..., list]] = {
+    Market.CN: _search_frames_cn,
+    Market.HK: _search_frames_hk,
+}
+
+
+@router.get("/instruments/search")
+def search_instruments(
+    request: Request,
+    q: str = Query("", min_length=0, max_length=50, description="搜索关键词"),
+    limit: int = Query(20, ge=1, le=50),
+    asset_types: str = Query("stock", description="逗号分隔的资产类型: stock,etf"),
+    # 🔴 用 Annotated 而不是 `market: str | None = Query(None)`: 后者的**默认值是
+    # Query 对象本身**, 直接调用端点函数(本仓库测试的既有做法)时 `market is None`
+    # 恒假 → parse_market 认不出 → 一律 400。Annotated 让默认值是真正的 None。
+    market: Annotated[str | None, Query(description="市场 (CN/HK); 缺省 CN")] = None,
+):
+    """模糊搜索标的 (代码 / 名称 / 拼音首字母)。从内存 instruments 缓存中查。
+
+    默认只搜股票, 保持既有调用方行为不变; 自选等场景传 asset_types=stock,etf
+    可一并搜出 ETF, 结果附带 asset_type 字段供前端区分。
+
+    ``market`` 缺省 CN (既有调用方不传参, 行为不变)。🔴 传了**非法**值返回 400
+    而不是静默回退 CN —— 静默回退会让用户以为搜的是港股 (方案 §7: market 作显式
+    query 参数贯穿每个 API, 不用全局拦截器)。各市场搜**各自的维表**, 不合并:
+    合并全市场排名/选股池在方案 §16 属明确不做。
+    """
+    if not q.strip():
+        return {"results": []}
+
+    resolved = Market.CN if market is None else parse_market(market)
+    if resolved is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知 market {market!r} (支持: {', '.join(m.value for m in _SEARCH_FRAMES)})",
+        )
+
+    repo = request.app.state.repo
+    import polars as pl
+
+    types = [t.strip() for t in asset_types.split(",") if t.strip()]
+    parts = _SEARCH_FRAMES[resolved](repo, types)
     if not parts:
         return {"results": []}
     df = pl.concat(parts, how="vertical")

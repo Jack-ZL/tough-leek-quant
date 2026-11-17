@@ -53,9 +53,10 @@ export interface KlineCapabilities {
 	readonly minute: boolean
 	/**
 	 * 加入/移出自选。后端 `/api/watchlist/enriched` 已按 `is_hk_symbol` 把港股行分流到
-	 * 港股最新日快照缓存 ⇒ 港股 true。
-	 * ⚠️ 自选页的**搜索框**仍只查 A 股维表(`instrumentSearch('stock,etf,index')`),
-	 * 港股标的目前只能从详情抽屉加入 —— 入口开着但搜不到, 是已知缺口而非回归。
+	 * 港股最新日快照缓存; 自选页搜索框也已跟随全局市场(`/instruments/search?market=`
+	 * 各市场搜各自维表, 不合并) ⇒ 港股 true。
+	 * ⚠️ 仍为 null 的一项: `pct_since_added`(加入日基准价取自 A 股 enriched 缓存,
+	 * 港股无对应历史行) —— 前端渲染成「—」, 是诚实降级不是 bug。
 	 */
 	readonly watchlist: boolean
 	/** 监控规则与点位提醒。监控引擎只跑 A 股信号 ⇒ 港股 false。 */

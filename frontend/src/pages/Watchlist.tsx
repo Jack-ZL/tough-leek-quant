@@ -23,6 +23,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { QuoteDelayBadge } from '@/components/QuoteDelayBadge'
 import { QuoteFreshnessBadge } from '@/components/QuoteFreshnessBadge'
+import { useMarket } from '@/lib/marketStore'
 import { toNavItems, uniqueBy, type NavItem } from '@/lib/listNav'
 import {
 	DimensionMembersDialog,
@@ -285,9 +286,13 @@ function StockSearchBox({
 	const inputRef = useRef<HTMLInputElement>(null)
 	const [activeIdx, setActiveIdx] = useState(-1)
 
+	// 搜索跟随全局市场: 港股态搜港股维表, A 股态搜 A 股三份维表。
+	// 🔴 market 必须同时进 queryKey 与请求参数 —— 只进参数的话, 切市场那一帧
+	// react-query 会拿旧 key 的缓存(上一个市场的结果)直接渲染 = 串市场。
+	const market = useMarket()
 	const search = useQuery({
-		queryKey: QK.instrumentSearch(query, 'stock,etf,index'),
-		queryFn: () => api.instrumentSearch(query, 20, 'stock,etf,index'),
+		queryKey: QK.instrumentSearch(query, 'stock,etf,index', market),
+		queryFn: () => api.instrumentSearch(query, 20, 'stock,etf,index', market),
 		enabled: query.trim().length > 0,
 		staleTime: 30_000,
 	})

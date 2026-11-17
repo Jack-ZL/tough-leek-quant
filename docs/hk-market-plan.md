@@ -1296,11 +1296,10 @@ d5 的 18 + d6 的 18）；前端 **139 files / 1120 tests passed**（基线 138
 
 #### 刻意不做的事
 
-- **自选页搜索框没有 market 感知**。`Watchlist.tsx` 仍写死
-  `instrumentSearch(q, 20, 'stock,etf,index')`（A 股维表）。后果是港股标的
-  **能被加入**（详情抽屉的星号）、**能被渲染**（数据完整），但**在自选页搜不出来**。
-  已记进 §16「后续再议」与 `KlineCapabilities.watchlist` 的文档注释 —— 修法是给
-  `/api/instruments/search` 加 market 维，属独立小改动，不该混进这个 PR。
+- ~~**自选页搜索框没有 market 感知**~~ → **已在后续提交中补上**（见下节
+  「自选页搜索框 market 感知」）。当时刻意不混进这个 PR：它是独立小改动，
+  且改的是 `/api/instruments/search` 这个**全站 7 处调用**的共享端点，
+  混进来会让这个 PR 的回归面从「自选」扩到「所有搜索入口」。
 - **`pct_since_added` 对港股诚实地为 null**。加入日基准价取自 A 股 enriched 缓存，
   港股没有对应历史行。宁可显示「—」也不拿别的口径凑一个数。
 - **没有给 `_FakeRepo` 加 `getattr(..., None)` 兜底**。旧测试的假 repo 没有
@@ -1309,13 +1308,54 @@ d5 的 18 + d6 的 18）；前端 **139 files / 1120 tests passed**（基线 138
 - **`fetch_quotes()` 仍然没动**。它零调用方（死代码）；自选接通后确认它确实不在
   取价路径上（enriched 端点走的是快照读取器），删除它属独立清理。
 
+### 自选页搜索框 market 感知（PR3 收官后的独立小改动）
+
+上一节记的「港股能加入、能渲染、但搜不出来」缺口已补。落点：
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 后端 | `app/api/kline.py` | `search_instruments` 加 `market` 参数；把原先内联的 A 股维表循环抽成 `_search_frames_cn`，新增 `_search_frames_hk`，用 `_SEARCH_FRAMES: dict[Market, ...]` 分派 |
+| 后端测试 | `tests/test_instrument_search.py` | +12 例（港股按代码/中文名搜、🔴 两市场互不串、缺省与显式 CN 都不碰港股维表、`hk` 小写别名、非法 market 400、维表缺失返 `[]` 不 500、`asset_types` 门控、`name` 为 null 只能按代码搜、limit 生效） |
+| 前端 | `lib/api.ts` / `lib/queryKeys.ts` / `pages/Watchlist.tsx` | `instrumentSearch` 与 `QK.instrumentSearch` 各加一个可选 `market`；`Watchlist` 搜索子组件从 `useMarket()` 取值传下去 |
+| 前端测试 | `pages/Watchlist.hk.test.tsx` | +2 例（按当前市场传参 CN/HK；🔴 切市场不复用上一个市场的搜索结果） |
+
+**为什么用分派字典而不是 `if market == "HK"`**：后者会被
+`tests/test_market_architecture_guard.py` 的 AST 守卫拦下（它专门抓「市场字面量
+出现在比较运算里」），而且新增一个市场本该是**注册一行**，不是**改一处分支**。
+
+**两个真陷阱**：
+
+1. 🔴 **`Query(None)` 的默认值陷阱**（一开始 16 例全红）。本仓库的端点测试是
+   **直接调函数**（`search_instruments(_request(repo), q=..., limit=...)`），
+   不走 `TestClient`。写成 `market: str | None = Query(None, ...)` 时，
+   Python 层的默认值是**那个 `Query` 对象本身**而不是 `None`，于是
+   `market is None` 为假 → `parse_market(Query(None))` 返回 None → 400。
+   必须用 `Annotated[str | None, Query(...)] = None`。
+   （`settings.py` 是靠**完全不包 `Query`** 绕开的，两种写法都行，
+   但**不能**混着写。）
+2. 🔴 **`market` 必须进 queryKey**。漏了的话切市场那一帧 react-query 直接把
+   上一个市场的缓存当结果渲染，而且 `staleTime: 30_000` 连请求都不发 ——
+   表现为「切到港股还显示 A 股搜索结果」，且**网络面板是干净的**，很难查。
+
+**刻意不做**：其余 6 处 `instrumentSearch` 调用方（`RuleEditor`、
+`StockFinancialSearch`、`custom/paper`、`custom/lots`、`backtest/StrategyBacktest`）
+**不传 market**，保持 A 股。这些功能对应的 `capabilities` 对港股本来就是 false
+（监控规则 / 财务 / 模拟盘 / 持仓 / 回测都还没接港股），先让搜索能搜出港股
+只会把用户引到一个点进去就报错的页面。等各自接通时再逐处加参数。
+
+**验证**：后端全量 7138 passed / 8 skipped / 1 xfailed；前端 tsc 干净、
+139 文件 / 1122 测试全绿、`pnpm build` ✓；变异 6/6 被杀
+（后端 4：HK 分派到 A 股源 / 非法 market 静默回退 CN / HK 忽略 `asset_types` 门控 /
+HK 源读 A 股维表；前端 2：queryKey 漏 market / 请求漏 market 参数）；
+ruff 改动文件前后错误数持平。
+
 ### PR3 剩余（已全部完成）
 
 | 项 | 状态 |
 |---|---|
 | ~~前端共享层 + `marketContent.ts`~~ | ✅ **已完成**（见上节）。⚠️ `Market*` 命名空间确已被 `MarketClock`/`MarketPhase`/`MarketSnapshotRow`/`marketTradingStatus` 占用 → 新文件取小写 `lib/market.ts` 避撞 |
 | K线 / 详情 | ✅ **已完成**（见上节）。`lib/kline-market-adapter.ts` + `StockDetailBody.tsx` 注册表；🔴 `lib/stockPreviewStore.ts` 那道写死 `/^\d{6}\.(SH\|SZ\|BJ)$/` 的**第一道硬墙已拆**（改为 `symbolMarket(symbol) === null` 才拒），港股代码现在能打开详情抽屉 |
-| 自选（watchlist） | ✅ **已完成**（后端 + 前端）。🔴 关键设计判断：自选是**一张跨市场平表**（`services/watchlist.py` 无 market 列），所以正确形态**不是**加市场切换页或新开港股端点，而是让既有 `GET /api/watchlist/enriched` 自己按代码分流。为此先补上原先记的那个挡点 —— 后端「最新日全量快照」读取器 `repo.get_hk_enriched_latest()`，它与 `get_hk_daily()` **共用** `_HK_ENRICHED_WARMUP_DAYS = 150` 预热窗（不共用会让自选行与详情抽屉的最后一根K对不上）。⚠️ 四处易错：① 港股代码必须**先从 `stock_symbols` 里剔掉**，否则会 LEFT JOIN 到 A 股 enriched 缓存，得到一行全 null —— 看起来像「没同步」而不是「读错表」；② 读时重算涨跌停价的分支必须排除港股（`rules_for(HK).has_price_limit = False`）；③ `repo.get_name_map()` **只合并 A 股三份维表**，港股名称/每手股数得另从 `get_hk_instruments()` 补（收敛成 `_name_map_with_hk()`，先判有没有港股代码 —— 纯 A 股用户零额外开销，也不会吃一条「港股维表不存在」的 warning）；④ `dates` 字典新增 `hk` 键，两个**精确断言** `dates` 结构的旧测试随之更新。🔴 **已知缺口（刻意不做，记在 `KlineCapabilities.watchlist` 的文档注释里）**：自选页搜索框仍走 `api.instrumentSearch(query, 20, 'stock,etf,index')` = A 股维表，所以港股**能被加入**（详情抽屉的星号）也**能被渲染**（数据完整），但**在自选页搜不出来**；`pct_since_added` 对港股诚实地为 null（加入日基准价取自 A 股 enriched 缓存）。前端 `capabilities.watchlist` 已翻 `true`，`StockPreviewDialogContent` 的星号入口随之打开 |
+| 自选（watchlist） | ✅ **已完成**（后端 + 前端）。🔴 关键设计判断：自选是**一张跨市场平表**（`services/watchlist.py` 无 market 列），所以正确形态**不是**加市场切换页或新开港股端点，而是让既有 `GET /api/watchlist/enriched` 自己按代码分流。为此先补上原先记的那个挡点 —— 后端「最新日全量快照」读取器 `repo.get_hk_enriched_latest()`，它与 `get_hk_daily()` **共用** `_HK_ENRICHED_WARMUP_DAYS = 150` 预热窗（不共用会让自选行与详情抽屉的最后一根K对不上）。⚠️ 四处易错：① 港股代码必须**先从 `stock_symbols` 里剔掉**，否则会 LEFT JOIN 到 A 股 enriched 缓存，得到一行全 null —— 看起来像「没同步」而不是「读错表」；② 读时重算涨跌停价的分支必须排除港股（`rules_for(HK).has_price_limit = False`）；③ `repo.get_name_map()` **只合并 A 股三份维表**，港股名称/每手股数得另从 `get_hk_instruments()` 补（收敛成 `_name_map_with_hk()`，先判有没有港股代码 —— 纯 A 股用户零额外开销，也不会吃一条「港股维表不存在」的 warning）；④ `dates` 字典新增 `hk` 键，两个**精确断言** `dates` 结构的旧测试随之更新。搜索框的 market 感知**已在后续提交补上**（见下节），港股现在**能搜出来、能加入、能渲染**；唯一诚实降级是 `pct_since_added` 对港股为 null（加入日基准价取自 A 股 enriched 缓存，港股没有对应历史行）。前端 `capabilities.watchlist` 已翻 `true`，`StockPreviewDialogContent` 的星号入口随之打开 |
 | 15 分钟延时标注 | ✅ **已完成**：指数页 + 个股详情页 + **自选列表**（表格视图与卡片视图两处渲染点都接了）。`QuoteDelayBadge`（中性灰，**不复用** `QuoteFreshnessBadge` —— 其 `'delayed'` 语义是异常，文案「请检查数据源与连接」），分钟数只读接口 `quote_delay_minutes`；自选侧由后端按 `rules_for(market)` **逐行**下发（A 股为 0 → 组件不渲染）。🔴 `Watchlist.hk.test.tsx` 用变异测试钉住「不得写死 15、不得 `\|\| 15` 兜底」—— 写死会在源侧调整延时后静默说谎 |
 | 空态契约文案 | ✅ **已完成**：① 指数页 + 个股日K按 `empty_reason` 三态分文案，`no_enriched` 明确写出「刻意不回退原始价」与 `coverage.json` 的 `uncovered` 拒算路径；② 「港股无概念板块数据源」文案已落地，且**同时覆盖概念板块与行业板块**（东财 `t:2` 的 496 个行业同样全是 A 股，只挡概念会让隔壁行业页在港股态继续渲染 A 股行业 = 同一个串市场 bug）。共享声明表 `frontend/src/lib/board-market-support.ts`（`Record<BoardKind, Record<Market, copy\|null>>`，新增市场即编译报错），两个页面各自 early-return 空态。🔴 门控做在**查询层**（`enabled: boardReady`）而不只渲染层：港股态连 `extDataList` / `extDataRows` / `marketSnapshot` 都不发。⚠️ 刻意**没有**给 `concept` 加 `CAPABILITY_REGISTRY` 条目 —— 注册表 7 项全是 provider 可路由数据集（都带真实 `field`），概念板块走同花顺 **ext_data** 通道，加进去会凭空生成一张把 TickFlow 列为候选源的设置卡（范畴错误） |
 | 能力矩阵 market 维（`:918`） | ✅ **已完成**（见下节）。注册表逐项声明 `markets`，`build_capability_matrix` / `resolve_capability_sources` / `capability_gate` 三处全部带 `market` 维，`GET /api/settings/capability-matrix?market=` 非法值 **400**（不静默回落 CN） |
@@ -1353,7 +1393,7 @@ d5 的 18 + d6 的 18）；前端 **139 files / 1120 tests passed**（基线 138
 
 **后续再议**
 
-- **自选页搜索框 market 感知**：`Watchlist.tsx` 的搜索仍写死 `instrumentSearch(q, 20, 'stock,etf,index')`（A 股维表），所以港股标的**能加入、能渲染、但搜不出来**（只能从详情抽屉的星号加）。修法是给 `/api/instruments/search` 加 `market` 维并按 `marketStore` 传参，属独立小改动
+- ~~**自选页搜索框 market 感知**~~ → **已完成**（见「自选页搜索框 market 感知」一节）
 - **CCASS 聪明钱**：港股独有的「主力资金」数据（中央结算持股 top50 席位变动）。QuantMind 为它写了 `hk_smart_money.py` + 11 个前端组件（`HkSmSeatBoard`/`HkSmConsensusBoard`/`HkSmEvidenceCard`/`HkSmTypeBoard`/`HkSmAdvantageFace`/`HkSmPersistenceFace`/`HkSmEcoFace`/`HkSmOverviewBand`/`HkSmSeatDrawer`/`HkSmStockDrawer`/`HkSmartMoneyPanel`）+ 6 个测试文件，是港股分析的重头戏，但成本高。akshare 无 CCASS 接口，需另找源
 - **港股指数成份权重**：中证港股通系列（`index_stock_cons_weight_csindex`）
 - **恒生行业指数行情**：`HSMBI`/`HSMPI`/`HSMOGI` 等只有零星几个，覆盖不全，只能作行业板块的补充

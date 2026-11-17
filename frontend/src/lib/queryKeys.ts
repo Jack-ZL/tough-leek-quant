@@ -78,7 +78,10 @@ export const QK = {
 	// 同上不嵌 symbols: 单 key + 按 symbol 增量合并, 请求集合由视口收敛
 	// (见 lib/minuteBatchIncremental.ts)。
 	minuteBatch: () => ['minute-batch'] as const,
-	instrumentSearch: (q: string, assetTypes?: string) => ['instrument-search', q, assetTypes ?? 'stock'] as const,
+	// 🔴 market 必须进 key: 自选页切市场后若仍复用同一 key, react-query 会把上一个
+	// 市场的缓存结果当当前市场渲染(串市场), 且 staleTime 内连请求都不发。
+	instrumentSearch: (q: string, assetTypes?: string, market?: string) =>
+		['instrument-search', q, assetTypes ?? 'stock', market ?? 'CN'] as const,
 
 	// Screener
 	screener: ['screener'] as const,

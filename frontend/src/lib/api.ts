@@ -4577,9 +4577,10 @@ export const api = {
 				date, ...(preferLocal ? { prefer_local: true } : {}), ...(since ? { since } : {})
 			}),
 		}),
-	instrumentSearch: (q: string, limit = 20, assetTypes?: string) =>
+	/** 模糊搜索标的。`market` 缺省 CN(既有调用方不传, 行为不变); 各市场搜各自维表, 不合并 */
+	instrumentSearch: (q: string, limit = 20, assetTypes?: string, market?: string) =>
 		request<{ results: { symbol: string; name: string; code: string; asset_type?: string }[] }>(
-			`/api/kline/instruments/search?q=${encodeURIComponent(q)}&limit=${limit}${assetTypes ? `&asset_types=${encodeURIComponent(assetTypes)}` : ''}`,
+			`/api/kline/instruments/search?q=${encodeURIComponent(q)}&limit=${limit}${assetTypes ? `&asset_types=${encodeURIComponent(assetTypes)}` : ''}${market ? `&market=${encodeURIComponent(market)}` : ''}`,
 		),
 
 	/** 批量查股票名称 (传入 symbol 列表, 返回 {symbol: name}) */
