@@ -90,29 +90,54 @@ _TODAY_BY_MARKET: dict[Market, Callable[[], date]] = {
 }
 
 
-def _load_kline(repo, symbol: str) -> pl.DataFrame:
-    """读取该标的最近 N 根日 K(已含技术指标 / 信号)。
+def load_kline_window(repo, symbol: str, days: int, end: date | None = None) -> pl.DataFrame:
+    """按市场分派读取 ``[end - days*2, end]`` 的日 K, **不做 tail 截断**。
 
-    repo: KlineRepository;走内存缓存,性能可控。
+    ``days * 2`` 是「日历天 → 交易日」的既有换算 (多取一些保证交易日够)。
+    截断刻意留给调用方: 「要多少根」是调用方的口径 —— AI 链路固定
+    ``_KLINE_WINDOW``, 而 ``/api/stock-analysis/levels`` 由查询参数 ``days``
+    决定且历史上不截断 (加截断会改变 A 股既有行为)。
+
+    ``end`` 缺省时按 :data:`_TODAY_BY_MARKET` 取**该市场**的「今天」;
+    显式传 ``end`` 是给已有 monkeypatch 缝隙的调用方用的
+    (见 ``api/stock_analysis.get_levels`` 与
+    ``tests/test_stock_analysis_beijing_today.py``)。
 
     市场由 symbol 推断 —— ``infer_market`` 是**路由专用**判据 (宽松: 大小写/空白
     归一, 未知代码兜底 CN), 与存储边界用的严格 ``is_valid_symbol`` 刻意不同,
     见 CONTRIBUTING §3.5 的三档严格度表。
 
-    🔴 个股分析与多空辩论**共用本函数** (``stock_debate.build_materials`` 直接调
-    ``stock_analyzer._load_kline``), 所以市场分派只需在这一处落地, 两条 AI 链路
-    同时生效 —— 这也是「辩论与分析必须看同一份材料」的既有约束。
+    ⚠️ 报错文案里的「AI」是历史遗留: 本函数现在也服务非 AI 的 ``/levels`` 端点,
+    但 ``tests/test_ai_market_dispatch.py`` 用 ``match="未注册 AI 日K读取器"`` /
+    ``match="未注册 AI 日K窗口右端取法"`` 钉住了这两条文案, 按 CONTRIBUTING §9
+    (既有测试不改一行也必须通过) 保持原样。
     """
     market = infer_market(symbol)
     loader = _KLINE_LOADERS.get(market)
     if loader is None:  # 新市场忘了注册读取器: 当场报错, 不静默回退 A 股
         raise ValueError(f"市场 {market} 未注册 AI 日K读取器")
-    today_of = _TODAY_BY_MARKET.get(market)
-    if today_of is None:  # 同上: 「今天」的取法也按市场注册, 漏了就报错
-        raise ValueError(f"市场 {market} 未注册 AI 日K窗口右端取法")
-    end = today_of()
-    start = end - timedelta(days=_KLINE_WINDOW * 2)  # 多取一些保证交易日够
-    df = loader(repo, symbol, start, end)
+    if end is None:
+        today_of = _TODAY_BY_MARKET.get(market)
+        if today_of is None:  # 同上: 「今天」的取法也按市场注册, 漏了就报错
+            raise ValueError(f"市场 {market} 未注册 AI 日K窗口右端取法")
+        end = today_of()
+    start = end - timedelta(days=days * 2)  # 多取一些保证交易日够
+    return loader(repo, symbol, start, end)
+
+
+def _load_kline(repo, symbol: str) -> pl.DataFrame:
+    """读取该标的最近 N 根日 K(已含技术指标 / 信号)。
+
+    repo: KlineRepository;走内存缓存,性能可控。
+
+    🔴 个股分析、多空辩论与 ``GET /api/stock-analysis/levels`` **共用**
+    :func:`load_kline_window` 的市场分派 (``stock_debate.build_materials`` 直接调
+    ``stock_analyzer._load_kline``), 所以市场分派只需在这一处落地, 三条读取路径
+    同时生效 —— 这也是「辩论与分析必须看同一份材料」的既有约束。
+    ``/levels`` 曾经自己写一遍 ``get_daily_asset(resolve_asset_type(...))``,
+    于是港股图表 markLine 静默为空 (读错表), 见 ``docs/hk-market-plan.md`` §9。
+    """
+    df = load_kline_window(repo, symbol, _KLINE_WINDOW)
     if df.is_empty():
         return df
     return df.tail(_KLINE_WINDOW)

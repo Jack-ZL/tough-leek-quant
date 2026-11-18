@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import timedelta
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -25,7 +24,7 @@ from app.indicators.levels import compute_levels, summarize_levels
 from app.market_time import cn_today
 from app.services import stock_reports
 from app.services.ndjson_heartbeat import with_heartbeat
-from app.services.stock_analyzer import analyze_stock_stream
+from app.services.stock_analyzer import analyze_stock_stream, load_kline_window
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +121,19 @@ def get_levels(
         raise HTTPException(400, "symbol 不能为空")
 
     repo = request.app.state.repo
+    # 🔴 窗口右端保留本模块的 ``cn_today()`` 调用: ``test_levels_window_ends_on_beijing_today``
+    # 用 ``monkeypatch.setattr(stock_analysis_api, "cn_today", ...)`` 钉住
+    # 「右端必须是北京日期, 不能用服务器本地 date.today()」(CONTRIBUTING §3.3)。
+    # 改成走 ``stock_analyzer._TODAY_BY_MARKET`` 会让补丁钉到空气上 → 该测试直接红。
+    # 对港股同样正确: 沪深与港交所同为 UTC+8 (``market_time.CN_TZ`` 的文档明说
+    # 「该常量对两个市场都适用」), 由 test_levels_market_dispatch 的时区不变量钉住。
     end = cn_today()
-    start = end - timedelta(days=days * 2)
-    # 按资产类型分流: ETF/指数走独立 enriched 存储, 股票保持原路径
-    df = repo.get_daily_asset(repo.resolve_asset_type(symbol), symbol, start, end)
+    # 🔴 按市场分派读取器, **不能**自己写 ``get_daily_asset(resolve_asset_type(symbol), ...)``:
+    # ``resolve_asset_type("00700.HK")`` 返回 ``"stock"`` (港股既不在 ETF 也不在指数
+    # 符号集里), 于是会去读 **A 股** enriched 存储 → 空帧 → 图表 markLine 全空且
+    # summary 显示「无数据」。看起来像「没同步」, 实际是**读错了表**,
+    # 用户去点同步按钮永远修不好。与 AI 链路共用同一个分派点。
+    df = load_kline_window(repo, symbol, days, end=end)
     if df.is_empty():
         return {"levels": {"sr": [], "pivot": [], "extreme": [],
                            "boll": [], "keltner_s": [], "keltner_m": [], "keltner_l": [],

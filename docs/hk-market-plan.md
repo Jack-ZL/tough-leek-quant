@@ -1459,8 +1459,13 @@ AST 架构守卫（`test_market_architecture_guard.py`）无需 ALLOWLIST。
 **刻意不做（f2 范围外，已登记）**：
 
 - `GET /api/stock-analysis/levels`（`stock_analysis.py:113-160`）**仍有同一个
-  `get_daily_asset(resolve_asset_type(...))` bug**，且用 `cn_today()`。它不走
+  `get_daily_asset(resolve_asset_type(...))` bug**。它不走
   `_load_kline`，是独立读取点，喂的是同一支标的的图表 markLines。
+  → **已于「关键价位端点按 market 分派」一节修复**。
+  ⚠️ 当时还写了「且用 `cn_today()`」，这句**是过度归因**：沪深与港交所同为
+  UTC+8（`market_time.CN_TZ` 的文档明说「该常量对两个市场都适用」），
+  `cn_today()` 对港股取值与 `market_today(Market.HK)` 逐日相同，不是缺陷。
+  真正的缺陷只有「读错表」一处。
 - `_load_financials` 对港股仍会去读 A 股财务表（结果为空，无副作用但白跑一次），
   且 `_build_user_prompt` 会据此输出「Free 模式或尚未同步财务报表」的错误文案 ——
   归 **f3 护栏**一并处理（市场专属提示词文案的自然归属）。
@@ -1597,6 +1602,7 @@ f2 5：HK 定版线退回 15:35 / HK 改用 A 股日历 / HK 跑 A 股附加检�
   ⚠️ 这是个判断而非定论 —— 若后续实测发现港股报告仍在用连板逻辑论证，
   应回头把 §5 也做成分派。
 - `GET /api/stock-analysis/levels` 的同源 bug 仍未修（f2 已登记）。
+  → **已于「关键价位端点按 market 分派」一节修复**。
 - f4 辩论护栏、f5 机器人港股入口。
 
 **验证**：后端全量 **7226 passed / 8 skipped / 1 xfailed**（150.55s；
@@ -1836,6 +1842,126 @@ ruff：`app/market.py` / `dingtalk_bot_service.py` / 新测试文件
 补陷阱 7 的测试后才被杀）/ 惰性生成器改急切列表 → 2 failed /
 `currency_symbol` 兜底成 CN → 5 failed / `_market_note` 写死 `15`+`HK$` → 4 failed /
 报告抬头去掉口径行 → 2 failed / 钉钉单边改文案 → 1 failed。
+
+### PR4 收尾（独立修复）—— 关键价位端点按 market 分派日K读取
+
+**改了什么**
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/services/stock_analyzer.py` | 从 `_load_kline` 抽出 `load_kline_window(repo, symbol, days, end=None)`：市场分派 + 窗口计算，**不做 tail 截断**；`_load_kline` 变成薄封装（`load_kline_window(..., _KLINE_WINDOW)` + 空帧早返回 + `.tail(_KLINE_WINDOW)`） |
+| `app/api/stock_analysis.py` | `get_levels` 的 `repo.get_daily_asset(repo.resolve_asset_type(symbol), ...)` 换成 `load_kline_window(repo, symbol, days, end=cn_today())`；删掉随之不再使用的 `timedelta` 导入 |
+| `tests/test_levels_market_dispatch.py` | **新增 13 例** |
+
+**缺陷本身**
+
+`get_levels` 是 f1 之后**唯一**还在自己写日K读取的调用点。
+`resolve_asset_type("00700.HK")` 返回 `"stock"`（港股既不在 ETF 也不在指数符号集里），
+于是去读 **A 股** enriched 存储 → 空帧 → 走 `summary="无数据"` 分支 →
+港股图表的 11 类 markLine 与布林/Keltner/ATR 曲线**全空**。
+
+🔴 危险之处在于它**看起来像「没同步」**：前端显示「无数据」，用户去点同步按钮
+永远修不好 —— 同步写的是 `kline_hk_enriched`，读的是 A 股表。
+静默错表比抛错难查得多，这也是 f2 就登记、却一直拖到 PR4 收尾才修的原因
+（登记时以为要动 AI 链路，实际只是漏了一个独立读取点）。
+
+**为什么抽 `load_kline_window` 而不是让 `get_levels` 直接调 `_load_kline`**
+
+`_load_kline` 的窗口是**写死**的 `_KLINE_WINDOW = 90`，而 `/levels` 的 `days`
+是查询参数（`ge=30, le=500`，默认 120）。直接复用会把用户的 `days` 吞掉。
+
+抽出来的函数刻意**不截断**：`days * 2` 个日历天能取到多于 `days` 根交易日 K，
+而端点历史上是全量返回的 —— 加 `.tail(days)` 会改变 A 股既有行为
+（CONTRIBUTING §9「既有 A 股测试不改一行也必须通过」）。
+截断留在 `_load_kline`，因为「要多少根」是**调用方**的口径。
+`test_load_kline_window_does_not_tail` 把这条差异钉住。
+
+**为什么 `end` 是可选参数而不是内部一律走 `_TODAY_BY_MARKET`**
+
+🔴 这是本次最容易踩空的一处。既有
+`tests/test_stock_analysis_beijing_today.py::test_levels_window_ends_on_beijing_today`
+用 `monkeypatch.setattr(stock_analysis_api, "cn_today", ...)` 钉住
+「窗口右端必须是北京日期，不能用服务器本地 `date.today()`」（CONTRIBUTING §3.3）。
+
+如果 `get_levels` 改成走 `stock_analyzer._TODAY_BY_MARKET`，那个补丁就**钉到空气上**，
+而断言会拿到真实今天 ≠ `2026-03-02` → 测试**直接红**（不是静默失效，是真的失败）。
+所以 `load_kline_window` 留了显式 `end` 参数，`get_levels` 继续调**本模块**的
+`cn_today()` 再传进去 —— 缝隙保住，分派也统一。
+`test_levels_window_right_end_is_patchable_cn_today` 把「缝隙真的还在」变成显式断言
+（既有那条用 `raising=False`，钉空了不报错）。
+
+**⚠️ 修正一处此前的过度归因**
+
+f2 登记时写的是「**仍有同一个 `get_daily_asset(...)` bug**，且用 `cn_today()`」。
+后半句**不成立**：`CN_TZ` 与 `HK_RULES.tz` 都是 `_UTC8`，
+`market_time.CN_TZ` 的文档明说「沪深与港交所同为 UTC+8，因此该常量对两个市场都适用」，
+`cn_today()` 与 `market_today(Market.HK)` 取值逐日相同。
+**真正的缺陷只有「读错表」一处。** 已在 f2 那节就地标注更正（CONTRIBUTING §13：
+不得把判断当事实）。
+
+**陷阱与处理**
+
+1. 🔴 **`cn_today()` 当所有市场的右端，是个有前提的正确**。前提是每个已注册市场
+   都是 UTC+8。一旦加了非 UTC+8 的市场（如美股），levels 的右端会整体偏移一天 ——
+   而偏移一天的窗口照样能取到数据、照样能算出价位，是典型的「看起来对但错」。
+   处理：`test_cn_today_seam_is_valid_for_every_registered_market` 让该假设**可执行**
+   （逐市场比对 `rules_for(m).tz.utcoffset(None) == CN_TZ.utcoffset(None)`，
+   并断言 `_TODAY_BY_MARKET[m]() == cn_today()`），新市场时区不同 → 这条先红。
+2. 🔴 **报错文案里的「AI」现在是历史遗留**。`load_kline_window` 也服务非 AI 的
+   `/levels`，但 `test_ai_market_dispatch.py` 用 `match="未注册 AI 日K读取器"` /
+   `match="未注册 AI 日K窗口右端取法"` 钉住了这两条文案。按 §9 保持原样，
+   只在 docstring 里说明，不改文案、不改既有测试。
+3. 🔴 **显式 `end` 会跳过 `_TODAY_BY_MARKET` 的 fail-closed 检查**。这是设计意图
+   （调用方自己负责右端口径），但意味着「注册表漏项」对 levels 不再报错。
+   由陷阱 1 的时区不变量测试兜住：漏项/异时区都会先红在那条上。
+   `test_load_kline_window_explicit_end_skips_today_registry` 把这个行为显式钉住，
+   避免将来有人「顺手补上检查」而弄丢 monkeypatch 缝隙。
+4. 🔴 **新测试必须先证明它在旧代码上会红**。注入 HEAD 版本的错表读取后，
+   13 例中**端点级 5 例全红**（`test_hk_levels_read_hk_store_not_ashare` /
+   `test_hk_levels_return_non_empty_payload` / `test_levels_dispatch_matches_ai_chain` /
+   `test_levels_window_honours_days_param` / `test_levels_window_right_end_is_patchable_cn_today`），
+   其余 8 例是 `load_kline_window` 的单元契约（旧代码里该函数不存在，本就不该由它们证伪）。
+   还原后校验 `git diff --stat` 与导入行，27 例（含既有 14 例）全绿。
+
+**刻意不做**
+
+- **不给 `/levels` 加 `.tail(days)` 截断**：会改变 A 股既有返回行数。
+- **不把 `_KLINE_LOADERS` / `_TODAY_BY_MARKET` 搬到中立模块**：搬走会让
+  `test_stock_analysis_beijing_today` 与 `test_ai_market_dispatch` 的
+  `monkeypatch.setattr(stock_analyzer, "cn_today", ...)` 全部钉空。
+  分派表留在原地、只多暴露一个函数，是保住既有证明的最小改动。
+- **不改报错文案**（见陷阱 2）。
+- **不动 `_build_series` / `compute_levels`**：两者纯技术计算、零市场耦合
+  （§9 已确认），港股直接可用；本次缺陷纯粹在读取层。
+- **不顺手修 `test_screener_run_all_progressive` 的既有 flake**：与本次无关，
+  CONTRIBUTING §12 禁止夹带。根因已定位（缓存增量写在前、`record_run_timings`
+  在循环后，测试的轮询谓词不覆盖 timings 落盘），留作独立提交。
+
+**验证**：新增 `tests/test_levels_market_dispatch.py` **13 例**（4 组：
+港股不读 A 股存储 / 窗口口径 / 空帧与降级 / `load_kline_window` 单元契约）；
+既有 `test_stock_analysis_beijing_today.py`（2 例）、`test_ai_market_dispatch.py`（12 例）、
+`test_market_guardrail.py` 合计 **94 例一行未改全绿**；§9 市场维度五件套
+**307 passed**（基线不变）；后端全量 **7320 passed / 8 skipped / 1 xfailed**
+（219.80s；基线 7307 + 本次 13，**零回归**，且这轮没撞上 screener flake）；
+ruff：两个改动文件 + 新测试文件均 `All checks passed`（与 HEAD 基线逐条相同）；
+`git diff --check` 干净。
+
+变异测试 **8/8 被杀**（每次清 `__pycache__`、还原后校验源码哈希一致，基线 27 passed）：
+
+| 变异 | 结果 |
+| --- | --- |
+| `get_levels` 回退成 `get_daily_asset(resolve_asset_type(...))` | ✅ 8 failed |
+| `load_kline_window` 也 `.tail(days)` | ✅ 1 failed |
+| 忽略显式 `end`、一律走 `_TODAY_BY_MARKET` | ✅ 3 failed |
+| `get_levels` 丢掉 `cn_today()` 缝隙（`end = None`） | ✅ 2 failed |
+| 读取器漏注册时静默回退 A 股 | ✅ 2 failed |
+| 「今天」漏注册时回落 `cn_today()` | ✅ 2 failed |
+| 窗口换算丢掉 `* 2` | ✅ 1 failed |
+| `_load_kline` 不再截断到 `_KLINE_WINDOW` | ✅ 2 failed |
+
+另做了一次**反向验证**：把 HEAD 版本的错表读取注入回 `get_levels`，
+13 例中端点级 **5 例全红**（见陷阱 4），证明新测试确实钉住了缺陷本身，
+而不是「新旧代码都绿」的空测试。
 
 ## 15. 风险
 
