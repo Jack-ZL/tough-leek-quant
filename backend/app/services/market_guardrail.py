@@ -24,6 +24,15 @@ AI 链路 (个股分析 / 多空辩论) 的系统提示词是**按 A 股写的**
   那是市场差异的**唯一**住所 (见 ``tests/test_market_architecture_guard.py``)。
   写死一次, 规则表改了提示词就静默说谎。
 * **按 market 注册表分派**, 不写 ``if market == Market.HK``: 新增市场 = 注册一行。
+* 🔴 **护栏文本不得含阿拉伯数字**。系统提示词会进数字闸门白名单
+  (``stock_analyzer.py`` 的 ``collect_whitelist(texts=(system_prompt, ...))``、
+  ``stock_debate.py`` 的 ``texts=(_BULL_SYSTEM, ..., materials["text"])``),
+  白名单里的数字等于给模型**发通行证**: 护栏写「涨跌停 ±10%/±20%」, 模型编一句
+  「今日涨幅 10%」就能过闸。``ai_number_gate.NUMBER_RULE_PROMPT`` 上方那条
+  「刻意不含任何示例数字——系统提示词也会进白名单, 示例数字会留假放行口子」
+  说的就是这个。所以规则表里的数值一律经 ``_cn_num`` 转成中文数字再落文案,
+  并由 ``test_guardrail_leaks_no_number_into_whitelist`` 兜底 (含 monkeypatch
+  成 ``quote_delay_minutes=30`` / ``lot_size=400`` 的**会泄漏值**反向验证)。
 * 结构照抄 QuantMind ``skill_templates/hk_market_guardrail.md``, 但**两处刻意不同**:
   ① 本项目 symbol 是 **5 位** + ``.HK`` (``00700.HK``), QuantMind 是 4 位;
   ② QuantMind 的 board lot「按 1 股简化」, 本项目**有 ``lot_size`` 真值**
@@ -41,6 +50,55 @@ __all__ = [
     "guardrail_prompt",
     "prompt_market_label",
 ]
+
+
+_CN_DIGITS = ("零", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+_CN_UNITS = ("", "十", "百", "千")
+
+
+def _cn_four(n: int) -> str:
+    """``0 < n < 10000`` → 中文数字 (内部零头补「零」, 如 1005 → 一千零五)。"""
+    out: list[str] = []
+    zero_pending = False
+    for i in (3, 2, 1, 0):
+        d = (n // 10**i) % 10
+        if d == 0:
+            if out:
+                zero_pending = True
+            continue
+        if zero_pending:
+            out.append(_CN_DIGITS[0])
+            zero_pending = False
+        out.append(_CN_DIGITS[d] + _CN_UNITS[i])
+    return "".join(out)
+
+
+def _cn_num(n: int) -> str:
+    """整数 → 中文数字 (``0..99999``), 供提示词文案使用。
+
+    为什么需要: 护栏里的数值来自 ``rules_for`` (延时分钟、每手股数), 直接插值会
+    把阿拉伯数字带进系统提示词 → 进数字闸门白名单 → 给编造数字发通行证。
+    转成中文数字既保住「规则表是唯一来源」, 又不泄漏白名单。
+
+    超范围**抛错而不是退回 ``str(n)``**: 静默退回等于静默重新打开泄漏口子。
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError(f"提示词中文数字只接受 int, 收到 {type(n).__name__}: {n!r}")
+    if not 0 <= n <= 99999:
+        raise ValueError(f"提示词中文数字超出支持范围 (0..99999): {n}")
+    if n == 0:
+        return _CN_DIGITS[0]
+    wan, ge = divmod(n, 10000)
+    parts: list[str] = []
+    if wan:
+        parts.append(_cn_four(wan) + "万")
+    if ge:
+        if wan and ge < 1000:
+            parts.append(_CN_DIGITS[0])
+        parts.append(_cn_four(ge))
+    text = "".join(parts)
+    # 中文习惯: 15 读「十五」不读「一十五」
+    return text[1:] if text.startswith("一十") else text
 
 
 #: 提示词人设里紧跟「15 年」之后的市场称谓, **含所需的前导空格**。
@@ -68,7 +126,13 @@ def _no_guardrail() -> str:
 
 
 def _hk_guardrail() -> str:
-    """港股护栏 6 条。所有市场事实读 ``rules_for(Market.HK)``, 不写死。"""
+    """港股护栏 6 条。所有市场事实读 ``rules_for(Market.HK)``, 不写死。
+
+    🔴 全文**不得出现阿拉伯数字** (``沪深300`` / ``T+0`` 这类专有名词与
+    ``scan_text_numbers`` 实测不收的形态除外): 系统提示词会进数字闸门白名单,
+    数字进去就等于给模型编造同值数字发通行证。规则表里的数值经 ``_cn_num``
+    转中文数字。详见模块 docstring 与 ``test_guardrail_leaks_no_number_into_whitelist``。
+    """
     rules = rules_for(Market.HK)
     # T+0 / T+1 与有无涨跌停从规则表推导, 而不是在文案里写死「T+0」「无涨跌停」:
     # 规则表是单一来源, 文案跟着它走才不会哪天规则改了提示词还在说谎。
@@ -77,32 +141,33 @@ def _hk_guardrail() -> str:
         "有涨跌停" if rules.has_price_limit else "**无涨跌停**, 单日振幅不受限制"
     )
     lot = (
-        f"固定 {rules.lot_size} 股"
+        f"固定 {_cn_num(rules.lot_size)} 股"
         if rules.lot_size
-        else "**按个股 board lot 各不相同** (数据里 ``lot_size`` 为 null 表示需查个股真值)"
+        else "**按个股 board lot 各不相同** (数据里 ``lot_size`` 为空表示需查个股真值)"
     )
+    delay = _cn_num(rules.quote_delay_minutes)
     return f"""
 
 ## 🇭🇰 港股市场口径护栏
 
-**本次分析标的是港股。以下 6 条约束的优先级高于上文任何章节**; 上文若出现
+**本次分析标的是港股。以下六条约束的优先级高于上文任何章节**; 上文若出现
 「涨停 / 连板 / 炸板 / ST / 过户费」等 A 股措辞, 对港股一律按「无此语义」处理。
 
-1. **禁止套用 A 股规则**: T+1 回转交易、100 股整手、涨跌停 ±10%/±20%、ST/*ST
+1. **禁止套用 A 股规则**: T+1 回转交易、一百股整手、涨跌停板幅度限制、ST/*ST
    过滤、过户费、印花税双边征收 —— 这些**全部不适用于港股**, 不要据此推理或措辞。
-2. **symbol 口径**: 港股代码是 **5 位数字 + ``.HK``** (如 ``00700.HK``);
-   创业板 (8 开头) 同样保留 5 位。不要补零成 6 位, 也不要截成 4 位。
+2. **symbol 口径**: 港股代码是 **五位数字 + ``.HK``**; 创业板 (八开头) 同样保留
+   五位。不要补零成六位, 也不要截成四位。
 3. **交易机制**: 港股 **{turnover}**; {price_limit}; 每手股数{lot},
-   **不要假设一手 100 股**。
-4. **费用 / 货币 / 基准**: 佣金约 0.03% (最低 3 {rules.currency})、印花税 0.1%
-   (**卖出单边**)、无过户费; 计价货币是 **{rules.currency}** (不是 CNY);
-   默认对比基准是 **{rules.default_benchmark}** (恒生指数),
+   **不要假设一手一百股**。
+4. **费用 / 货币 / 基准**: 佣金约万分之三 (最低三 {rules.currency})、
+   印花税千分之一 (**卖出单边**)、无过户费; 计价货币是 **{rules.currency}**
+   (不是 CNY); 默认对比基准是 **{rules.default_benchmark}** (恒生指数),
    不是沪深300 / 上证指数。
-5. **数据口径**: 行情为 **{rules.quote_delay_minutes} 分钟延时**, 不是实时报价,
+5. **数据口径**: 行情为 **{delay} 分钟延时**, 不是实时报价,
    涉及「当前价 / 盘中」的表述要体现延时; 财报货币可能与股价货币不一致
    (见 ``CURRENCY`` 字段), PE / PB 等估值比率需注意分子分母的货币口径。
-6. 🔴 **null 不等于「没有」**: 数据里 ``consecutive_limit_ups`` /
-   ``signal_limit_up`` / ``signal_broken_limit_up`` 等 A 股专属列为 null 或 0,
+6. 🔴 **空值不等于「没有」**: 数据里 ``consecutive_limit_ups`` /
+   ``signal_limit_up`` / ``signal_broken_limit_up`` 等 A 股专属列为空或为零,
    含义是「**港股无此语义**」, **不是「该股没涨停」**。禁止据此推断「未涨停」
    「无连板情绪」「打板资金缺席」「情绪到位」等任何结论。
 """

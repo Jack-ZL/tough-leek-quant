@@ -79,15 +79,15 @@ def test_hk_guardrail_injected_into_system_prompt():
 @pytest.mark.parametrize("fragment", [
   # ① 禁止套用 A 股规则
   "禁止套用 A 股规则", "T+1 回转交易", "ST/*ST", "过户费",
-  # ② symbol 口径: 5 位 (本项目口径, 不是 QuantMind 的 4 位)
-  "5 位数字", "00700.HK", "创业板 (8 开头) 同样保留 5 位",
+  # ② symbol 口径: 五位 (本项目口径, 不是 QuantMind 的 4 位)
+  "五位数字", "创业板 (八开头) 同样保留", "不要补零成六位", "不要截成四位",
   # ③ 交易机制
-  "T+0", "T+2 交收不影响交易", "board lot", "不要假设一手 100 股",
+  "T+0", "T+2 交收不影响交易", "board lot", "不要假设一手一百股",
   # ④ 费用 / 货币 / 基准
-  "佣金约 0.03%", "印花税 0.1%", "卖出单边",
+  "佣金约万分之三", "印花税千分之一", "卖出单边",
   # ⑤ 数据口径
   "分钟延时", "CURRENCY", "估值比率需注意分子分母的货币口径",
-  # ⑥ null ≠ 没有
+  # ⑥ 空值 ≠ 没有
   "consecutive_limit_ups", "signal_limit_up", "signal_broken_limit_up",
   "港股无此语义", "不是「该股没涨停」",
 ])
@@ -128,11 +128,17 @@ def _fake_rules(**overrides):
 
 
 def test_delay_minutes_come_from_rules_not_hardcoded(monkeypatch):
-  """延时分钟数读 ``rules_for(market).quote_delay_minutes``, 不是写死的 15。"""
+  """延时分钟数读 ``rules_for(market).quote_delay_minutes``, 不是写死的十五。
+
+  🔴 断言用 ``_cn_num`` 换算后的中文数字: 护栏刻意不含阿拉伯数字 (会进数字闸门
+  白名单), 所以规则表的 15 / 99 落到文案里是「十五」/「九十九」。
+  """
   _fake_rules(quote_delay_minutes=99)(monkeypatch)
   text = mg.guardrail_prompt(Market.HK)
-  assert "99 分钟延时" in text
-  assert "15 分钟延时" not in text
+  assert f"{mg._cn_num(99)} 分钟延时" in text
+  assert f"{mg._cn_num(HK_RULES.quote_delay_minutes)} 分钟延时" not in text
+  # 阿拉伯数字形态一律不得出现
+  assert "99" not in text and "15" not in text
 
 
 def test_currency_and_benchmark_come_from_rules(monkeypatch):
@@ -153,8 +159,9 @@ def test_lot_size_wording_follows_rules(monkeypatch):
 
   _fake_rules(lot_size=400)(monkeypatch)
   text = mg.guardrail_prompt(Market.HK)
-  assert "固定 400 股" in text
+  assert f"固定 {mg._cn_num(400)} 股" in text
   assert "board lot" not in text
+  assert "400" not in text
 
 
 def test_turnover_and_price_limit_wording_follow_rules(monkeypatch):
@@ -169,9 +176,12 @@ def test_turnover_and_price_limit_wording_follow_rules(monkeypatch):
 
 
 def test_real_hk_rules_values_appear_in_guardrail():
-  """正向核对: 当前 HK_RULES 的真值确实出现在护栏里 (防止规则表改了文案没跟)。"""
+  """正向核对: 当前 HK_RULES 的真值确实出现在护栏里 (防止规则表改了文案没跟)。
+
+  延时分钟以中文数字形态出现 (``_cn_num``), 币种/基准是字母代码原样出现。
+  """
   text = mg.guardrail_prompt(Market.HK)
-  assert f"{HK_RULES.quote_delay_minutes} 分钟延时" in text
+  assert f"{mg._cn_num(HK_RULES.quote_delay_minutes)} 分钟延时" in text
   assert HK_RULES.currency in text
   assert HK_RULES.default_benchmark in text
 
@@ -216,7 +226,7 @@ def test_guardrail_reads_rules_at_call_time(monkeypatch):
   _fake_rules(quote_delay_minutes=42)(monkeypatch)
   after = mg.guardrail_prompt(Market.HK)
   assert before != after
-  assert "42 分钟延时" in after
+  assert f"{mg._cn_num(42)} 分钟延时" in after
 
 
 def test_string_market_alias_normalized():
@@ -360,3 +370,74 @@ def test_asset_type_branches_win_over_market_note(asset_type):
     out = _user_prompt("510300.SH", market, asset_type=asset_type)
     assert FIN_TRIGGER not in out
     assert "Free 模式" not in out
+
+
+# ===== 8. 🔴 数字闸门白名单卫生 (护栏不得给编造数字发通行证) =====
+#
+# 系统提示词会进 collect_whitelist(texts=...): stock_analyzer.py 传
+# (system_prompt, user_content), stock_debate.py 传 (_BULL_SYSTEM, _BEAR_SYSTEM,
+# _JUDGE_SYSTEM, materials["text"])。白名单里的数字 = 模型写同值数字时闸门放行。
+# ai_number_gate.NUMBER_RULE_PROMPT 上方明写「刻意不含任何示例数字——系统提示词
+# 也会进白名单, 示例数字会留假放行口子」。护栏若写「涨跌停 ±10%/±20%」, 模型编
+# 一句「今日涨幅 10%」就能过闸 —— 这是 f3 首版真实引入过的缺陷。
+
+def test_guardrail_leaks_no_number_into_whitelist():
+  """每个已注册市场的护栏 / 财务文案 / 称谓都不得含可入池的阿拉伯数字。"""
+  from app.services.ai_number_whitelist import scan_text_numbers
+
+  for market in Market:
+    for name, text in (
+      ("guardrail", mg.guardrail_prompt(market)),
+      ("financial_note", mg.financial_missing_note(market)),
+      ("label", mg.prompt_market_label(market)),
+    ):
+      assert scan_text_numbers(text) == [], f"{market.value} {name} 泄漏数字进白名单"
+
+
+def test_full_system_prompt_leaks_no_extra_numbers_for_hk():
+  """端到端: 港股系统提示词相对 A 股**不新增**任何白名单数字。"""
+  from app.services.ai_number_whitelist import scan_text_numbers
+
+  cn = set(scan_text_numbers(sa._build_system_prompt(False, Market.CN)))
+  hk = set(scan_text_numbers(sa._build_system_prompt(False, Market.HK)))
+  assert hk - cn == set(), f"港股系统提示词新增白名单数字: {sorted(hk - cn)}"
+
+
+@pytest.mark.parametrize("overrides", [
+  # 这些值若直接插值就会泄漏 (实测 scan_text_numbers 收 30 / 400 / 100)
+  {"quote_delay_minutes": 30},
+  {"quote_delay_minutes": 100},
+  {"lot_size": 400},
+  {"lot_size": 100},
+  {"quote_delay_minutes": 30, "lot_size": 500},
+])
+def test_leaky_rules_values_still_rendered_as_chinese(monkeypatch, overrides):
+  """反向验证: 把规则表改成**会泄漏的阿拉伯数字值**, 护栏仍然零泄漏。
+
+  只测当前真值 (15 / None) 是不够的 —— 它们恰好不被 ``scan_text_numbers`` 收录,
+  换成 30 / 400 就会进池。这条钉住「经 ``_cn_num`` 换算」这个机制本身。
+  """
+  from app.services.ai_number_whitelist import scan_text_numbers
+
+  _fake_rules(**overrides)(monkeypatch)
+  text = mg.guardrail_prompt(Market.HK)
+  assert scan_text_numbers(text) == [], f"{overrides} 渲染后泄漏: {scan_text_numbers(text)}"
+  # 正向确认换算后的中文数字确实落进文案 (而不是整段被吞掉)
+  for value in overrides.values():
+    assert mg._cn_num(value) in text, f"{value} 未以中文数字形态出现在护栏里"
+
+
+@pytest.mark.parametrize("value,expected", [
+  (0, "零"), (1, "一"), (3, "三"), (10, "十"), (15, "十五"), (20, "二十"),
+  (30, "三十"), (100, "一百"), (105, "一百零五"), (400, "四百"),
+  (1000, "一千"), (1005, "一千零五"), (10000, "一万"), (10500, "一万零五百"),
+])
+def test_cn_num_renders_chinese_numerals(value, expected):
+  assert mg._cn_num(value) == expected
+
+
+@pytest.mark.parametrize("bad", [-1, 100000, 1.5, "15", True, None])
+def test_cn_num_fail_closed_out_of_range(bad):
+  """超范围 / 非 int **抛错**, 不静默退回 ``str(n)`` —— 退回等于重开泄漏口子。"""
+  with pytest.raises(ValueError):
+    mg._cn_num(bad)
