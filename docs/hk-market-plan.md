@@ -1614,6 +1614,83 @@ f2 5：HK 定版线退回 15:35 / HK 改用 A 股日历 / HK 跑 A 股附加检�
 港股财务读取器指向 A 股 / 港股沿用 A 股财务缺失文案 / 人设空格放回模板。
 ⚠️ 变异期间踩过一次 stale `.pyc`（见上文陷阱 6），所有「存活」结论均已清缓存复跑确认。
 
+### PR4 完成情况（AI 能力）—— f4 多空辩论市场护栏
+
+**提交范围**：`stock_debate.build_materials` 注入市场口径护栏；新增
+`tests/test_debate_market_guardrail.py`（9 条）。
+
+**方案 §9.4 的要求**：「港股辩论材料含市场护栏；多空双方不能用 A 股涨跌停/连板
+逻辑论证」。
+
+#### 🔴 关键设计选择：护栏拼进 `materials["text"]`，不拼进三个系统提示词
+
+`_BULL_SYSTEM` / `_BEAR_SYSTEM` / `_JUDGE_SYSTEM` 是**模块级常量**，被 6 处引用
+（`:667` 白名单采集、`:675`/`:679` 多空用户消息、`:734` 裁决、`:765` 重写、
+`:823` 审计提示词哈希）。改成按市场分派的函数要动全部调用点，且三个角色各拼
+一遍容易拼歪（某一方漏拼 = 该方用 A 股逻辑论证，而测试很难发现）。
+
+而 `materials["text"]` **已经同时被这三类消费点覆盖**：
+
+| 消费点 | 位置 | 覆盖方式 |
+|---|---|---|
+| 数字闸门白名单 | `:666-668` | `texts=(..., materials["text"])` |
+| 审计提示词哈希 | `:822-823` | `prompt_text="\n\n".join([..., materials["text"], focus])` |
+| 五次 LLM 调用的用户消息 | `:675`/`:679`/`:734`/`:765` | 全部以 `materials["text"]` 为第一段 |
+
+所以**拼这一处 = 三方（含重写轮、终审）逐字节一致地看到同一份护栏，零额外
+接线**。这与既有「数据体检块拼进 `text`」的做法同理，原注释写得很清楚：
+「多方/空方/风控主管拿到的材料逐字节一致，对数据局限的认知也一致」。
+
+护栏位置：紧跟 `标的标准代码: {symbol}`，在 `关键价位概览` 与 K 线 JSON
+**之前** —— 三方先拿市场规则再读数据。前后各留一个空行（护栏是多行 Markdown
+块，紧贴正文会被读成「关键价位概览」的一部分）。
+
+A 股护栏是空串 ⇒ `if guardrail:` 不进 ⇒ **A 股材料逐字节不变**。
+
+#### 陷阱与处理
+
+1. 🔴 **`materials["text"]` 会进数字闸门白名单**，所以护栏必须零阿拉伯数字
+   （见 f3 陷阱 7）。拼接过程本身也可能引入数字，所以
+   `test_hk_materials_leak_no_number_into_whitelist` 不只测护栏本体，而是断言
+   「材料整体扫出的数字集合 == 去掉护栏后扫出的数字集合」—— 护栏一个都不贡献。
+2. 🔴 **只测 `materials["text"]` 含护栏是不够的**。护栏进了材料 ≠ 进了每一次
+   LLM 调用。`test_all_llm_calls_carry_the_same_guardrail` 跑完整场辩论
+   （含打回重写 + 终审），从 `debate_stream` **实际发出的用户消息**反向核对
+   五次调用全部含护栏，且五次的材料段逐字节一致。这条同时是「拼一处即覆盖
+   全部角色」这个设计选择的证据。
+3. 🔴 **裁决块标记是 HTML 注释形态**：`<!-- DEBATE_RULING: {...} -->`
+   （`RULING_RE:136`）。写测试时若照模块 docstring 里的 `DEBATE_RULING:` 字面
+   拼标记，`parse_ruling` 解析不出 → 降级为 pass → **重写轮根本不触发**，
+   测试会「绿着漏掉两次 LLM 调用」。必须断言实际调用序列是
+   `["bull","bear","judge","bear2","judge2"]`，不能只断言「含护栏」。
+4. `_FAKE_MATERIALS`（`test_stock_debate.py:332`）没有 `market` 键，而既有
+   辩论测试全绿 —— 说明 `debate_stream` 不读 `materials["market"]`，新增这个
+   键是**纯增量**，不会打破任何打桩调用方。
+5. `build_materials` 里 `score_symbol(...)` 不传 `market`：f2 已让它在
+   `market=None` 时从 symbol 推断（`ai_data_quality.py:264`），辩论侧无需改动。
+
+#### 刻意不做（f4 范围外）
+
+- **不把三个系统提示词改成按市场分派**。它们本来就是市场中性的（无涨停/连板/ST
+  措辞，长度上限用汉字「一千二百字」表述），没有需要改的 A 股假设。§9.4 的
+  「不能用 A 股涨跌停/连板逻辑论证」由护栏第 ⑥ 条 + 优先级条款承担。
+- 不动 `_role_user_prompt` / `_judge_user_prompt` / `_rewrite_user_prompt` 的
+  签名 —— 它们都以 `materials_text` 为第一个位置参数，护栏随材料自然流入。
+
+#### 验证
+
+新增 `tests/test_debate_market_guardrail.py` **9 passed**（材料文本 3 条 /
+三方一致性 2 条 / 白名单与审计覆盖面 2 条 / 白名单卫生 2 条）。
+既有测试**一行未改**全绿：`test_stock_debate` `test_ai_market_dispatch`
+`test_market_guardrail` `test_stock_analyzer_index` `test_ai_verdict`
+`test_ai_audit_ledger` `test_ai_analysis_focus` `test_ai_scorecard`
+`test_ai_data_quality`×2 `test_market_architecture_guard` `test_openapi_contract`
+`test_stock_analysis_beijing_today` `test_ai_number_gate`×2
++ CONTRIBUTING §9 市场维五件套（307 passed），合计 **357 passed**。
+ruff `All checks passed`。变异 **4/4 被杀**（每次清 `__pycache__` 后复跑）：
+护栏不注入 → 5 failed / `market` 永远推断成 A 股 → 5 failed /
+返回字典去掉 `market` 键 → 2 failed / 白名单 `texts=` 去掉材料文本 → 1 failed。
+
 ## 15. 风险
 
 | 风险 | 后果 | 对策 |

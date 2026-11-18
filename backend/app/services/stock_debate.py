@@ -59,7 +59,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.indicators.levels import compute_levels, summarize_levels
+from app.market import infer_market
 from app.services.ai_verdict import VERDICT_DIRECTIONS
+from app.services.market_guardrail import guardrail_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -331,31 +333,49 @@ def role_model_display(profile: dict | None) -> str:
 # ================================================================
 
 def build_materials(repo, data_dir: Path, symbol: str) -> dict | None:
-    """备料: 返回 {kline_rows, levels, close, fins, asset_type, text} 或 None (无K线)。
+    """备料: 返回 {kline_rows, levels, close, fins, asset_type, market, text} 或 None (无K线)。
 
     复用 stock_analyzer 的私有工具 — 辩论与个股分析必须看同一份材料,
     数据口径 (窗口/指标/清洗规则) 不允许出现第二套。
+
+    🔴 市场口径护栏 (PR4 f4) 也拼进 ``text`` 而不是拼进三个角色的系统提示词:
+    ``_BULL_SYSTEM`` / ``_BEAR_SYSTEM`` / ``_JUDGE_SYSTEM`` 是模块级常量, 被
+    6 处引用 (含 :647 白名单采集、:802 审计提示词哈希), 改成按市场分派的函数
+    要动全部调用点; 而 ``text`` 已经同时被这两处覆盖, 拼在这里三方**逐字节
+    一致**地看到同一份护栏 (与下方数据体检块同理), 且零额外接线。
+    A 股护栏是空串 ⇒ A 股材料逐字节不变。
     """
     from app.services import stock_analyzer
 
     df = stock_analyzer._load_kline(repo, symbol)
     if df.is_empty():
         return None
+    market = infer_market(symbol)
     levels = compute_levels(df)
     close = float(df.tail(1)["close"][0]) if "close" in df.columns else None
     asset_type = repo.resolve_asset_type(symbol)
     fins = {} if asset_type in {"etf", "index"} else stock_analyzer._load_financials(data_dir, symbol)
     kline_rows = stock_analyzer._clean_rows(df, stock_analyzer._KLINE_KEEP_COLS)
 
-    text = "\n".join([
-        f"标的标准代码: {symbol}",
+    # 市场口径护栏 (PR4 f4): 紧跟标的标识, 让三方在读数据**之前**先拿到市场规则。
+    # A 股返回空串 ⇒ 这一段不进 parts, A 股材料逐字节不变。
+    # 🔴 护栏全文零阿拉伯数字 (见 market_guardrail 模块 docstring) — 这段 text
+    # 会进 :647 的 collect_whitelist(texts=...), 带数字等于给编造数字发通行证。
+    guardrail = guardrail_prompt(market)
+    parts = [f"标的标准代码: {symbol}"]
+    if guardrail:
+        # 前后各留一个空行: 护栏是多行 Markdown 块, 紧贴上下正文会让模型把它
+        # 读成「关键价位概览」的一部分。
+        parts.append(f"\n{guardrail}\n")
+    parts += [
         f"关键价位概览: {summarize_levels(levels, close)}",
         "",
         "以下是该标的最近日 K 数据(JSON,含 OHLCV 与已计算的技术指标,升序):",
         "```json",
         json.dumps(kline_rows, ensure_ascii=False),
         "```",
-    ])
+    ]
+    text = "\n".join(parts)
     if any(fins.values()):
         text += "\n\n以下是该标的最新财务数据(JSON,金额单位为元):\n```json\n" \
                 + json.dumps(fins, ensure_ascii=False) + "\n```"
@@ -377,7 +397,7 @@ def build_materials(repo, data_dir: Path, symbol: str) -> dict | None:
 
     return {
         "kline_rows": kline_rows, "levels": levels, "close": close,
-        "fins": fins, "asset_type": asset_type, "text": text,
+        "fins": fins, "asset_type": asset_type, "market": market, "text": text,
         "quality": quality,  # P1-11: meta 事件透传给前端徽章
     }
 
