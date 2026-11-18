@@ -176,6 +176,30 @@ export const QK = {
 	hkDaily: (symbol: string, start: string, end: string, limit: number) =>
 		['hk-daily', symbol, start, end, limit] as const,
 
+	// 港股财务 (PR5)。🔴 前缀 `hk-financials` 与 A 股 `financials` **互斥**, 不得共用:
+	// 两个市场表集(A股5张/港股4张, 港股无股本表)、列集与**币种口径**都不同, 共用
+	// key 会让切市场那一帧渲染出上一个市场的数字(方案 §8「标题改了、口径没改,
+	// 比不切换更误导」)。三个 key 同前缀 ⇒ 一次 `['hk-financials']` 失效全覆盖。
+	hkFinancialsStatus: ['hk-financials', 'status'] as const,
+	// 四张表共用**一个** key: 后端 `GET /api/hk/financials` 一次返回全部四表, 各 tab
+	// 用 useQuery 的 `select` 各取一片 ⇒ react-query 自动去重成一次请求, 组件仍保持
+	// 「一个 tab 一个 hook」的结构(与 A 股五端点形态对齐, 不用改渲染层)。
+	hkFinancials: (symbol: string, limit: number) =>
+		['hk-financials', symbol, limit] as const,
+	hkFinancialStatement: (symbol: string, table: string, reportDate?: string) =>
+		['hk-financials', 'statement', symbol, table, reportDate ?? ''] as const,
+
+	// A 股财务五张表。🔴 前缀 `financials` 与上面的 `hk-financials` 互斥。
+	// 住在 queryKeys 而不是 lib/useFinancials.ts: 市场适配层
+	// (lib/financial-market-adapter.ts) 也要拼这些 key, 而 useFinancials 反过来
+	// 要 import 适配层 —— key 留在 hook 文件里会形成循环依赖。
+	financialsStatus: ['financials', 'status'] as const,
+	financialsMetrics: (symbol?: string) => ['financials', 'metrics', symbol] as const,
+	financialsIncome: (symbol?: string) => ['financials', 'income', symbol] as const,
+	financialsBalanceSheet: (symbol?: string) => ['financials', 'balance-sheet', symbol] as const,
+	financialsCashFlow: (symbol?: string) => ['financials', 'cash-flow', symbol] as const,
+	financialsShares: (symbol?: string) => ['financials', 'shares', symbol] as const,
+
 	// Schema
 	extDataSchemaAll: ['ext-data-schema-all'] as const,
 	tableSchema: (table: string) => ['table-schema', table] as const,

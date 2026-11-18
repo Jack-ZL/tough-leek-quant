@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import AsyncIterator, Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from pathlib import Path
 import polars as pl
 
 from app.indicators.levels import compute_levels, summarize_levels
-from app.market import Market, infer_market
+from app.market import Market, infer_market, rules_for
 from app.market_time import cn_today, market_today
 from app.services.financial_sync import get_financial_df
 from app.services.market_guardrail import guardrail_prompt, prompt_market_label
@@ -167,6 +168,22 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
     return rows
 
 
+def _clean_fin_rows(df: pl.DataFrame) -> list[dict]:
+    """DataFrame → JSON 安全的 dict 列表(NaN/Inf → null,去掉重复回传的 symbol)。"""
+    rows = []
+    for rec in df.to_dicts():
+        clean = {}
+        for k, v in rec.items():
+            if k == "symbol":
+                continue
+            if isinstance(v, float):
+                clean[k] = None if not math.isfinite(v) else v
+            else:
+                clean[k] = v
+        rows.append(clean)
+    return rows
+
+
 def _load_financials_cn(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
     """读取该标的核心财务指标 + 利润表(只取最有信息量的两张表)。
 
@@ -185,39 +202,47 @@ def _load_financials_cn(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
             continue
         if "period_end" in df.columns:
             df = df.sort("period_end", descending=True).head(2)  # 只取最近 2 期
-        import math
-        rows = []
-        for rec in df.to_dicts():
-            clean = {}
-            for k, v in rec.items():
-                if k == "symbol":
-                    continue
-                if isinstance(v, float):
-                    clean[k] = None if not math.isfinite(v) else v
-                else:
-                    clean[k] = v
-            rows.append(clean)
-        out[table] = rows
+        out[table] = _clean_fin_rows(df)
     return out
 
 
 def _load_financials_hk(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
-    """港股: AI 链路暂不读财务, 直接返回空。
+    """港股: 读 ``financials_hk`` 规范化表(PR2b 落库),同样只取两张表最近两期。
 
-    🔴 不是「懒得接」, 是**读了会错**: ``get_financial_df`` 读的是 A 股财务宽表
-    (``metrics`` / ``income``), 港股代码在里面**一行都没有**, 拿到的永远是空帧 ——
-    白扫一遍全表, 然后 ``_build_user_prompt`` 据此输出「当前为 Free 模式或尚未
-    同步财务报表」。对港股这是**错误建议**: 用户去开 Free 模式 / 点同步永远修不好,
-    真实原因是港股财报口径与报告货币不同, 需要 PR5 单独接入。
+    🔴 **不碰** ``get_financial_df``: 那是 A 股财务宽表, 港股代码在里面一行都没有,
+    白扫全表拿到空帧, 再据此输出「当前为 Free 模式或尚未同步财务报表」——
+    对港股是**错误建议**: 用户去开 Free 模式 / 点 A 股同步永远修不好。
 
-    返回空 dict 让调用方走 ``financial_missing_note(Market.HK)`` 的正确文案。
+    未同步时 ``hk_latest_financials`` 返回的是四张**带完整列集的空帧**(契约是
+    "规范表列集恒定"), 故这里返回 ``{"metrics": [], "income": []}`` ——
+    键存在但值为空列表, 调用方 ``any(fins.values())`` 判 False,
+    走 ``financial_missing_note(Market.HK)`` 的正确文案。
     """
-    return {}
+    from app.services.financial_sync_hk import hk_latest_financials
+
+    frames = hk_latest_financials(data_dir, symbol, limit=2)
+    return {t: _clean_fin_rows(frames[t]) for t in ("metrics", "income")}
 
 
-#: 按 market 的财务读取器。港股注册成「明确返回空」而不是「不注册」:
-#: 不注册会走 fail-closed 抛错, 而港股无财务是**已知且正确**的现状 (PR5 才接),
-#: 不该让整个分析流程报错。新市场忘了注册才该抛错。
+#: 注入财务数据时那句说明。**金额单位口径按市场不同**:
+#: A 股财报统一以人民币元编报, 港股则是**编报币种**原值 (实测腾讯/阿里为 CNY、
+#: 汇丰为 HKD), 写死「单位为元」会让模型把港币/其它币种金额当人民币解读,
+#: 进而算出错误的同比与比率。🔴 港股侧不得出现 A 股提示词里没有的阿拉伯数字
+#: (系统提示词与用户提示词都进数字闸门白名单)。
+_MARKET_FIN_DATA_LINE: dict[Market, str] = {
+    Market.CN: "以下是该标的最新财务数据(JSON,核心指标 + 利润表,金额单位为元):",
+    Market.HK: (
+        "以下是该标的最新财务数据(JSON,核心指标 + 利润表,金额是**编报币种**原值、"
+        "并非统一的人民币元, 不要自行换算汇率;估值列 pe_ttm / pb_ttm / "
+        "total_market_cap 是港币口径):"
+    ),
+}
+
+
+#: 按 market 的财务读取器。两个市场都注册成「真读各自的表」而不是「不注册」:
+#: 不注册会走 fail-closed 抛错, 而港股财务是**已落库可用**的数据 (PR2b 同步、
+#: PR5 接入 AI 链路), 未同步时读取器返回空值让调用方走正确文案, 不该让整个
+#: 分析流程报错。新市场忘了注册才该抛错。
 _FINANCIAL_LOADERS: dict[Market, Callable[[Path, str], dict[str, list[dict]]]] = {
     Market.CN: _load_financials_cn,
     Market.HK: _load_financials_hk,
@@ -436,8 +461,10 @@ def _build_user_prompt(
     scorecard_context (P0-7): AI 历史战绩块, 空串不注入; 放用户提示词的原因同
     market_recap._build_user_prompt (自定义系统提示词快照会覆盖注入)。
     quality_context (P1-11): 数据体检块, 空串不注入; 同上放用户提示词。
-    market (PR4 f3): 决定「无财务数据」兜底文案 —— A 股是「Free 模式或尚未同步」,
-    港股是「财报尚未接入 AI 链路」。**加在参数表末尾**以免动到既有位置参数调用方。
+    market (PR4 f3 / PR5): 决定两处财务口径 —— ① 有数据时那句金额单位说明
+    (A 股「单位为元」, 港股「编报币种原值」, 见 :data:`_MARKET_FIN_DATA_LINE`);
+    ② 无数据时的兜底文案 (A 股「Free 模式或尚未同步」, 港股「需单独同步港股财务表」)。
+    **加在参数表末尾**以免动到既有位置参数调用方。
     """
     news_hint = (
         "消息面维度可结合联网检索到的相关新闻/公告与价量异动交叉验证。"
@@ -459,7 +486,7 @@ def _build_user_prompt(
     if has_fin:
         parts.extend([
             "",
-            "以下是该标的最新财务数据(JSON,核心指标 + 利润表,金额单位为元):",
+            _MARKET_FIN_DATA_LINE[rules_for(market).market],
             "```json",
             json.dumps(fins, ensure_ascii=False),
             "```",

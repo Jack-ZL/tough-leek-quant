@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { type Market } from '@/lib/market'
 import { QK } from '@/lib/queryKeys'
 import { boardTag } from '@/components/stock-table/primitives'
 
@@ -10,6 +11,13 @@ interface Props {
 	onSelect: (symbol: string, name: string) => void
 	/** 搜索资产类型, 逗号分隔 (默认 'stock')。如 'stock,index' */
 	assetTypes?: string
+	/**
+	 * 搜索哪个市场的维表; 不传 = 后端默认 A 股(既有调用方行为不变)。
+	 * 港股态必须传 'HK', 否则搜 `00700` / `腾讯` 一律空 —— A 股维表里没有港股。
+	 */
+	market?: Market
+	/** 输入框占位文案; 不传沿用 A 股示例。 */
+	placeholder?: string
 }
 
 /**
@@ -17,16 +25,19 @@ interface Props {
  * 复用 instrumentSearch 后端(代码 / 名称模糊匹配),单选即跳转该股财务详情。
  * 模式对齐 Watchlist.StockSearchBox:useQuery + 外部点击关闭 + 键盘导航。
  */
-export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
+export function StockFinancialSearch({ onSelect, assetTypes, market, placeholder }: Props) {
 	const [query, setQuery] = useState('')
 	const [open, setOpen] = useState(false)
 	const [activeIdx, setActiveIdx] = useState(-1)
 	const containerRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
 
+	// 🔴 market 必须**同时**进 queryKey 与请求参数(照抄 Watchlist.StockSearchBox):
+	// 只进参数的话, 切市场那一帧 react-query 会拿旧 key 的缓存(上一个市场的结果)
+	// 直接渲染 = 串市场。
 	const search = useQuery({
-		queryKey: QK.instrumentSearch(query, assetTypes ?? 'stock'),
-		queryFn: () => api.instrumentSearch(query, 20, assetTypes),
+		queryKey: QK.instrumentSearch(query, assetTypes ?? 'stock', market),
+		queryFn: () => api.instrumentSearch(query, 20, assetTypes, market),
 		enabled: query.trim().length > 0,
 		staleTime: 30_000,
 	})
@@ -80,7 +91,7 @@ export function StockFinancialSearch({ onSelect, assetTypes }: Props) {
 				<input
 					ref={inputRef}
 					type="text"
-					placeholder="输入股票代码或名称，如 600000 / 浦发"
+					placeholder={placeholder ?? '输入股票代码或名称，如 600000 / 浦发'}
 					value={query}
 					onChange={(e) => {
 						setQuery(e.target.value);

@@ -1,9 +1,12 @@
 // 全局市场状态 — 侧栏市场切换器的唯一状态源
 //
-// 🔴 **作用范围是收窄的, 不是「整个 App 切市场」**。当前只有两类面对港股就绪:
+// 🔴 **作用范围是收窄的, 不是「整个 App 切市场」**。当前只有三类面对港股就绪:
 //
 //   1. 侧栏指数条 + 指数页 (`lib/index-market-adapter.ts` 的 `indexSource`)
 //   2. 个股详情抽屉 —— 但它由**代码后缀**判市场 (`symbolMarket`), 不读本 store
+//   3. 财务概况页 (`lib/financial-market-adapter.ts` 的 `financialSource`) —— 读本 store;
+//      港股走 `/api/hk/financials*` 独立端点、独立字段表与独立 query key 前缀
+//      (`hk-financials`), 切市场时清空已选标的 (A 股代码打港股端点会 400)
 //
 // 核心导航 8 项里其余 7 项 (看板/自选/策略/因子/回测/市场环境/数据) 只有 A 股链路:
 // 自选读 `repository.get_enriched_latest()` (零 market 参数, 只扫 `kline_enriched/`),
@@ -85,4 +88,4 @@ export function useMarket(): Market {
  * 默认它切整个 App, 而 7/8 的核心页面并不跟随。这行文案是「不误导」的唯一防线
  * (CONTRIBUTING §4 fail closed: 宁可明说没做, 不可让人以为做了)。
  */
-export const MARKET_SWITCHER_SCOPE_HINT = '当前仅指数与个股详情支持港股，其余页面仍为 A 股'
+export const MARKET_SWITCHER_SCOPE_HINT = '当前仅指数、个股详情与财务概况支持港股，其余页面仍为 A 股'

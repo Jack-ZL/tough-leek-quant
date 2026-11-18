@@ -6,8 +6,9 @@
 三条主线:
 1. **A 股逐字不变**: 护栏对 CN 返回空串, 系统提示词与引入 market 维之前完全一致。
 2. **港股 6 条齐全**, 且所有市场事实**读规则表**而不是写死 15 / 100 / HKD。
-3. **财务缺失文案分市场**: A 股「Free 模式或尚未同步」, 港股「财报未接入, 不是
-   Free 模式限制」—— 后者是错误建议的纠正 (用户去开 Free 模式永远修不好)。
+3. **财务缺失文案分市场**: A 股「Free 模式或尚未同步」, 港股「需单独同步港股财务表,
+   不是 Free 模式限制」—— 后者是错误建议的纠正 (用户去开 Free 模式 / 点 A 股同步
+   永远修不好; PR5 起港股财报已接入 AI 链路, 缺的只是那一次同步)。
 """
 
 from __future__ import annotations
@@ -249,8 +250,9 @@ def test_cn_financial_note_keeps_free_mode_copy():
 def test_hk_financial_note_corrects_the_wrong_advice():
   """🔴 港股不能沿用「Free 模式或尚未同步」—— 那是**错误建议**。
 
-  用户照着去开 Free 模式 / 点同步永远修不好, 真实原因是港股财报口径与报告货币
-  不同, 需要单独接入 (PR5)。
+  用户照着去开 Free 模式 / 点 A 股同步永远修不好: 港股财报与 A 股**分开存储**,
+  只能单独同步。PR5 起港股财报已接入 AI 链路, 所以文案也从「尚未接入」改成
+  「去同步港股财务表」—— 两条都是错误建议, 只是错法不同。
   """
   note = mg.financial_missing_note(Market.HK)
   assert note.startswith(f"({FIN_TRIGGER}:")
@@ -258,6 +260,9 @@ def test_hk_financial_note_corrects_the_wrong_advice():
   assert "不是 Free 模式限制" in note
   # 允许出现「Free 模式」只为了**否定**它, 不能出现 A 股那句原样建议
   assert "当前为 Free 模式或尚未同步财务报表" not in note
+  # 必须给出**用户照做能修好**的动作, 且不得再说「尚未接入」(PR5 后已是假话)
+  assert "同步港股财务表" in note
+  assert "尚未接入" not in note
 
 
 def test_both_notes_keep_the_section4_trigger_phrase():
@@ -273,11 +278,15 @@ def test_both_notes_keep_the_section4_trigger_phrase():
 
 # ===== 6. _load_financials 按市场分派 =====
 
-def test_hk_financials_return_empty_without_scanning_ashare_tables(monkeypatch, tmp_path):
+def test_hk_financials_do_not_scan_ashare_tables(monkeypatch, tmp_path):
   """🔴 港股不去扫 A 股财务宽表。
 
   旧实现对港股也调 ``get_financial_df("metrics"/"income")``: 港股代码在 A 股宽表里
   一行都没有, 白扫全表拿到空帧, 再据此输出错误的「Free 模式」文案。
+
+  PR5 起港股改读 ``financials_hk`` 规范化表, 但**这条约束一字不改**。未同步时
+  返回「键在、值为空列表」而不是 ``{}``: 调用方靠 ``any(fins.values())`` 判空,
+  两种形态等价, 而键齐全让下游 ``fins["metrics"]`` 不会 KeyError。
   """
   calls: list[str] = []
 
@@ -286,8 +295,39 @@ def test_hk_financials_return_empty_without_scanning_ashare_tables(monkeypatch, 
     raise AssertionError("港股不应读 A 股财务表")
 
   monkeypatch.setattr(sa, "get_financial_df", _boom)
-  assert sa._load_financials(tmp_path, HK) == {}
+  assert sa._load_financials(tmp_path, HK) == {"metrics": [], "income": []}
   assert calls == []
+
+
+def test_hk_financials_read_the_hk_store_lightweight(monkeypatch, tmp_path):
+  """🔴 港股读 ``hk_latest_financials``, 且与 A 股同样只取两张表 / 最近两期。
+
+  ``_load_financials_hk`` 内部是**函数内 import**, 故打桩打在源模块上才生效
+  (与 ``_TODAY_BY_MARKET`` 那条 import 期绑定陷阱同源, 方向相反)。
+  """
+  import polars as pl
+
+  seen: dict[str, object] = {}
+
+  def _fake(_data_dir, symbol, *, limit=8):
+    seen["symbol"] = symbol
+    seen["limit"] = limit
+    return {
+      "metrics": pl.DataFrame({"symbol": [HK], "roe": [1.5]}),
+      "income": pl.DataFrame({"symbol": [HK], "revenue": [2.0]}),
+      "balance_sheet": pl.DataFrame({"symbol": [HK], "total_assets": [3.0]}),
+      "cash_flow": pl.DataFrame({"symbol": [HK], "net_operating_cash_flow": [4.0]}),
+    }
+
+  monkeypatch.setattr("app.services.financial_sync_hk.hk_latest_financials", _fake)
+  out = sa._load_financials(tmp_path, HK)
+
+  assert seen == {"symbol": HK, "limit": 2}
+  # 刻意**不**注入 balance_sheet / cash_flow: 四张表全塞进上下文是
+  # financial_analyzer 的职责, 个股综合分析要给技术面留 token。
+  assert set(out) == {"metrics", "income"}
+  assert out["metrics"] == [{"roe": 1.5}]  # symbol 被去掉, 不重复回传
+  assert out["income"] == [{"revenue": 2.0}]
 
 
 def test_cn_financials_still_scan_both_tables(monkeypatch, tmp_path):

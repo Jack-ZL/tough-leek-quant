@@ -206,6 +206,89 @@ export interface FinancialSharesRecord {
 	[key: string]: any
 }
 
+/**
+ * `GET /api/hk/financials/status` —— 港股财务同步状态。
+ *
+ * 🔴 与 A 股 :data:`FinancialStatus` **形状不同, 刻意不合并成一个接口**: A 股是
+ * 「五张表各自 rows/symbols/last_sync」, 港股是「一张宽表(四张规范表都从它投影)
+ * + 两张按标的同步的长表」, 且港股同步是整批重任务、没有每表同步时间。强行对齐
+ * 会造出一堆永远为 null 的字段, 读端还得猜哪个 null 是「没有」哪个是「没同步」。
+ * 差异归 `lib/financial-market-adapter.ts` 归一化。
+ */
+export interface HkFinancialsStatus {
+	synced: boolean
+	rows: number
+	symbols: number
+	latest_report_date: string | null
+	/** 每手股数已回填进港股维表的标的数(港股下单取整的依据) */
+	lot_size_coverage: number | null
+	/** 宽表里出现过的报告期类型(年报/中报/一季报/三季报); 未同步时后端不给这个字段 */
+	period_names?: string[]
+	/** 长表行数: `income` / `balance`。按单标的同步, 全市场默认为 0 */
+	tables: Record<string, number>
+}
+
+/**
+ * 港股财务规范化行。列集是 A 股的**子集** + 港股独有列(后端权威:
+ * `HK_CANONICAL_PROJECTION` / `HK_ONLY_CANONICAL_FIELDS`)。
+ *
+ * 🔴 A 股有而港股宽表没有的列(周转率/现金比率族、`eps_diluted`、`roa` 之外的
+ * 多数利润表/资负表明细)**不会出现在响应里**, 不是 null 而是 key 缺失。渲染层
+ * 必须按市场的字段表走, 不能拿 A 股字段表去读港股行。
+ */
+export interface HkFinancialRow {
+	symbol?: string
+	period_end: string
+	/** 🔴 恒为 null: 港股宽表不提供公告日, 后端刻意不拿报告期冒充。 */
+	announce_date?: string | null
+	fiscal_year?: number | null
+	/** 年报/中报/一季报/三季报。🔴 港股财年结日不固定在年末(阿里 3 月底), 中报是审阅数不可年化。 */
+	period_name?: string | null
+	/** 一般企业 / 银行 / 证券 / 保险 —— 决定金融股专有字段族是否有值, 前端须据此分支。 */
+	org_type?: string | null
+	/** 🔴 计价币种(港币柜台 HKD / 人民币柜台 CNY), **不等于**金额列的编报币种。 */
+	pricing_currency?: string | null
+	lot_size?: number | null
+	pe_ttm?: number | null
+	pb_ttm?: number | null
+	total_market_cap?: number | null
+
+	[key: string]: any
+}
+
+/** `GET /api/hk/financials` —— 一次返回 metrics/income/balance_sheet/cash_flow 四张表 + 币种警示。 */
+export interface HkFinancialsResponse {
+	symbol: string
+	synced: boolean
+	name?: string | null
+	org_type?: string | null
+	pricing_currency?: string | null
+	lot_size?: number | null
+	latest_report_date?: string | null
+	periods?: number
+	/** 编报币种。只在利润表长表里(宽表无 CURRENCY_CODE), 长表未同步时缺失。 */
+	report_currency?: string | null
+	/** 🔴 不是装饰: 金额列是编报币种、估值列(pe_ttm/pb_ttm/total_market_cap)是港币。 */
+	currency_warning: string
+	tables: Record<string, HkFinancialRow[]>
+}
+
+/**
+ * `GET /api/hk/financials/statement` —— 港式/IFRS 科目长表(一行一个会计科目)。
+ *
+ * 🔴 科目名是港式表述(「营业额」「销售及分销费用」「行政开支」「经营溢利」
+ * 「融资成本」「除税前溢利」「股东应占溢利」), **不能复用 A 股科目标签**。
+ */
+export interface HkFinancialStatementResponse {
+	symbol: string
+	table: string
+	synced: boolean
+	report_currency?: string | null
+	account_standard?: string | null
+	report_dates?: string[]
+	items: Record<string, any>[]
+}
+
 /** AI 财务分析历史报告 */
 export interface AiFinancialReport {
 	id: string
@@ -4272,6 +4355,40 @@ export const api = {
 		request<HkIndexSyncResponse>('/api/hk/sync_index_daily', {
 			method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
 		}),
+	// ===== 港股财务 (PR5) =====
+	// 🔴 独立端点, 刻意不在 /api/financials/* 上加 market 参数: 那五条路由读
+	// `financials/<table>/part.parquet`(A 股落盘), 港股财务住在 `financials_hk/`,
+	// 传 00700.HK 进去只会静默返回空 —— 与日K/指数走独立端点同一条理由。
+	hkFinancialsStatus: () =>
+		request<HkFinancialsStatus>('/api/hk/financials/status'),
+	/** 单只港股的四张规范表。`align=true` 按 A 股列集补 null(共用页面时才需要)。 */
+	hkFinancials: (symbol: string, opts?: { limit?: number; align?: boolean }) => {
+		const q = new URLSearchParams({ symbol })
+		if (opts?.limit != null) q.set('limit', String(opts.limit))
+		if (opts?.align) q.set('align', 'true')
+		return request<HkFinancialsResponse>(`/api/hk/financials?${q.toString()}`)
+	},
+	hkFinancialStatement: (symbol: string, table: 'income' | 'balance', reportDate?: string) => {
+		const q = new URLSearchParams({ symbol, table })
+		if (reportDate) q.set('report_date', reportDate)
+		return request<HkFinancialStatementResponse>(`/api/hk/financials/statement?${q.toString()}`)
+	},
+	/**
+	 * 触发港股财务主指标同步。走重任务槽 ⇒ 立即返回 `job_id`,
+	 * 进度轮询复用 `pipelineJob(id)`(与盘后管道/除权因子同一套 job store)。
+	 */
+	hkSyncFinancials: (body?: {
+		symbols?: string[]; years?: number; annual_only?: boolean; backfill_lot_size?: boolean
+	}) =>
+		request<{ job_id: string; reused: boolean }>('/api/hk/sync_financials', {
+			method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+		}),
+	/** 按单标的同步利润表/资负表长表。秒级完成, 后端同步执行不占重任务槽。 */
+	hkSyncFinancialStatement: (symbol: string, table: 'income' | 'balance') =>
+		request<{ symbol: string; table: string; status: string; rows: number }>(
+			`/api/hk/financials/statement/sync?symbol=${encodeURIComponent(symbol)}&table=${table}`,
+			{ method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS },
+		),
 	updateRealtimeMonitorConfig: (cfg: {
 		sse_refresh_pages?: Record<string, boolean>
 		strategy_monitor_enabled?: boolean
