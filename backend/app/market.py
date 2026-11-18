@@ -48,6 +48,7 @@ __all__ = [
     "assert_symbol_market",
     "clear_half_days",
     "cn_exchange_of",
+    "currency_symbol",
     "half_day_close",
     "infer_market",
     "is_a_share_symbol",
@@ -457,6 +458,40 @@ def shares_per_volume_unit(market: object = Market.CN) -> float:
     if parsed is None:
         raise ValueError(f"未知市场: {market!r} (支持: {', '.join(m.value for m in Market)})")
     return _SHARES_PER_VOLUME_UNIT[parsed]
+
+
+# ================================================================
+# 货币符号 (展示用)
+#
+# ``MarketTradingRules.currency`` 是 ISO 4217 三字母码 (CNY / HKD), 适合做
+# 数据契约与 API 字段; 但**给人看**的报告/消息里要的是符号 (¥ / HK$)。
+# 两者是不同用途, 不合并成一个字段 —— 把 "HK$" 塞进 currency 会让所有按
+# ISO 码比对 currency 的消费方静默失配。
+#
+# 与规则表一样按 Market 建字典而不是写 ``if market == ...`` 分支
+# (见 tests/test_market_architecture_guard.py: 市场差异必须住在表里)。
+# ================================================================
+
+_CURRENCY_SYMBOL: dict[Market, str] = {
+    Market.CN: "¥",
+    Market.HK: "HK$",
+}
+
+
+def currency_symbol(market: object = Market.CN) -> str:
+    """市场货币的**展示符号** (``¥`` / ``HK$``)。
+
+    与 :data:`MarketTradingRules.currency` 的分工: 后者是 ISO 码 (``CNY`` /
+    ``HKD``), 用于数据契约; 本函数返回给人看的符号, 用于机器人消息、报告抬头。
+
+    与 :func:`rules_for` 同一约定: 无法识别的 market (含 ``None``) **抛错**,
+    不兜底成 CN —— 静默兜底会给港股报告打上 ``¥``, 而 ``¥`` 与 ``HK$`` 差
+    约 7.8 倍, 是典型的「看起来对但错」(CONTRIBUTING §3)。
+    """
+    parsed = parse_market(market)
+    if parsed is None:
+        raise ValueError(f"未知市场: {market!r} (支持: {', '.join(m.value for m in Market)})")
+    return _CURRENCY_SYMBOL[parsed]
 
 
 # ================================================================

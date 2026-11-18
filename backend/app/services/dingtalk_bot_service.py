@@ -76,31 +76,71 @@ def _parse_stock_analysis_msg(content: str) -> str | None:
     return text.split()[0]
 
 
-def _resolve_symbol(repo, stock_name: str) -> str | None:
-    """根据股票名称查找 symbol (代码.交易所), 支持精确 + 模糊匹配。"""
-    try:
-        for df_name in ("get_instruments", "get_etf_instruments"):
-            df = getattr(repo, df_name)()
-            if df.is_empty() or "symbol" not in df.columns or "name" not in df.columns:
-                continue
-            hit = df.filter(pl.col("name") == stock_name).head(1)
-            if not hit.is_empty():
-                return hit["symbol"][0]
-            hit = df.filter(pl.col("name").str.contains(stock_name)).head(1)
-            if not hit.is_empty():
-                return hit["symbol"][0]
+def _match_name(df, stock_name: str) -> str | None:
+    """在一张含 symbol/name 的维表里先精确后模糊匹配, 命中返回 symbol。"""
+    if df is None or df.is_empty() or not {"symbol", "name"} <= set(df.columns):
+        return None
+    hit = df.filter(pl.col("name") == stock_name).head(1)
+    if not hit.is_empty():
+        return hit["symbol"][0]
+    hit = df.filter(pl.col("name").str.contains(stock_name)).head(1)
+    if not hit.is_empty():
+        return hit["symbol"][0]
+    return None
 
-        df = repo.get_instruments_asset("index")
-        if not df.is_empty() and "symbol" in df.columns and "name" in df.columns:
-            hit = df.filter(pl.col("name") == stock_name).head(1)
-            if not hit.is_empty():
-                return hit["symbol"][0]
-            hit = df.filter(pl.col("name").str.contains(stock_name)).head(1)
-            if not hit.is_empty():
-                return hit["symbol"][0]
+
+def _candidate_name_frames(repo):
+    """按优先级**惰性**产出可供名称匹配的维表: A 股股票 → A 股 ETF → A 股指数 → 港股。
+
+    🔴 港股刻意排最后: A 股与港股简称存在重名可能 (如「中国银行」), 先 A 股后港股
+    才能保持既有名称的解析结果不变 (CONTRIBUTING §9)。惰性 (生成器) 也是刻意的 ——
+    A 股命中就短路, 纯 A 股部署根本不会去读港股维表, 也就不会因维表缺失吃一条
+    「港股维表不存在」的 warning (同 app/api/watchlist.py:_name_map_with_hk 的思路)。
+
+    港股维表用 getattr 探测: 纯 A 股部署与既有测试的最小 repo 桩都没有
+    ``get_hk_instruments``, 不能因为加港股就让它们 AttributeError。
+    """
+    yield repo.get_instruments()
+    yield repo.get_etf_instruments()
+    yield repo.get_instruments_asset("index")
+    get_hk = getattr(repo, "get_hk_instruments", None)
+    if callable(get_hk):
+        yield get_hk()
+
+
+def _resolve_symbol(repo, stock_name: str) -> str | None:
+    """根据股票名称查找 symbol (代码.交易所), 支持精确 + 模糊匹配。
+
+    查找顺序见 :func:`_candidate_name_frames` (港股在最后)。
+    """
+    try:
+        for df in _candidate_name_frames(repo):
+            symbol = _match_name(df, stock_name)
+            if symbol:
+                return symbol
     except Exception:  # noqa: BLE001 — 标的查询失败走"未找到"提示
         pass
     return None
+
+
+def _market_note(symbol: str) -> str:
+    """报告抬头的市场口径行 (方案 §9.5: 市场标识 · 延时标注 · 货币单位)。
+
+    全部读 ``rules_for`` / ``currency_symbol``, **不写市场分支** —— 加第三个市场时
+    这里不用改 (见 tests/test_market_architecture_guard.py 的立论)。延时为 0 时
+    写「实时行情」而不是省略: 港股 15 分钟延时价被当成实时价是真实误读风险,
+    两个市场都标出来才可对照。
+
+    🔴 与 wecom_bot_service._market_note 是孪生实现 (两个 bot 文件的历史现状
+    就是各持一份 _build_analysis_report), 改一处必须改另一处 ——
+    tests/test_bot_market_note.py 钉住两者输出逐字节一致。
+    """
+    from app.market import currency_symbol, infer_market, rules_for
+
+    rules = rules_for(infer_market(symbol))
+    quote = f"{rules.quote_delay_minutes} 分钟延时" if rules.quote_delay_minutes else "实时行情"
+    note = f"{rules.label} · {quote} · 计价 {currency_symbol(rules.market)} ({rules.currency})"
+    return f"🏷️ **市场**: {note}"
 
 
 def _current_model_label() -> str:
@@ -142,6 +182,7 @@ def _build_analysis_report(
         "📊 **AI 个股分析报告**",
         "",
         f"📌 **标的**: {stock_name} ({symbol})",
+        _market_note(symbol),
         f"⏰ **分析时间**: {now}",
         f"⏱️ **分析用时**: {elapsed_str}",
     ]

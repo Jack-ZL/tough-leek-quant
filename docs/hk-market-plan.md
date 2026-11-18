@@ -1691,6 +1691,152 @@ ruff `All checks passed`。变异 **4/4 被杀**（每次清 `__pycache__` 后�
 护栏不注入 → 5 failed / `market` 永远推断成 A 股 → 5 failed /
 返回字典去掉 `market` 键 → 2 failed / 白名单 `texts=` 去掉材料文本 → 1 failed。
 
+### PR4 完成情况（AI 能力）—— f5 机器人入口支持港股
+
+§9.5 原文：「企业微信 / 钉钉智能机器人**共用现有入口**，消息模板增加：
+市场标识 · 延时标注 · 货币单位（`HK$`）。」
+
+「共用现有入口」= 不加新指令、不加新 webhook，用户照旧发「分析 腾讯控股」，
+只是名称解析多查一张港股维表、报告抬头多一行市场口径。
+
+#### 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `app/market.py:475-494` | 新增 `_CURRENCY_SYMBOL` + `currency_symbol()`（`¥` / `HK$`），并入 `__all__:51` |
+| `wecom_bot_service.py:92-137`<br>`dingtalk_bot_service.py:79-124` | `_resolve_symbol` 拆成 `_match_name`（单表精确→模糊）+ `_candidate_name_frames`（**惰性**产出四张维表，港股最后）；原来 A 股三张表的匹配逻辑是**两份复制粘贴**，现在收敛成一份 |
+| `wecom_bot_service.py:139-158`<br>`dingtalk_bot_service.py:126-145` | 新增 `_market_note(symbol)`：`🏷️ **市场**: {label} · {延时/实时} · 计价 {符号} ({ISO})` |
+| `wecom_bot_service.py:198`<br>`dingtalk_bot_service.py:185` | `_build_analysis_report` 抬头在「标的」行后插入 `_market_note(symbol)` |
+
+#### 为什么货币符号要新开一个函数，而不是复用 `rules.currency`
+
+`MarketTradingRules.currency` 是 **ISO 4217 三字母码**（`CNY` / `HKD`），
+是数据契约字段，全仓库按它做等值比对；给人看的报告要的是**符号**（`¥` / `HK$`）。
+把 `"HK$"` 塞进 `currency` 会让所有按 ISO 码比对的消费方**静默失配** ——
+不报错，只是条件永远不成立。所以是两个字段、两种用途，`_market_note` 里两个都印
+（`计价 HK$ (HKD)`），符号给人读、ISO 码供对账。
+
+`currency_symbol` 完全照 `shares_per_volume_unit:435` 的既有形状写：
+`dict[Market, str]` + `parse_market` + **无法识别就抛错**。
+🔴 抛错而非兜底 CN 是硬要求：静默兜底会给港股报告打上 `¥`，而 `¥` 与 `HK$`
+差约 7.8 倍，正是 CONTRIBUTING §3 点名的「看起来对但错」。
+`None` 同样抛错（与 `rules_for(None)` 一致）——「market 尚未确定」和
+「market 是 A 股」是两件事，缺省语义只由**默认参数**表达，不由 `None` 表达，
+否则上游 `infer_market` 失败返回的 `None` 会无声变成 ¥ 计价。
+
+#### 🔴 陷阱与处理
+
+1. **港股维表必须排在最后，且必须惰性。**
+   A 股与港股简称存在重名（「中国银行」= `601988.SH` / `03988.HK`），
+   港股若排前面，老用户发「中国银行」会突然解析到港股 —— 静默改语义。
+   三张 A 股表原本都是 early `return`，所以「港股放最后」本身就等价于市场闸门：
+   能解析出的 A 股名称**永远走不到**港股查询。
+   惰性（生成器而非列表）是另一半：A 股命中即短路，纯 A 股部署根本不会去读
+   港股维表，也就不会因维表缺失吃一条 `港股维表不存在` 的 warning
+   （`kline_sync_hk.py:205`）。同 `app/api/watchlist.py:115-132
+   _name_map_with_hk` 的「A 股用户零额外开销」立论。
+   ⚠️ 这里**不能**照抄 watchlist 的 `is_hk_symbol` 闸门 —— 那个函数手里有
+   symbol，机器人入口手里只有**名称**，没有可判的市场前缀。
+2. **港股读取器必须用 `getattr` 探测，不能直接调。**
+   既有测试桩 `tests/test_dingtalk_bot_message.py:104-118 _Repo` 只实现了
+   `get_instruments` / `get_etf_instruments` / `get_instruments_asset`。
+   直接 `repo.get_hk_instruments()` 会 `AttributeError`，被 `_resolve_symbol`
+   的 `except Exception` 吞掉 → 返回 `None` → **所有名称解析静默失效**，
+   而 CONTRIBUTING §9 要求既有 A 股测试**不修改**即通过。
+   新测试 `test_repo_without_hk_reader_still_works` 先断言
+   `not hasattr(repo, "get_hk_instruments")` 再断言解析成功，把这个形状钉死。
+3. **🔴 两个 bot 文件缩进不同：企微是 TAB，钉钉是 4 空格。**
+   两份 `_resolve_symbol` / `_build_analysis_report` 除缩进外**逐字符相同**。
+   在 TAB 文件里写续行对齐（`return (f"..."` 换行后用空格对齐）会触发
+   ruff `E101 Indentation contains mixed spaces and tabs`。
+   处理：`_market_note` 改成**两条语句**（先拼 `note`，再 `return f"..."`），
+   不用续行，两个文件形状一致。
+4. **🔴 ruff 基线不是「All checks passed」。**
+   `wecom_bot_service.py` 在 HEAD 上**已有 3 条**告警
+   （`F401 contextlib` / `SIM105` / `:511` 的 `E101`，都是既有代码）。
+   判定标准必须是「与 HEAD 基线**逐条相同**」，而不是「零告警」——
+   否则会误以为自己的改动引入了问题，或者反过来把既有告警当成许可证。
+   本次改完仍是同样 3 条，新增 0 条。
+5. **🔴 报告抬头不是 AI 提示词，数字闸门白名单纪律在这里不适用。**
+   `_build_analysis_report` 在 `pop_gate_footer(content)` **之后**运行，
+   产物是直接发给用户的成品，不进 `collect_whitelist(texts=...)`。
+   所以这里写阿拉伯数字 `15 分钟延时` 是**正确且必要**的
+   （用户要能一眼读出数值）；而 `market_guardrail.py` 进提示词，
+   必须写「十五分钟延时」。同一事实、两种载体、两套写法，别搞混。
+6. `MarketTradingRules` 是 **frozen dataclass**，不是 pydantic 模型 ——
+   没有 `model_copy`。测试里改写规则表要用 `dataclasses.replace`
+   （f3 的 `test_market_guardrail.py:122` 已是这个形状）。
+7. **🔴🔴 宽 `except` 会把「优雅降级」和「内部崩了」压成同一个返回值，
+   测试从返回值上根本区分不出来。** 变异测试实测：把 `getattr` 探测换成直接
+   `repo.get_hk_instruments()`（陷阱 2 的那个错误写法），**全部 76 条断言照样绿** ——
+   因为纯 A 股桩抛的 `AttributeError` 被 `_resolve_symbol` 的
+   `except Exception: pass` 吞成「未找到」，与「跳过港股后确实没找到」同形。
+   这个变异之所以**行为等价**，纯靠两个巧合：港股排最后（A 股三张表已查完）
+   + 宽 except 兜住。哪天调整表顺序或收窄 except，A 股名称解析就整体静默失效。
+   处理：测试必须**直接钉 `_candidate_name_frames`**（抽干生成器，
+   `list(...)` 会让 `AttributeError` 就地炸出来），而不是只测 `_resolve_symbol`
+   的返回值。→ `test_candidate_frames_skip_absent_hk_reader_without_raising`。
+   **通用教训**：给带兜底 `except` 的函数写测试时，「返回值正确」不等于
+   「没走异常路径」；要么测内部单元，要么让异常路径可观测。
+
+#### 设计选择：A 股报告也加这一行
+
+f3/f4 的纪律是「A 股提示词**逐字**不变」，因为提示词进白名单、且有钉死全文的
+测试。报告抬头不同：它是给人看的成品，不进白名单，既有测试全是 `in` 断言。
+
+选择**统一输出**（A 股也印 `🏷️ **市场**: A股 · 实时行情 · 计价 ¥ (CNY)`）
+而不是「仅港股才印」，理由：
+
+- §9.5 说的是「消息模板**增加**」这三项，没说只对港股增加；
+- 「仅港股」需要一个「是不是 A 股」的判据。写成 `market == Market.HK` 会被
+  `test_market_architecture_guard.py` 拦下；写成 `rules is CN_RULES` 虽能绕过
+  AST 检查（`CN_RULES` 不是市场字面量），但**语义上就是市场分支**，属于钻守卫的
+  空子，正是 CONTRIBUTING §12 反对的形状；
+- 统一输出让「实时行情」与「15 分钟延时」**可对照** —— 只给港股标延时，
+  用户无从判断没标的是实时还是漏标；
+- 加第三个市场时这里**零改动**（全部数值来自 `rules_for` / `currency_symbol`）。
+
+代价：A 股用户的机器人报告多一行。已用 `test_report_keeps_existing_sections`
+钉住既有字段（标题/标的/时间/用时/模型/免责声明/正文）一个不少，
+既有 32 条 bot 测试**一行未改**全绿。
+
+#### 刻意不做（f5 范围外）
+
+- **不把两个 bot 的重复函数抽成公共模块。** `_parse_stock_analysis_msg` /
+  `_resolve_symbol` / `_current_model_label` / `_profile_switch_note` /
+  `_build_analysis_report` 五个函数在两个文件里各持一份，是既有现状。
+  本次只在各自文件内收敛了「三张表匹配逻辑」这一处复制粘贴，
+  跨文件合并属独立重构，混进市场维度 PR 会让 diff 失焦。
+  漂移风险改由 `test_market_note_is_byte_identical_across_bots` 承担：
+  四个 symbol 上断言两个 bot 的 `_market_note` 输出**逐字节相同**。
+- 不动消息解析（`_parse_stock_analysis_msg`）：它只负责从文本里抠出名称，
+  与市场无关；港股代码 `00700.HK` 走的是既有的「直接发代码」路径。
+- 不动 `_REPLY_MAX_CHARS` 分段逻辑：多一行抬头不影响分块正确性。
+
+#### 验证
+
+新增 `tests/test_bot_market_note.py` **44 passed**
+（`currency_symbol` 13 条 / 名称解析 21 条 / 报告口径行 10 条）。
+关键负向断言：`test_ashare_wins_over_hk_on_duplicate_name`（重名 A 股优先）、
+`test_pure_ashare_hit_never_reads_hk_table`（`hk_calls == 0`）、
+`test_repo_without_hk_reader_still_works` + 
+`test_candidate_frames_skip_absent_hk_reader_without_raising`
+（无 `get_hk_instruments` 不炸，后者直接钉生成器、见陷阱 7）、
+`test_hk_reader_raising_degrades_to_not_found`（维表抛错降级为未找到）、
+`test_hk_frame_missing_columns_is_skipped`（缺列跳过）、
+`test_market_note_reads_rules_not_hardcoded`（改规则表即改文案，`15`/`HK$` 不残留）、
+`test_market_note_is_byte_identical_across_bots`（两个 bot 孪生不漂移）。
+既有测试**一行未改**全绿：`test_dingtalk_bot_message` + `test_wecom_bot_message`
+合计 **32 passed**；CONTRIBUTING §9 市场维五件套 **307 passed**；
+后端全量 **7307 passed / 8 skipped / 1 xfailed**（= f4 的 7263 + 44，零回归）。
+ruff：`app/market.py` / `dingtalk_bot_service.py` / 新测试文件
+`All checks passed`；`wecom_bot_service.py` 与 HEAD 基线**逐条相同**（3 条既有）。
+变异测试 **7/7 被杀**（每次清 `__pycache__`、还原后校验源码哈希一致）：
+港股维表提到最前 → 6 failed / `getattr` 探测改直接调用 → 2 failed（**首轮存活**，
+补陷阱 7 的测试后才被杀）/ 惰性生成器改急切列表 → 2 failed /
+`currency_symbol` 兜底成 CN → 5 failed / `_market_note` 写死 `15`+`HK$` → 4 failed /
+报告抬头去掉口径行 → 2 failed / 钉钉单边改文案 → 1 failed。
+
 ## 15. 风险
 
 | 风险 | 后果 | 对策 |
