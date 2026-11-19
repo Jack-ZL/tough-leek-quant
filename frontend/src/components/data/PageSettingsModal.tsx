@@ -21,7 +21,7 @@ import { storage } from '@/lib/storage'
 
 export type CardKey =
 	| 'instruments' | 'daily' | 'adj_factor' | 'enriched'
-	| 'index' | 'etf' | 'minute' | 'financials' | 'regime'
+	| 'index' | 'etf' | 'minute' | 'financials' | 'regime' | 'hk'
 
 interface CardDef {
 	key: CardKey
@@ -44,6 +44,10 @@ export const DATA_CARD_DEFS: CardDef[] = [
 	{ key: 'minute', label: '分钟 K', desc: '分钟级K线(依赖分钟K批量数据)', defaultHiddenIfNoCap: true },
 	{ key: 'financials', label: '财务数据', desc: '财报数据(依赖财务数据)', defaultHiddenIfNoCap: true },
 	{ key: 'regime', label: '市场环境', desc: '每日环境状态(本地计算)', defaultHiddenIfNoCap: false },
+	// 港股画像卡。🔴 排在末尾 ⇒ 超出 DEFAULT_VISIBLE_COUNT(5), 点「恢复默认」后会变成隐藏;
+	// 但**没点过恢复默认**的用户(含老用户升级)走 getCardVisibility 的 fallthrough, 默认可见 ——
+	// 这是刻意的: 港股同步入口只在这张卡上, 默认藏起来等于让功能不可发现。
+	{ key: 'hk', label: '港股数据', desc: '港股维表 / 日K / 指标 / 复权 / 财务', defaultHiddenIfNoCap: false },
 ]
 
 const DEFAULT_ORDER = DATA_CARD_DEFS.map(d => d.key)

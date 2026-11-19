@@ -33,7 +33,7 @@ import {
 } from '@/lib/useSharedQueries'
 import { useToggleRealtimeQuotes, useUpdateQuoteInterval } from '@/lib/useSharedMutations'
 import { MissingCapChip, routeCap, routeCapUsable, routeProviderDisplay, type RouteCapId } from '@/lib/capability-labels'
-import { QK, DAILY_DATA_QUERY_PREFIXES } from '@/lib/queryKeys'
+import { QK, DAILY_DATA_QUERY_PREFIXES, HK_DATA_QUERY_PREFIXES } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
 import { useAdjFactorSyncGate } from '@/components/AdjFactorSyncGate'
 import { formatScheduleDatePart, formatScheduleTimePart, isToday } from '@/lib/format'
@@ -52,6 +52,7 @@ import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { DataIntegrityPanel } from '@/components/data/DataIntegrityPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
 import { FinancialSyncPanel } from '@/components/data/FinancialSyncPanel'
+import { HkDataSyncPanel } from '@/components/data/HkDataSyncPanel'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { AdjFactorSyncConfig } from '@/components/data/AdjFactorSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
@@ -210,6 +211,15 @@ export function Data() {
 	// usable = 生效源当前能否提供该能力 (含插件/自定义源; TickFlow 档位不足则不可用),
 	// 区别于 useCapabilities 的 TickFlow 套餐视角。矩阵未加载时回退套餐视角, 避免首屏闪烁。
 	const matrix = useCapabilityMatrix()
+	// 港股矩阵: 只为取「港股日K的直连源是谁」来渲染卡片徽章。
+	// 🔴 不在前端硬编码「东财」—— 源名归后端 CAPABILITY_REGISTRY[*].markets.HK.source,
+	// 换源(例如东财 IP 被封后改走别家)时前端不该跟着改代码。
+	const hkMatrix = useCapabilityMatrix('HK')
+	const hkProviderDisplay = (() => {
+		const src = routeCap(hkMatrix.data, 'daily')?.market_source
+		if (!src) return null
+		return `${findDataSource(dataSources.data, src)?.display_name || src}直连`
+	})()
 	const tfCaps = caps.data?.capabilities
 	const usableOr = (id: RouteCapId, tfHas: boolean) => routeCapUsable(matrix.data, id) ?? tfHas
 	// 合并视角 caps: 套餐限额键位 + 路由可用性覆盖, 卡片徽章/显隐/设置弹窗共用
@@ -294,6 +304,18 @@ export function Data() {
 	// 引用 cardVisibleTick 触发重渲染(避免 lint 警告)
 	void cardVisibleTick
 
+	// 港股数据画像 —— 独立端点, 不在 /api/data/status 里 (那个只统计 A 股)。
+	// 🔴 后端刻意不做服务端缓存, 一致性全靠这里的失效: 任何港股 job 结束、
+	// 维表同步完成、清空数据之后都要 invalidate QK.hkStatus, 否则画像停在旧值。
+	// 🔴 必须声明在 cardVisible 之后 (enabled 依赖它); 卡片隐藏时不请求,
+	// 不给纯 A 股用户白付一次开销。
+	const hkStatus = useQuery({
+		queryKey: QK.hkStatus,
+		queryFn: () => api.hkStatus(),
+		enabled: cardVisible.hk !== false,
+		refetchInterval: activeJobId ? false : 60_000,
+	})
+
 	useEffect(() => {
 		if (job.data && (job.data.status === 'succeeded' || job.data.status === 'failed')) {
 			qc.invalidateQueries({ queryKey: QK.dataStatus })
@@ -308,6 +330,10 @@ export function Data() {
 			if (!job.data.result?.integrity_report) {
 				qc.invalidateQueries({ predicate: q => DAILY_DATA_QUERY_PREFIXES.has(String(q.queryKey[0])) })
 			}
+			// 港股 job (日K/enriched/维表) 走同一个 activeJobId 通道 ⇒ 也在这里收尾。
+			// 🔴 后端港股画像**没有服务端缓存**, 这条失效就是唯一的一致性保证;
+			// 漏掉它会出现「同步跑完了, 卡片还是旧行数」。
+			qc.invalidateQueries({ predicate: q => HK_DATA_QUERY_PREFIXES.has(String(q.queryKey[0])) })
 			const t = setTimeout(() => setActiveJobId(null), 5_000)
 			return () => clearTimeout(t)
 		}
@@ -381,6 +407,9 @@ export function Data() {
 		compute_regime: 'regime',
 		// regime 软失败时入 skipped_stages 的是 'regime'(非 stage 名), 也映射到该卡片
 		regime: 'regime',
+		// 港股 job 的两个阶段 (POST /api/hk/sync_daily 与 /sync_enriched 上报)
+		hk_daily: 'hk',
+		hk_enriched: 'hk',
 	}
 	const activeCard = isRunning && job.data ? STAGE_CARD[job.data.stage] ?? null : null
 
@@ -604,6 +633,48 @@ export function Data() {
 						settingsOpen={openSettings === 'regime'}
 					/>
 				)
+			case 'hk': {
+				const hk = hkStatus.data
+				// 🔴 卡片只有一格大数字, 取「最能说明港股同步到哪一步」的那块:
+				// 有日K → 显示交易日数(个股日K的 rows 是「没统计」哨兵, 不能当行数);
+				// 只有维表 → 退化成维表口径(快照日/标的数); 都没有 → null 走空态。
+				const asInstrument = !hk?.daily && !!hk?.instruments
+				const hkStats = hk?.daily
+					? hk.daily
+					: hk?.instruments
+						? {
+							rows: hk.instruments.hkd_counters,
+							named: hk.instruments.named,
+							latest_as_of: hk.instruments.latest_as_of,
+						}
+						: null
+				// 🔴 必须显式给 subLabel: StatCard 的兜底文案里硬编码了「A股标的」,
+				// 不传就会在港股卡上显示 A 股口径。
+				const hkSubLabel = hk?.daily
+					? `港股 · ${hk.daily.symbols_covered.toLocaleString()} 只标的 · ${hk.enriched?.fields ?? 0} 列指标`
+					: hk?.instruments
+						? `港币柜台 · 另有 ${hk.instruments.cny_counters.toLocaleString()} 只人民币柜台`
+						: undefined
+				return (
+					<StatCard
+						title="港股数据"
+						hint="维表 · 日K · 指标 · 复权 · 财务"
+						stats={hkStats}
+						isInstrument={asInstrument}
+						loading={hkStatus.isLoading}
+						active={activeCard === 'hk'}
+						stagePct={activeCard === 'hk' ? (job.data?.stage_pct ?? 0) : 0}
+						tierKey="hk"
+						capLimits={mergedCaps}
+						customProvider={hkProviderDisplay}
+						subLabel={hkSubLabel}
+						// 港股不在盘后管道内, 顶部「立即同步」不含它 —— 给独立的同步入口
+						onPull={() => setOpenSettings(v => v === 'hk-sync' ? null : 'hk-sync')}
+						pullTitle="同步港股数据"
+						settingsOpen={openSettings === 'hk-sync'}
+					/>
+				)
+			}
 			default:
 				return null
 		}
@@ -1134,6 +1205,22 @@ export function Data() {
 			</AnimatePresence>
 
 			<AnimatePresence>
+				{openSettings === 'hk-sync' && (
+					<SettingsModal title="港股数据 · 画像与同步" onClose={() => setOpenSettings(null)} width="max-w-lg">
+						<HkDataSyncPanel
+							status={hkStatus.data}
+							isLoading={hkStatus.isLoading}
+							isRunning={!!activeJobId}
+							onStart={(jobId) => {
+								setActiveJobId(jobId);
+								setOpenSettings(null)
+							}}
+						/>
+					</SettingsModal>
+				)}
+			</AnimatePresence>
+
+			<AnimatePresence>
 				{openSettings === 'regime' && (
 					<SettingsModal title="市场环境 · 计算设置" onClose={() => setOpenSettings(null)}>
 						<RegimeConfigCard />
@@ -1379,6 +1466,7 @@ export function Data() {
 										<li>· 个股维表、日 K、除权因子</li>
 										<li>· Enriched 指标数据、分钟 K</li>
 										<li>· 财务数据、指数、ETF</li>
+										<li>· 港股维表、日 K、指标、复权因子、财务</li>
 									</ul>
 									<p className="mt-2 text-[11px] text-danger/90">
 										操作不可恢复，需重新执行同步才能恢复数据。

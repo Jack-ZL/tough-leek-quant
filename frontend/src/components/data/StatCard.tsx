@@ -21,6 +21,11 @@ export const CARD_META: Record<string, {
 	minute: { capKey: 'kline.minute.batch', missingCapName: '分钟 K(批量)' },
 	financials: { capKey: 'financial', missingCapName: '财务数据' },
 	regime: { capKey: '', missingCapName: '' },
+	// 港股画像卡: capKey 空串只表示「不受 TickFlow 套餐门控」, **不代表本地计算** ——
+	// 数据来自东财 push2 直连(见 capabilities.py: HK 不在 ROUTED_MARKETS 里, 不可路由)。
+	// 🔴 调用方必须传 customProvider, 否则 CapBadge 会落到 isLocal 分支显示「本地计算」,
+	// 那是假话: 用户会以为断网也能同步港股。
+	hk: { capKey: '', missingCapName: '' },
 }
 
 export function Pill({ label, value }: { label: string; value: number | string }) {

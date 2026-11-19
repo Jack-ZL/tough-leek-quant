@@ -207,6 +207,126 @@ export interface FinancialSharesRecord {
 }
 
 /**
+ * `GET /api/hk/status` 里的单块画像。
+ *
+ * 🔴 ``rows === 0`` 在个股日K/enriched 上是**「没统计」哨兵**, 不是「零行」——
+ * 与 A 股 `DailyStats` 同一约定(逐日分区全量 count 太贵)。判断「有没有数据」
+ * 要看 `trading_days` / `symbols_covered`, 不能看 `rows`。指数表数据量小,
+ * `rows` 是精确值。
+ */
+export interface HkKlineStats {
+	rows: number
+	earliest_date: string | null
+	latest_date: string | null
+	trading_days: number
+	/** 最新一个 date= 分区里的 distinct symbol 数 */
+	symbols_covered: number
+	/** 仅 enriched 表有: 列数 */
+	fields?: number
+}
+
+/** `GET /api/hk/status` 的维表块。双柜台拆分是港股独有口径。 */
+export interface HkInstrumentsStats {
+	rows: number
+	symbols_covered: number
+	/** 有名字的标的数 —— 名字缺失说明维表是降级续用的旧快照 */
+	named: number
+	latest_as_of: string | null
+	/** 港币柜台数 */
+	hkd_counters: number
+	/** 人民币柜台数(``is_cny_counter``); 算「港股有多少只」时要扣掉 */
+	cny_counters: number
+	industries: number
+}
+
+/** `GET /api/hk/status` 的复权因子块。凭据缺失/失效时 enriched 整轮零行。 */
+export interface HkAdjFactorStats {
+	rows: number
+	symbols_covered: number
+	has_coverage: boolean
+	/**
+	 * 🔴 ``coverage.json`` 文件在但读不出来(schema 版本不符/JSON 损坏)。
+	 * 与「从来没跑过」(两者都 false)必须区分: 前者要查版本迁移, 后者只需等同步。
+	 */
+	coverage_unreadable: boolean
+	covered: number
+	uncovered: number
+	coverage_updated_at: string | null
+}
+
+/**
+ * `GET /api/hk/status` —— 港股数据画像。
+ *
+ * 🔴 **不复用 `/api/data/status`**: 那个端点只统计 A 股, 且带服务端缓存
+ * (`DataStatusCache`), 靠写入路径调 `invalidate_data_cache` 保持一致; 港股写入链
+ * 没有这个钩子, 套上去就会「同步完画像还是旧的」。一致性交给前端 query 失效。
+ *
+ * 每块独立 try/except: 单个目录损坏只让那一块变 `null`, 不整页 500。
+ */
+export interface HkDataStatus {
+	instruments: HkInstrumentsStats | null
+	daily: HkKlineStats | null
+	enriched: HkKlineStats | null
+	index_daily: HkKlineStats | null
+	index_enriched: HkKlineStats | null
+	adj_factor: HkAdjFactorStats | null
+	/** 永不为 null(未同步时 `synced: false`) */
+	financials: HkFinancialsStatus
+	/** 每目录 `<key>_files` / `<key>_size_mb` + `total_size_mb` */
+	storage: Record<string, number>
+	checked_at: string
+}
+
+/** `GET /api/hk/instruments` —— 港股维表分页。`synced=false` 表示维表为空。 */
+export interface HkInstrumentsResponse {
+	total: number
+	synced: boolean
+	items: Array<{
+		symbol: string
+		name?: string | null
+		is_cny_counter?: boolean | null
+		hkd_counter?: string | null
+		listing_date?: string | null
+		industry?: string | null
+		lot_size?: number | null
+		[key: string]: any
+	}>
+}
+
+/**
+ * `POST /api/hk/sync_instruments` 结果。
+ *
+ * 🔴 ``status === 'empty'`` **是歧义值**: 抓取失败(保留旧维表、一行没写)与
+ * 上游真的返回空都报 `empty`。UI 不能把它当成功, 只能提示「没拿到数据,
+ * 请查后端日志」。
+ */
+export interface HkSyncInstrumentsResult {
+	status: 'ok' | 'empty'
+	count: number
+}
+
+/** `POST /api/hk/sync_daily` / `sync_enriched` 受理结果(异步, 走重任务槽)。 */
+export interface HkSyncJobAccepted {
+	job_id: string
+}
+
+/** 港股日K job 的 `result`。`enriched_uncovered` 非空说明有标的被复权凭据拒了。 */
+export interface HkDailyJobResult {
+	symbols?: number
+	rows_written?: number
+	enriched_rows?: number
+	enriched_uncovered?: string[]
+	[key: string]: any
+}
+
+/** 港股 enriched job 的 `result`。 */
+export interface HkEnrichedJobResult {
+	rows_written?: number
+	uncovered?: string[]
+	[key: string]: any
+}
+
+/**
  * `GET /api/hk/financials/status` —— 港股财务同步状态。
  *
  * 🔴 与 A 股 :data:`FinancialStatus` **形状不同, 刻意不合并成一个接口**: A 股是
@@ -4389,6 +4509,56 @@ export const api = {
 			`/api/hk/financials/statement/sync?symbol=${encodeURIComponent(symbol)}&table=${table}`,
 			{ method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS },
 		),
+	/**
+	 * 港股数据画像(维表/日K/enriched/指数/复权因子/财务 的行数·日期·覆盖 + 存储占用)。
+	 *
+	 * 🔴 后端**刻意不做服务端缓存**(港股写入链没有 `invalidate_data_cache` 钩子),
+	 * 所以「同步完画像还是旧的」只能靠调用方在 job 结束后失效 `QK.hkStatus` 来避免。
+	 */
+	hkStatus: () => request<HkDataStatus>('/api/hk/status'),
+	/**
+	 * 港股维表分页。默认**不含人民币柜台**(双柜台同一份基本面, 重复出现会误导);
+	 * `synced=false` 表示维表还没同步过。
+	 */
+	hkInstruments: (opts?: {
+		q?: string; includeCnyCounter?: boolean; limit?: number; offset?: number
+	}) => {
+		const q = new URLSearchParams()
+		if (opts?.q) q.set('q', opts.q)
+		if (opts?.includeCnyCounter) q.set('include_cny_counter', 'true')
+		q.set('limit', String(opts?.limit ?? 200))
+		q.set('offset', String(opts?.offset ?? 0))
+		return request<HkInstrumentsResponse>(`/api/hk/instruments?${q.toString()}`)
+	},
+	/**
+	 * 同步港股维表。**同步执行**(秒级, 不占重任务槽)。
+	 * 🔴 `status:'empty'` 是歧义值(抓取失败与上游真空同报), 不能当成功。
+	 */
+	hkSyncInstruments: () =>
+		request<HkSyncInstrumentsResult>('/api/hk/sync_instruments', {
+			method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+		}),
+	/**
+	 * 同步港股日K(默认顺带跑 enriched)。异步, 返回 `job_id`, 进度轮询复用 `pipelineJob(id)`。
+	 * 维表为空时后端 409「请先调用 POST /api/hk/sync_instruments」。
+	 * `symbols` 省略 = 全市场港币柜台; `days` 仅在 `incremental:false` 时生效。
+	 */
+	hkSyncDaily: (body?: {
+		symbols?: string[]; days?: number; incremental?: boolean
+		include_cny_counter?: boolean; enriched?: boolean
+	}) =>
+		request<HkSyncJobAccepted>('/api/hk/sync_daily', {
+			method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+		}),
+	/**
+	 * 重算港股 enriched。异步, 返回 `job_id`。纯本地 CPU 无网络;
+	 * 缺复权凭据时整轮零行(fail-closed), 结果里的 `uncovered` 会列出被拒标的。
+	 * `days` 只裁剪**发布**范围, 计算始终吃完整历史。
+	 */
+	hkSyncEnriched: (body?: { symbols?: string[]; days?: number; batch_size?: number }) =>
+		request<HkSyncJobAccepted>('/api/hk/sync_enriched', {
+			method: 'POST', body: JSON.stringify(body ?? {}), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+		}),
 	updateRealtimeMonitorConfig: (cfg: {
 		sse_refresh_pages?: Record<string, boolean>
 		strategy_monitor_enabled?: boolean

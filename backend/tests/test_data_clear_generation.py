@@ -299,3 +299,32 @@ def test_clear_discards_status_snapshot_and_rejects_inflight_old_statistics(tmp_
             thread.join(2)
             assert not thread.is_alive()
     assert cache.snapshot(loaders, is_busy=lambda: True)["daily"] is None
+
+
+def test_clear_data_removes_hk_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清空数据必须连港股目录一起删 — 用户点「清空」后残留港股数据,
+    会让画像/回测继续读到「已清空」的数据 (实测缺陷: 原实现只列 A 股目录)。
+
+    港股目录名从 repository 的 market 映射推导, 不在测试里硬编码字面量。
+    """
+    from app.services.hk_data_status import hk_storage_dirnames
+
+    _stub_clear_side_effects(monkeypatch)
+    repo = _RepoStub(tmp_path)
+    dirnames = hk_storage_dirnames()
+    targets: list[Path] = []
+    for key, dirname in dirnames.items():
+        # 财务/维表/复权因子是平铺文件, K 线是 date= 分区
+        target = tmp_path / dirname / f"part_{key}.parquet"
+        _write_parquet_placeholder(target)
+        targets.append(target)
+
+    result = data_api.clear_data(_request(repo))
+
+    assert result == {"deleted_files": len(targets)}
+    assert not any(t.exists() for t in targets)
+    # 目录本身保留 (repo 初始化会 mkdir, 删目录会让下次写入路径判断失真)
+    assert all((tmp_path / d).is_dir() for d in dirnames.values())

@@ -20,6 +20,17 @@ export const MINUTE_DATA_QUERY_PREFIXES = new Set([
 	'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range',
 ])
 
+/**
+ * 港股日K/enriched/维表写入后需要刷新的消费方。
+ *
+ * 🔴 与 A 股 `DAILY_DATA_QUERY_PREFIXES` **刻意分开**: 两个市场的写入链互不影响,
+ * 混在一个集合里会让 A 股同步白刷港股查询(反之亦然), 也会让「哪些 key 属于哪个
+ * 市场」这条边界在代码里消失。这是 key 前缀的归属划分, 不是市场分支控制流。
+ */
+export const HK_DATA_QUERY_PREFIXES = new Set([
+	'hk-data-status', 'hk-instruments', 'hk-daily',
+])
+
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
 export const EXT_DATA_QUERY_PREFIXES = new Set([
 	'ext-data', 'ext-data-rows', 'ext-data-schema-all', 'ext-schema-all', 'ext-series',
@@ -132,6 +143,13 @@ export const QK = {
 
 	// Data / Pipeline
 	dataStatus: ['data-status'] as const,
+	// 港股数据画像。🔴 前缀 `hk-data-status` 与 A 股 `data-status` **互斥**, 不得共用:
+	// 两者是不同端点、不同缓存策略(A 股有服务端缓存, 港股刻意没有), 共用前缀会让
+	// 一次失效顺带打掉另一个市场的画像, 或反过来让港股同步后 A 股卡片白刷。
+	hkStatus: ['hk-data-status'] as const,
+	/** 港股维表分页。过滤条件影响结果 ⇒ 必须入 key。 */
+	hkInstruments: (q: string, includeCny: boolean, limit: number, offset: number) =>
+		['hk-instruments', q, includeCny, limit, offset] as const,
 	dataIntegrity: ['data-integrity'] as const,
 	/** 分钟数据缺口体检 (发现本地分区中不完整的 标的×交易日) */
 	minuteGaps: ['minute-gaps'] as const,

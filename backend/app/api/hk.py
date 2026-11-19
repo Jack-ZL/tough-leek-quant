@@ -34,6 +34,7 @@ from app.services import (
     instrument_sync_hk,
     kline_sync_hk,
 )
+from app.services import hk_data_status as hk_status
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,21 @@ def _read_hk_instruments(data_dir: Path) -> pl.DataFrame:
     except Exception as e:  # noqa: BLE001
         logger.warning("港股维表读取失败: %s", e)
         return pl.DataFrame()
+
+
+@router.get("/status")
+def get_hk_status(request: Request) -> dict:
+    """港股数据画像 —— 数据页「港股数据」卡的唯一状态来源。
+
+    与 A 股 ``GET /api/data/status`` 同构 (每个数据集一块, 没数据是 ``null``),
+    但**只读港股目录**, 且刻意不复用 A 股那个端点: 那边挂着 ``DataStatusCache``
+    与盘后管道的失效钩子, 而港股写入链路没接这套钩子, 混在一起会读到过期快照
+    (CONTRIBUTING §12 的拒收情形「写入后存在已知缓存不一致」)。
+
+    聚合口径、为什么不走 DuckDB 视图、为什么不做服务端缓存, 全部写在
+    :mod:`app.services.hk_data_status` 的模块 docstring 里。
+    """
+    return hk_status.hk_data_status(request.app.state.repo.store.data_dir)
 
 
 @router.get("/instruments")
@@ -609,38 +625,14 @@ def _jsonable(rows: list[dict]) -> list[dict]:
 
 @router.get("/financials/status")
 def hk_financials_status(request: Request) -> dict:
-    """港股财务同步状态。未同步时如实返回 ``synced=false`` 而非 500。"""
-    data_dir = request.app.state.repo.store.data_dir
-    wide = financial_sync_hk.get_hk_financial_df(data_dir, "main_indicator")
-    if wide.is_empty():
-        return {
-            "synced": False,
-            "rows": 0,
-            "symbols": 0,
-            "latest_report_date": None,
-            "lot_size_coverage": None,
-            "tables": {
-                t: financial_sync_hk.get_hk_financial_df(data_dir, t).height
-                for t in ("income", "balance")
-            },
-        }
-    latest = financial_sync_hk.latest_hk_report_date(data_dir)
-    lots = financial_sync_hk.hk_lot_size_map(data_dir)
-    return {
-        "synced": True,
-        "rows": wide.height,
-        "symbols": wide.get_column("symbol").n_unique(),
-        "latest_report_date": latest.isoformat() if latest else None,
-        # 每手股数覆盖率: 该列由财务表回填进 instruments_hk, 是港股下单取整的依据
-        "lot_size_coverage": len(lots),
-        "period_names": sorted(
-            {str(p) for p in wide.get_column("period_name").drop_nulls().to_list()}
-        ),
-        "tables": {
-            t: financial_sync_hk.get_hk_financial_df(data_dir, t).height
-            for t in ("income", "balance")
-        },
-    }
+    """港股财务同步状态。未同步时如实返回 ``synced=false`` 而非 500。
+
+    实现搬到了 :func:`app.services.hk_data_status.hk_financials_status`, 与
+    ``GET /api/hk/status`` 的 ``financials`` 块**共用同一份代码** —— 两处各算一遍
+    的话, 「画像卡说已同步、财务页说没同步」这种自相矛盾迟早会出现。响应形状逐字
+    未变 (``test_hk_api.py`` 的既有断言原样通过)。
+    """
+    return hk_status.hk_financials_status(request.app.state.repo.store.data_dir)
 
 
 @router.post("/sync_financials")

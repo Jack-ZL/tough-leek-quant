@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.enriched_generation import EnrichedPublication
 from app.indicators.pipeline import ENRICHED_COLUMNS
 from app.services.data_status_cache import DataStatusCache
+from app.services.hk_data_status import hk_storage_dirnames
 from app.services.pipeline_jobs import job_store
 
 logger = logging.getLogger(__name__)
@@ -728,6 +729,13 @@ def _clear_data_impl(request: Request):
         "kline_etf_daily", "kline_etf_enriched", "kline_etf_minute", "kline_minute",
         "adj_factor", "adj_factor_etf", "instruments", "instruments_index", "instruments_etf", "pools", "financials",
         "backtest_results", "screener_results", "ai_cache",
+        # 🔴 港股 7 个目录 (方案 §4 闸3: 物理隔离)。清单取自 hk_data_status 的权威
+        # 映射而不是在此抄字面量 —— 抄两份就会漂移, 而漂移的后果是「点了清空数据,
+        # 港股画像卡还显示有数据」, 属 CONTRIBUTING §12 的拒收情形「写入后存在已知
+        # 缓存不一致」。港股目录没有 EnrichedPublication (见 kline_sync_hk 的
+        # sync_hk_enriched docstring), 故 publications.get(sub) 对它们恒为 None,
+        # 走无锁的普通删除分支即可; 末尾的 repo.rebuild_views() 会一并重挂港股视图。
+        *hk_storage_dirnames().values(),
     ):
         d = data_dir / sub
         if not d.exists():
