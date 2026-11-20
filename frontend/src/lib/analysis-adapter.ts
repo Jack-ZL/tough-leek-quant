@@ -340,3 +340,41 @@ export function computeQuoteMetrics(
 		totalVolume: totalVol,
 	}
 }
+
+// ===== 快照自带分类列 → DimensionGroup =====
+
+/**
+ * 把「行情快照每行自带一个分类列」的数据聚成 `DimensionGroup[]`。
+ *
+ * 为什么需要它: `resolveDimension` 只认扩展数据表 (`ExtDataRowsResult` + 字段声明),
+ * 而港股行业分类不在扩展数据里 —— 恒生行业随 `instruments_hk` 落库, 由
+ * `/api/screener/market-snapshot?market=HK` 的 `industry` 列下发 (维度源见
+ * `lib/board-market-support.ts` 的 `BOARD_DIMENSION_SOURCE`)。两条通道在这里收敛成
+ * 同一个 `DimensionGroup[]`, 页面主体 (热度/龙头/热力图) 因此不必按市场分支。
+ *
+ * 🔴 分类为空的行**直接丢弃**, 不归进「未知」组: 港股维表的 industry 来自东财 f100,
+ * 上游偶发返回占位符 `-` (已在 `plugins/eastmoney/hk.py:_clean_text` 洗成 null)。
+ * 造一个「未知」行业会把几十只互不相关的股票聚成一个假板块, 而它成分数最多、
+ * 按数量排序永远排第一 —— 比少几只标的危险得多 (CONTRIBUTING §4: 宁可明说没有)。
+ *
+ * 🔴 快照行**本身就是行情**, 直接当 `stocks` 用, 不需要再经 quoteMap 二次拼接:
+ * 消费方 `enrichStock` 的 `{...stock, ...market}` 合并对同一份数据是幂等的。
+ */
+export function groupsFromSnapshotField(
+	rows: Array<Record<string, unknown>>,
+	field: string,
+): DimensionGroup[] {
+	const map = new Map<string, StockRow[]>()
+	for (const row of rows) {
+		const raw = row[field]
+		const key = typeof raw === 'string' ? raw.trim() : ''
+		if (!key || INVALID_DIMENSION_VALUES.has(key.toLowerCase())) continue
+		if (!String(row.symbol ?? '').trim()) continue
+		const list = map.get(key)
+		if (list) list.push(row as StockRow)
+		else map.set(key, [row as StockRow])
+	}
+	return [...map.entries()]
+		.map(([key, stocks]) => ({key, count: stocks.length, stocks, metrics: {}}))
+		.sort((a, b) => b.count - a.count)
+}

@@ -108,7 +108,9 @@ export const QK = {
 	/** 扩展列迷你图: 列集 (含显示周期和天数) + 日期 + 标的集。 */
 	extSeriesAll: ['ext-series'] as const,
 	extSeries: (colsKey: string, date?: string | null, symbolsKey?: string) => ['ext-series', colsKey, date ?? '', symbolsKey ?? ''] as const,
-	marketSnapshot: ['market-snapshot'] as const,
+	/** 全市场轻量行情快照。🔴 key 带 market: 两个市场的行集完全不同, 共用一个 key
+	 *  会让切市场后短暂渲染上一个市场的缓存 (串市场)。 */
+	marketSnapshot: (market: Market) => ['market-snapshot', market] as const,
 	limitLadder: (asOf?: string) => ['limit-ladder', asOf] as const,
 
 	// Backtest
@@ -250,8 +252,10 @@ export const QK = {
 	// AI 大盘复盘
 	reviewReports: ['review-reports'] as const,
 
-	// 概念涨幅轮动矩阵
-	rpsRotation: (days: number) => ['rps-rotation', days] as const,
+	// 概念/行业涨幅轮动矩阵。🔴 market 进键: 两个市场的最新交易日常常相同, 键里
+	// 漏掉 market 会让切市场后**继续显示上一个市场的矩阵** (react-query 命中缓存,
+	// 连请求都不发) —— 症状是港股页面渲染 A 股概念, 且 5 分钟 staleTime 内不自愈。
+	rpsRotation: (days: number, market: Market) => ['rps-rotation', days, market] as const,
 
 	// 市场环境(Regime) — 日级离线计算, 不进 SSE 刷新
 	// 历史查询键 = 实际请求三元组 (影响结果的参数全部进键): 'all' 在 coverage
@@ -267,7 +271,7 @@ export const QK = {
 	regimeMainline: (kind: string, start?: string, end?: string) => ['regime-mainline', kind, start ?? '', end ?? ''] as const,
 	// 板块切换 (盘中轮动, 全量分钟聚合) — 30s 前端轮询刷新; seriesKey = 自定义展示板块清单,
 	// filterKey = 自动活跃榜行数与排除名单 (会改变结果的参数必须进查询键)
-	sectorRotation: (kind: string, flow?: string, bucket?: number, seriesKey?: string, filterKey?: string) => ['sector-rotation', kind, flow ?? '', bucket ?? 5, seriesKey ?? '', filterKey ?? ''] as const,
+	sectorRotation: (kind: string, market: Market, flow?: string, bucket?: number, seriesKey?: string, filterKey?: string) => ['sector-rotation', kind, market, flow ?? '', bucket ?? 5, seriesKey ?? '', filterKey ?? ''] as const,
 	// 板块切换的指数叠加线 (核心四只, 默认上证) — 分钟取当日, 日K取昨收基准
 	sectorRotationIndexMinute: (symbol: string, date?: string) => ['sector-rotation-index-minute', symbol, date ?? ''] as const,
 	sectorRotationIndexDaily: (symbol: string) => ['sector-rotation-index-daily', symbol] as const,

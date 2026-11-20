@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from app.market import Market, parse_market
 from app.services import sector_rotation
 
 router = APIRouter(prefix="/api/sector-rotation", tags=["sector-rotation"])
@@ -25,6 +26,10 @@ def get_sector_rotation(
         "activity",
         description="自动榜排序维度: activity=近30分钟成交额, score=综合分, pct=现涨幅, rank_change=1h排名跃升, momentum=近1小时动量(走强→走弱), flow=扩展资金流",
     ),
+    # 🔴 用 Annotated 而不是 `market: str | None = Query(None)`: 后者的**默认值是
+    # Query 对象本身**, 直接调用端点函数(本仓库测试的既有做法)时 `market is None`
+    # 恒假 → parse_market 认不出 → 一律 400 (同 api/kline.py:search_instruments)。
+    market: Annotated[str | None, Query(description="市场 (CN/HK); 缺省 CN")] = None,
 ):
     """盘中板块切换走势: 全量分钟K聚合到板块, 涨幅 + 扩展资金流综合评分。
 
@@ -32,7 +37,20 @@ def get_sector_rotation(
     缺省为自动榜 (sort_by 维度降序, 先剔除排除名单与超成员数上限的板块,
     不足时回退不过滤)。
     数据不可用时返回明确的 no_data/empty 状态与原因, 不静默。
+
+    ``market`` 缺省 CN (既有调用方不传参, 行为逐字不变)。传了**非法**值返回 400
+    而不是静默回退 CN —— 静默回退会让用户以为看的是港股。港股**无分钟K源**
+    (``HK_RULES.has_minute_bars = False``), 返回
+    ``{status: "no_data", reason: "no_minute_source"}``, 理由见
+    ``services/sector_rotation.build_sector_rotation`` 的 market 参数说明。
     """
+    resolved = Market.CN if market is None else parse_market(market)
+    if resolved is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知 market {market!r} (支持: {', '.join(m.value for m in Market)})",
+        )
+
     names: list[str] | None = None
     if series_names:
         names = _parse_str_array(series_names, "series_names")
@@ -50,6 +68,7 @@ def get_sector_rotation(
         exclude_sectors=excluded,
         auto_rows=auto_rows,
         sort_by=sort_by,
+        market=resolved,
     )
 
 

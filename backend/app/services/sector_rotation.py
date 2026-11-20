@@ -35,6 +35,7 @@ from typing import Any
 
 import polars as pl
 
+from app.market import Market, rules_for
 from app.market_time import trading_minutes_elapsed_from_dt
 from app.services.ext_data import ExtConfigStore
 from app.services.rps_rotation import _load_concept_map_df
@@ -348,6 +349,7 @@ def build_sector_rotation(
     exclude_sectors: list[str] | None = None,
     auto_rows: int | None = None,
     sort_by: str = "activity",
+    market: Market = Market.CN,
 ) -> dict:
     """计算盘中板块切换走势 (概念/行业二选一)。
 
@@ -356,6 +358,24 @@ def build_sector_rotation(
     auto_rows: 自动模式展示行数, 缺省 10, 范围 [1, 20]。
     sort_by: 自动榜排序维度 (activity/score/pct/rank_change/flow), 排除名单与
     成员数上限对全部维度生效, 不足展示行数时回退不过滤。
+    market: 市场。🔴 只有 ``rules.has_minute_bars`` 为真的市场可算, 其余 fail-closed
+    返回 ``{status: "no_data", reason: "no_minute_source", kind, market}``。
+    判据是规则表的**能力位**而不是市场名比较 (CONTRIBUTING §3.5)。
+
+    唯一的**硬**障碍是数据: 本模块直读 ``data/kline_minute/date=X/part.parquet``,
+    那是 A 股全量分钟能力的落盘目录; ``repository._DIRNAMES`` 里没有任何分钟目录,
+    也没有港股分钟同步任务 —— 港股根本没有分钟K可读。
+
+    另有两处 A 股口径, 将来若真落了港股分钟源必须一起改, 否则会算出「看起来对但错」
+    的结果 (CONTRIBUTING §3):
+      1. ``_PCT_PHYSICAL_BOUND = 0.30`` 的脏点判据来自 A 股涨跌停 (GH #473)。
+         ``HK_RULES.has_price_limit = False``, 港股单日 ±30% 是正常波动, 沿用这个
+         边界会把真实行情当脏点**剔除**。
+      2. :508/:510 调 ``trading_minutes_elapsed_from_dt`` 没传 market, 默认按 A 股
+         时段 (09:30-11:30/13:00-15:00) 折算桶轴。该函数**本身已支持港股**
+         (09:30-12:00/13:00-16:00 + 半日市), 只是调用点没接 —— 港股 16:00 收盘,
+         按 A 股 15:00 折算会让最后一小时的桶全部挤在收盘点上。
+    所以这里不是「忘了接市场参数」, 是**没有可接的源**; 前端对港股隐藏本卡片。
 
     返回结构:
       status/date/basis/kind/flow_field/bucket_minutes/member_count/flow_available/
@@ -396,6 +416,20 @@ def build_sector_rotation(
             str(n).strip() for n in exclude_sectors if str(n).strip()
         ))[:_MAX_EXCLUDE_PARAM]
     rows_limit = _DEFAULT_SERIES_ROWS if auto_rows is None else max(1, min(_MAX_SERIES_ROWS, int(auto_rows)))
+
+    # 🔴 fail closed (放在参数校验之后: 非法 kind/sort_by/bucket 在哪个市场都该
+    # 报错, 不能被市场分支吞掉)。判据来自规则表的**能力位**而不是市场名比较
+    # (CONTRIBUTING §3.5, 由 tests/test_market_architecture_guard.py 强制)。
+    # reason 是**线上契约**, 前端按它选空态文案。
+    rules = rules_for(market)
+    if not rules.has_minute_bars:
+        logger.info("sector_rotation: %s 无分钟K源, fail-closed", rules.market.value)
+        return {
+            "status": "no_data",
+            "reason": "no_minute_source",
+            "kind": kind,
+            "market": rules.market.value,
+        }
 
     data_dir: Path = repo.store.data_dir
     cache_key = (

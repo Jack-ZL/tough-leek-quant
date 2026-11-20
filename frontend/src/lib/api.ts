@@ -1002,6 +1002,13 @@ export interface MarketSnapshotRow {
 	market_cap?: number | null
 	float_market_cap?: number | null
 	consecutive_limit_ups?: number | null
+	/**
+	 * 行业分类 —— **仅港股快照下发** (恒生行业, 来自 `instruments_hk` 的东财 f100)。
+	 * A 股维表没有 industry 列, 行业分类走扩展数据表 `ext_hy_ths` (同花顺行业),
+	 * 所以这一列在 A 股快照里恒为 undefined。消费方按市场选维度源, 见
+	 * `lib/board-market-support.ts` 的 `BOARD_DIMENSION_SOURCE`。
+	 */
+	industry?: string | null
 
 	[key: string]: any
 }
@@ -3590,6 +3597,11 @@ export interface SectorRotation {
 	reason?: string
 	date?: string
 	kind?: 'concept' | 'industry'
+	/**
+	 * 仅在后端 fail-closed 时下发 (`reason: 'no_minute_source'`): 说明「这个市场
+	 * 没有分钟K源」是市场能力问题, 不是今天还没落盘 —— 两者给用户的指引不同。
+	 */
+	market?: Market
 	basis?: string
 	flow_field?: string | null
 	flow_available?: boolean
@@ -5193,13 +5205,20 @@ export const api = {
 				? `/api/screener/cached?ext_columns=${encodeURIComponent(extColumns)}`
 				: '/api/screener/cached',
 		),
-	marketSnapshot: () =>
-		request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
+	// 全市场轻量行情快照 (概念/行业板块页、维度成分股弹窗)。
+	// 🔴 market 是**必填**参数: 缺省值会让 `queryFn: api.marketSnapshot` 这种直接把
+	// 函数交给 react-query 的写法把 QueryFunctionContext 当 market 传进去 (静默变成
+	// 非法 market → 后端 400)。必填 + 无默认值让每个调用点都必须显式回答「哪个市场」。
+	marketSnapshot: (market: Market) =>
+		request<{ as_of: string | null; rows: MarketSnapshotRow[] }>(`/api/screener/market-snapshot?market=${market}`),
 	overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
 
-	// 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
-	rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>
-		request<RpsRotationData>(`/api/rps/rotation?days=${days}${kind ? `&kind=${kind}` : ''}${level ? `&level=${level}` : ''}`),
+	// 概念/行业涨幅轮动矩阵: 每列(日期)各自把所有维度成员按当天涨幅从高到低排序。
+	// 🔴 market **必填且无默认值** (同 marketSnapshot): 缺省值会让「忘了传市场」静默
+	// 变成按 A 股算, 港股页面渲染出 A 股概念矩阵 —— 那是串市场, 比报错难查得多。
+	// level 传 undefined 表示不拆层 (港股恒生行业是单层分类, 恒传 undefined)。
+	rpsRotation: (days: number, kind: 'concept' | 'industry', level: number | undefined, market: Market) =>
+		request<RpsRotationData>(`/api/rps/rotation?days=${days}&market=${market}&kind=${kind}${level ? `&level=${level}` : ''}`),
 
 	// 市场环境(Regime)
 	regimeHistory: (start?: string, end?: string, limit?: number) => {
@@ -5695,8 +5714,12 @@ export const api = {
 	},
 
 	// ===== 板块切换 (盘中轮动) =====
+	// 🔴 market 必填: 港股无分钟K源, 后端按 `HK_RULES.has_minute_bars` fail-closed
+	// 返回 `{status:'no_data', reason:'no_minute_source'}`; 不传市场会让港股态静默
+	// 拿到 A 股的分钟轮动 (串市场)。
 	sectorRotation: (params: {
 		kind: 'concept' | 'industry';
+		market: Market;
 		flow?: string;
 		top?: number;
 		bucket?: number;
@@ -5705,7 +5728,7 @@ export const api = {
 		excludeSectors?: string[];
 		sortBy?: 'activity' | 'score' | 'pct' | 'rank_change' | 'momentum' | 'flow'
 	}) => {
-		const query = new URLSearchParams({ kind: params.kind })
+		const query = new URLSearchParams({ kind: params.kind, market: params.market })
 		if (params.flow) query.set('flow', params.flow)
 		if (params.top != null) query.set('top', String(params.top))
 		if (params.bucket != null) query.set('bucket', String(params.bucket))
@@ -6494,8 +6517,13 @@ export const api = {
 		}
 	},
 
-	/** AI 概念轮动分析 — 流式 NDJSON。 */
-	async* rotationAnalyzeStream(days: number, focus?: string, kind?: 'concept' | 'industry', level?: number): AsyncGenerator<{
+	/**
+	 * AI 概念/行业轮动分析 — 流式 NDJSON。
+	 *
+	 * 🔴 market 必填: 无大盘背景源的市场 (港股) 后端会推一条 `{"type":"error"}`
+	 * 事件而不是 4xx —— 流已经回了 200, 抛异常前端只会看到断掉的空流。
+	 */
+	async* rotationAnalyzeStream(days: number, focus: string, kind: 'concept' | 'industry', level: number | undefined, market: Market): AsyncGenerator<{
 		type: 'meta' | 'delta' | 'error' | 'done' | 'ping'
 		days?: number
 		summary?: string
@@ -6505,7 +6533,7 @@ export const api = {
 		const res = await fetch('/api/rps/rotation-analyze', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ days, focus: focus ?? '', kind: kind ?? 'concept', level: level ?? null }),
+			body: JSON.stringify({ days, focus, kind, level: level ?? null, market }),
 		})
 		if (!res.ok) {
 			let detail = ''

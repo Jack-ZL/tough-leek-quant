@@ -89,8 +89,12 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
 	})
 
 	const marketQuery = useQuery({
-		queryKey: QK.marketSnapshot,
-		queryFn: api.marketSnapshot,
+		// 🔴 固定 CN, 不跟 `useMarket()`: 本弹窗的成分股来自**扩展数据表** (同花顺
+		// 概念/行业, A 股专有), 港股态下若去拉港股快照, A 股成分股一只都匹配不上,
+		// 弹窗会退化成「只有代码没有涨跌幅」。调用方 (选股器/涨停梯队/仪表盘) 也全是
+		// A 股功能。港股行业成分不走这个弹窗 (见 lib/board-market-support.ts)。
+		queryKey: QK.marketSnapshot('CN'),
+		queryFn: () => api.marketSnapshot('CN'),
 		enabled: (membersQuery.data?.rows.length ?? 0) > 0,
 		staleTime: 60_000,
 	})

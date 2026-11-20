@@ -11,15 +11,26 @@
 
 性能: 387 概念 × 30 天的 group_by + sort 是 polars 内存操作, 实测 <50ms;
 另加进程级结果缓存 (_CACHE_TTL=120s), 重复请求 <1ms。
+
+市场分派 (CONTRIBUTING §3.5「市场差异是数据不是控制流」):
+  - A 股: 概念/行业都来自扩展数据 (``ExtConfigStore``), 行业名是 "一级-二级-三级"
+    路径, 因此支持 ``level`` 拆层聚合。
+  - 港股: 只有**恒生行业**一个维度, 来自 ``instruments_hk`` 维表的 ``industry`` 列
+    (与行业板块页快照同源, 见 ``services/hk_enriched_read.py``); 概念**无数据源**,
+    fail-closed 返回空矩阵; 恒生行业是单层分类, ``level`` 无意义故忽略。
+  两个市场共用 ``_matrix_from_joined`` 产出**同构**矩阵, 前端不按市场分叉渲染。
 """
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import date, timedelta
+from pathlib import Path
 
 import polars as pl
 
+from app.market import Market
 from app.services.market_overview_builder import (
     _dimension_field,
     _dimension_values,
@@ -147,38 +158,203 @@ def _load_concept_map_df(repo, kind: str = "concept") -> tuple[pl.DataFrame, int
 
 
 # 维度映射缓存: {kind: (map_df, count)}。按 kind 隔离(概念/行业分别缓存)。
+# 🔴 港股行业用带市场前缀的键共用这张表: A 股用裸 kind ("concept"/"industry"),
+#    加前缀后两者不可能相撞, 而 ``invalidate_cache`` / 测试里的 ``_map_cache.clear()``
+#    一次就能清干净两个市场 —— 分两张表反而会漏清。
 _map_cache: dict[str, tuple[pl.DataFrame, int]] = {}
 _map_ts: dict[str, float] = {}
 
+_HK_MAP_KEY = f"{Market.HK.value}|industry"
 
-def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int | None = None) -> dict:
-    """构建维度涨幅轮动矩阵(概念或行业)。
+#: 港股轮动的暖机窗口 (自然日)。轮动只要 ``change_pct`` (1 根前收即可), 10 天足够
+#: 跨过长假; **不沿用**快照的 150 天 —— 那个宽度是 ``vol_ratio_5d`` 要与 A 股同口径
+#: 才需要的, 在这里白读 15 倍数据。
+_HK_ROTATION_WARMUP_DAYS = 10
 
-    Args:
-        repo: KlineRepository(含 _enriched_history_cache 内存历史)。
-        days: 取最近 N 个交易日, 范围 [7, 30], 默认 12。
-        kind: "concept"(概念) 或 "industry"(行业), 决定维度映射来源。
-        level: 行业层级(仅 kind=industry 有效, 1/2/3 级)。None 表示用原始全路径名。
-            行业名形如 "银行-银行-股份制银行", level=2 取第二段"银行", 同级下多个
-            三级会合并聚合(与 _dimension_rank 的 level 口径一致)。
 
-    Returns:
-        {
-          "dates": ["2026-06-30", ...],          # 最新在最前, 长度 ≤ days
-          "columns": {"2026-06-30": [[成员, 涨幅], ...], ...},  # 每列各自排序(高→低)
-          "concept_count": 387,                   # 去重维度成员总数(0 表示无数据)
-        }
-        涨幅是小数(0.0522 = +5.22%)。无数据时返回空 columns。
-        字段名 concept_count 保留兼容(前端按 kind 显示"X 个概念/行业")。
+def _load_hk_industry_map_df(data_dir: Path) -> tuple[pl.DataFrame, int]:
+    """构建并缓存港股 {symbol_upper → 恒生行业} 映射表。
+
+    与 ``market_snapshot._snapshot_hk`` 同一套判据: 读 ``instruments_hk`` 维表,
+    **排除人民币柜台** (同一公司两个柜台会把行业涨幅均值算重)。
+
+    返回 (map_df{_sym_up, industry}, 去重行业数); 维表缺失/无 industry 列时返回
+    空帧 + 0, 由调用方 fail-closed。
     """
-    days = max(7, min(30, days))
+    from app.services.kline_sync_hk import hk_enriched_instruments
 
-    # 结果缓存: 同 (kind, level, latest) 的请求在 TTL 内直接返回。
+    now = time.time()
+    cached = _map_cache.get(_HK_MAP_KEY)
+    if cached is not None and (now - _map_ts.get(_HK_MAP_KEY, 0)) < 600:
+        return cached
+
+    empty = pl.DataFrame(schema={"_sym_up": pl.Utf8, "industry": pl.Utf8})
+    inst = hk_enriched_instruments(data_dir)
+    if inst.is_empty() or not {"symbol", "industry"} <= set(inst.columns):
+        payload: tuple[pl.DataFrame, int] = (empty, 0)
+    else:
+        df = inst
+        if "is_cny_counter" in df.columns:
+            df = df.filter(~pl.col("is_cny_counter").fill_null(False))
+        df = (
+            df.select(
+                pl.col("symbol").cast(pl.Utf8).str.to_uppercase().alias("_sym_up"),
+                pl.col("industry").cast(pl.Utf8).alias("industry"),
+            )
+            .filter(
+                pl.col("_sym_up").is_not_null()
+                & (pl.col("_sym_up").str.strip_chars() != "")
+                & pl.col("industry").is_not_null()
+                & (pl.col("industry").str.strip_chars() != "")
+            )
+            .unique()
+        )
+        payload = (df if not df.is_empty() else empty, df["industry"].n_unique())
+
+    _map_cache[_HK_MAP_KEY] = payload
+    _map_ts[_HK_MAP_KEY] = now
+    return payload
+
+
+def _matrix_from_joined(
+    joined: pl.DataFrame,
+    *,
+    kind: str,
+    level: int | None,
+    member_count: int,
+    days: int,
+    cache_key: str,
+    now: float,
+) -> dict:
+    """把已展开的 (date, symbol→维度, change_pct) 帧聚合成轮动矩阵并写缓存。
+
+    A 股与港股**共用**这一段: 两个市场必须产出同排序、同字段名的矩阵, 否则前端
+    得按市场分叉渲染。市场差异只体现在喂进来的 ``joined`` 和 ``level`` 上。
+    """
+    # 行业层级聚合: kind=industry 且指定 level 时, 把 "一级行业-二级行业-三级行业"
+    # 拆分取对应层级(level=2 → "二级行业"), 同级下多个三级会合并。
+    # 与 market_overview_builder._dimension_rank 的 level 口径完全一致。
+    # 港股传 level=None (恒生行业单层, 无 "-" 可拆), 这段直接跳过。
+    if kind == "industry" and level is not None:
+        # polars: 按 "-" 拆分取第 level 段; 段数不足时取最后一段(兜底)
+        parts = pl.col(kind).str.split("-")
+        idx = pl.min_horizontal(pl.lit(level - 1), pl.col(kind).str.count_matches("-"))
+        joined = joined.with_columns(parts.list.get(idx).alias(kind))
+
+    # 按 (date, <kind>) 聚合 avg change_pct —— 与 _dimension_rank 的简单平均口径一致
+    agg = joined.group_by(["date", kind]).agg(
+        pl.col("change_pct").mean().alias("avg_pct")
+    )
+    # 去掉 NaN/Null(停牌等无行情的成员日)
+    agg = agg.filter(pl.col("avg_pct").is_not_null() & pl.col("avg_pct").is_not_nan())
+
+    # 每个日期内按 avg_pct 降序排, 再 group_by 把每组的 (成员, avg_pct)
+    # 收集成并行 list —— 一次 polars 操作拿到全部列, 避免 partition_by 的 tuple key 歧义
+    agg = agg.sort(["date", "avg_pct"], descending=[False, True])
+    grouped = agg.group_by("date", maintain_order=True).agg(
+        pl.col(kind), pl.col("avg_pct")
+    )
+    # 最新日期排最前
+    grouped = grouped.sort("date", descending=True)
+
+    columns: dict[str, list[list]] = {}
+    all_dates_sorted: list[str] = []
+    for row in grouped.iter_rows(named=True):
+        d_str = str(row["date"])
+        all_dates_sorted.append(d_str)
+        columns[d_str] = list(zip(row[kind], row["avg_pct"]))
+
+    full = {
+        "dates": all_dates_sorted,
+        "columns": columns,
+        "concept_count": member_count,
+    }
+
+    # 写缓存(存本次窗口的全量, 按需 slice; 覆盖天数一并记下)
+    _cache[cache_key] = full
+    _cache_ts[cache_key] = now
+    _cache_days[cache_key] = days
+
+    return _slice_cached(full, days)
+
+
+def _rotation_hk(repo, days: int, kind: str, level: int | None, market: Market) -> dict:
+    """港股轮动矩阵: 恒生行业 × 日均涨幅。
+
+    签名与 :func:`_rotation_cn` 同构 (``_ROTATION_BUILDERS`` 要求可互换)。
+
+    🔴 ``kind != "industry"`` **fail closed** 返回空矩阵: 港股没有概念板块数据源
+    (前端 ``BOARD_DIMENSION_SOURCE.concept.HK = null`` 是同一事实的另一面)。拿 A 股
+    概念成分去套港股代码是串市场拼接, 宁可返回空让前端落到「暂无数据」。
+
+    🔴 ``level`` 被忽略: 恒生行业是单层分类, ``industry`` 列没有 "一级-二级-三级"
+    路径可拆。传 1/2/3 得到同一份结果, 因此缓存键里把 level 固定写成 ``None``
+    (否则同一份矩阵会被存三遍)。
+    """
+    if kind != "industry":
+        logger.info("rps_rotation: %s 无 %s 数据源, 返回空矩阵 (fail-closed)", market.value, kind)
+        return {"dates": [], "columns": {}, "concept_count": 0}
+
+    from app.services.hk_enriched_read import hk_latest_enriched_date, read_hk_enriched
+
+    data_dir = repo.store.data_dir
+    latest = hk_latest_enriched_date(data_dir)
+    if latest is None:
+        return {"dates": [], "columns": {}, "concept_count": 0}
+
+    cache_key = f"{market.value}|industry|None|{latest.isoformat()}"
+    now = time.time()
+    cached = _cache.get(cache_key)
+    if (
+        cached
+        and _cache_days.get(cache_key, 0) >= days
+        and (now - _cache_ts.get(cache_key, 0)) < _CACHE_TTL
+    ):
+        return _slice_cached(cached, days)
+
+    map_df, member_count = _load_hk_industry_map_df(data_dir)
+    if map_df.is_empty():
+        logger.info("rps_rotation: %s 维表无行业分类, 返回空矩阵 (fail-closed)", market.value)
+        return {"dates": [], "columns": {}, "concept_count": 0}
+
+    start = latest - timedelta(days=days * 2 + 10)  # 日历天 ≈ 2/3 交易日, 多取余量
+    df = read_hk_enriched(
+        data_dir,
+        start=start,
+        end=latest,
+        needed={"change_pct"},
+        warmup_days=_HK_ROTATION_WARMUP_DAYS,
+    )
+    if df.is_empty():
+        return {"dates": [], "columns": {}, "concept_count": 0}
+
+    # inner join 顺带完成人民币柜台过滤: 柜台不在 map_df 里, 自然匹配不上。
+    joined = (
+        df.select("symbol", "date", "change_pct")
+        .with_columns(pl.col("symbol").str.to_uppercase().alias("_sym_up"))
+        .join(map_df, on="_sym_up", how="inner")
+        .drop("_sym_up")
+    )
+    if joined.is_empty():
+        return {"dates": [], "columns": {}, "concept_count": 0}
+
+    return _matrix_from_joined(
+        joined, kind="industry", level=None, member_count=member_count,
+        days=days, cache_key=cache_key, now=now,
+    )
+
+
+def _rotation_cn(repo, days: int, kind: str, level: int | None, market: Market) -> dict:
+    """A 股轮动矩阵: 概念/行业维度来自扩展数据 (``ExtConfigStore``)。
+
+    行业名是 "一级-二级-三级" 路径, 因此支持 ``level`` 拆层聚合。
+    """
+    # 结果缓存: 同 (market, kind, level, latest) 的请求在 TTL 内直接返回。
     latest = _latest_enriched_date(repo)
     if latest is None:
         return {"dates": [], "columns": {}, "concept_count": 0}
 
-    cache_key = f"{kind}|{level}|{latest.isoformat()}"
+    cache_key = f"{market.value}|{kind}|{level}|{latest.isoformat()}"
     now = time.time()
     cached = _cache.get(cache_key)
     if (
@@ -208,50 +384,71 @@ def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int |
     if joined.is_empty():
         return {"dates": [], "columns": {}, "concept_count": 0}
 
-    # 行业层级聚合: kind=industry 且指定 level 时, 把 "一级行业-二级行业-三级行业"
-    # 拆分取对应层级(level=2 → "二级行业"), 同级下多个三级会合并。
-    # 与 market_overview_builder._dimension_rank 的 level 口径完全一致。
-    if kind == "industry" and level is not None:
-        # polars: 按 "-" 拆分取第 level 段; 段数不足时取最后一段(兜底)
-        parts = pl.col(kind).str.split("-")
-        idx = pl.min_horizontal(pl.lit(level - 1), pl.col(kind).str.count_matches("-"))
-        joined = joined.with_columns(parts.list.get(idx).alias(kind))
-
-    # 4. 按 (date, <kind>) 聚合 avg change_pct —— 与 _dimension_rank 的简单平均口径一致
-    agg = joined.group_by(["date", kind]).agg(
-        pl.col("change_pct").mean().alias("avg_pct")
+    return _matrix_from_joined(
+        joined, kind=kind, level=level, member_count=member_count,
+        days=days, cache_key=cache_key, now=now,
     )
-    # 去掉 NaN/Null(停牌等无行情的成员日)
-    agg = agg.filter(pl.col("avg_pct").is_not_null() & pl.col("avg_pct").is_not_nan())
 
-    # 5. 每个日期内按 avg_pct 降序排, 再 group_by 把每组的 (成员, avg_pct)
-    #    收集成并行 list —— 一次 polars 操作拿到全部列, 避免 partition_by 的 tuple key 歧义
-    agg = agg.sort(["date", "avg_pct"], descending=[False, True])
-    grouped = agg.group_by("date", maintain_order=True).agg(
-        pl.col(kind), pl.col("avg_pct")
-    )
-    # 最新日期排最前
-    grouped = grouped.sort("date", descending=True)
 
-    columns: dict[str, list[list]] = {}
-    all_dates_sorted: list[str] = []
-    for row in grouped.iter_rows(named=True):
-        d_str = str(row["date"])
-        all_dates_sorted.append(d_str)
-        columns[d_str] = list(zip(row[kind], row["avg_pct"]))
+#: 市场 → 轮动矩阵读取器。**字典分派而不是 if market == ...**: 加第三个市场 = 往表里
+#: 加一行, 不用去调用链里找分支 (CONTRIBUTING §3.5, 由
+#: ``tests/test_market_architecture_guard.py`` 强制)。与
+#: ``services/market_snapshot._SNAPSHOT_BUILDERS`` 同构。
+_ROTATION_BUILDERS: dict[Market, Callable[..., dict]] = {
+    Market.CN: _rotation_cn,
+    Market.HK: _rotation_hk,
+}
 
-    full = {
-        "dates": [str(d) for d in all_dates_sorted],
-        "columns": columns,
-        "concept_count": member_count,
-    }
 
-    # 写缓存(存本次窗口的全量, 按需 slice; 覆盖天数一并记下)
-    _cache[cache_key] = full
-    _cache_ts[cache_key] = now
-    _cache_days[cache_key] = days
+def supported_markets() -> tuple[Market, ...]:
+    """已注册轮动读取器的市场 (供 API 层拼 400 文案, 不另维护一份清单)。"""
+    return tuple(_ROTATION_BUILDERS)
 
-    return _slice_cached(full, days)
+
+def build_rps_rotation(
+    repo,
+    days: int = 12,
+    kind: str = "concept",
+    level: int | None = None,
+    *,
+    market: Market = Market.CN,
+) -> dict:
+    """构建维度涨幅轮动矩阵(概念或行业), 按 market 分派到对应读取器。
+
+    Args:
+        repo: KlineRepository(含 _enriched_history_cache 内存历史)。
+        days: 取最近 N 个交易日, 范围 [7, 30], 默认 12。
+        kind: "concept"(概念) 或 "industry"(行业), 决定维度映射来源。
+        level: 行业层级(仅 kind=industry 有效, 1/2/3 级)。None 表示用原始全路径名。
+            行业名形如 "银行-银行-股份制银行", level=2 取第二段"银行", 同级下多个
+            三级会合并聚合(与 _dimension_rank 的 level 口径一致)。
+            🔴 港股忽略此参数(恒生行业是单层分类, 见 _rotation_hk)。
+        market: 市场。keyword-only —— 既有调用方(:mod:`app.services.concept_rotation_analyzer`)
+            按位置传前四个参数, 加默认值即可保持 A 股行为逐字节不变。
+
+    Returns:
+        {
+          "dates": ["2026-06-30", ...],          # 最新在最前, 长度 ≤ days
+          "columns": {"2026-06-30": [[成员, 涨幅], ...], ...},  # 每列各自排序(高→低)
+          "concept_count": 387,                   # 去重维度成员总数(0 表示无数据)
+        }
+        涨幅是小数(0.0522 = +5.22%)。无数据时返回空 columns。
+        字段名 concept_count 保留兼容(前端按 kind 显示"X 个概念/行业")。
+        🔴 两个市场返回**同构**结果, 前端不按市场分叉渲染。
+
+    Raises:
+        ValueError: market 未注册读取器。🔴 不兜底 CN —— 静默回退会让拼错的市场
+            参数变成「悄悄按 A 股算」, 与 :func:`app.market.parse_market` 同理。
+    """
+    days = max(7, min(30, days))
+
+    builder = _ROTATION_BUILDERS.get(market)
+    if builder is None:
+        raise ValueError(
+            f"未注册轮动读取器的市场: {market!r} "
+            f"(支持: {', '.join(m.value for m in supported_markets())})"
+        )
+    return builder(repo, days, kind, level, market)
 
 
 def _slice_cached(full: dict, days: int) -> dict:

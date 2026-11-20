@@ -134,6 +134,15 @@ class MarketTradingRules:
     #: 交易日探针的开盘缓冲窗: 此时刻之前行情戳仍停在上一交易日属正常
     #: (集合竞价未翻新), 不据此判休市。
     stale_buffer_until: dt_time
+    #: 是否有**全市场分钟K**落盘 (``data/kline_minute/date=X/part.parquet``)。
+    #: 分钟级板块轮动/盘中资金流的唯一数据源; False 的市场相关接口必须 fail-closed
+    #: 返回 ``no_minute_source``, 不得用日K插值出「看起来像分钟」的曲线。
+    has_minute_bars: bool
+    #: 是否有**大盘背景**数据源 (涨跌家数/两市成交额/涨停统计/北向), 即
+    #: ``services.market_overview_builder.build_market_overview`` 能否对该市场成立。
+    #: False 的市场, 依赖大盘背景的 AI 分析必须 fail-closed —— 拿 A 股背景去解释
+    #: 另一个市场的板块轮动, 会生成「通顺但事实错误」的结论 (CONTRIBUTING §4)。
+    has_market_overview: bool
     #: 交易日探针的一篮流动性票 (OR 语义: 任一戳为今日即交易日)。
     probe_basket: tuple[str, ...] = field(default=())
 
@@ -159,6 +168,10 @@ CN_RULES = MarketTradingRules(
     quote_delay_minutes=0,
     default_benchmark="000001.SH",
     stale_buffer_until=dt_time(9, 40),
+    # 全量分钟能力 (MinuteRefreshService) 盘中持续写 data/kline_minute/;
+    # 大盘背景 (涨跌家数/两市成交额/涨停统计/北向) 走 A 股行情与扩展表。
+    has_minute_bars=True,
+    has_market_overview=True,
     # 大盘蓝筹: 探 max(timestamp), 任一戳为今日即交易日。
     # 同日全部停牌 = 市场性事件, 与休市同处理无碍。
     probe_basket=("000001.SZ", "600519.SH", "600036.SH", "601318.SH", "000651.SZ"),
@@ -184,6 +197,14 @@ HK_RULES = MarketTradingRules(
     quote_delay_minutes=15,
     default_benchmark="HSI",
     stale_buffer_until=dt_time(9, 40),
+    # 🔴 两项都是 False, 且**不是「暂时没接」**:
+    #  - 分钟K: 港股只有日K同步 (kline_sync_hk), repository._DIRNAMES 里没有任何
+    #    分钟目录, data/kline_minute/ 是 A 股全量分钟能力的专属落盘。
+    #  - 大盘背景: build_market_overview 根本没有 market 参数, 内部走
+    #    ScreenerService 的 A 股 enriched 缓存, 且要算涨停统计 (港股无涨跌停)
+    #    与概念/行业榜 (A 股扩展表)。给它喂港股等于串市场拼接。
+    has_minute_bars=False,
+    has_market_overview=False,
     probe_basket=("00700.HK", "00005.HK", "01398.HK", "00388.HK", "09988.HK"),
 )
 

@@ -325,6 +325,11 @@ const NO_DATA_HINTS: Record<string, string> = {
 	minute_empty: '当日分钟数据为空',
 	members_missing: '板块成分数据缺失 — 请先在数据页获取概念/行业分类扩展数据',
 	no_member_bars: '当日分钟数据中没有板块成分股的行情',
+	// 🔴 与 minute_missing **必须分开**: 前者是「今天还没落盘, 等盘中同步」, 后者是
+	// 「这个市场根本没有分钟K源」(后端 HK_RULES.has_minute_bars=false)。合并成一条
+	// 会指引用户去开启一个不存在的能力。本卡片目前只在 A 股态渲染, 这条是给将来
+	// 别的市场复用时的兜底 —— 未知 reason 的默认文案同样会误导。
+	no_minute_source: '该市场没有分钟K数据源 — 板块切换依赖全市场分钟聚合, 暂不支持',
 }
 
 export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
@@ -396,9 +401,13 @@ export function SectorRotationCard({ kind }: { kind: 'concept' | 'industry' }) {
 		? ''
 		: `${rowsMode}|${autoRows}|${excludeNames === null ? 'default' : JSON.stringify(excludeNames)}`
 	const rotationQuery = useQuery({
-		queryKey: QK.sectorRotation(kind, flow, bucket, seriesKey, filterKey),
+		// 🔴 固定 CN, 不跟 `useMarket()`: 本卡片直读全市场**分钟K**聚合, 而港股没有
+		// 分钟K源 (后端 `HK_RULES.has_minute_bars = false`, 会 fail-closed 返回
+		// `reason: 'no_minute_source'`)。两个板块页在港股态都不渲染本卡片, 这里的 'CN'
+		// 是把「A 股专有」写成显式事实, 而不是留给调用方去猜。
+		queryKey: QK.sectorRotation(kind, 'CN', flow, bucket, seriesKey, filterKey),
 		queryFn: () => api.sectorRotation({
-			kind, flow: flow || undefined, bucket,
+			kind, market: 'CN', flow: flow || undefined, bucket,
 			seriesNames: seriesNames.length ? seriesNames : undefined,
 			autoRows: rowsMode === 'custom' ? undefined : autoRows,
 			excludeSectors: rowsMode === 'custom' || excludeNames === null ? undefined : excludeNames,

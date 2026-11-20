@@ -4,6 +4,14 @@
   - rps_rotation.build_rps_rotation: 概念涨幅排名矩阵 (N 日 × ~387 概念)
   - market_overview_builder.build_market_overview: 大盘背景 (指数/情绪/涨停)
 
+🔴 **需要大盘背景的市场能力** (``MarketTradingRules.has_market_overview``):
+``build_market_overview`` 的涨跌家数/成交额/涨停统计/北向全部来自 A 股数据源, 港股
+没有对应资产 (``HK_RULES.has_market_overview = False``)。给这类市场跑这条链会得到
+「港股行业轮动 + A 股大盘背景」的串市场拼接 —— 提示词里两者被当成同一个市场叙述,
+LLM 会据此得出「今日大盘缩量, 该行业逆势走强」这类**看起来通顺但事实错误**的结论。
+因此 :func:`analyze_rotation_stream` 入口按能力位 fail-closed (CONTRIBUTING §4)。
+轮动矩阵本身不依赖大盘背景, 港股走 ``GET /api/rps/rotation?market=HK`` 是可算的。
+
 架构 (复刻 market_recap):
   预计算轮动信号 → 拼装 prompt → stream_ai_text 流式调用 → NDJSON 协议输出
   协议事件: meta(摘要) / delta(文本片段) / error / done
@@ -15,7 +23,19 @@ import logging
 import math
 from collections.abc import AsyncIterator
 
+from app.market import Market, rules_for
+
 logger = logging.getLogger(__name__)
+
+#: 大盘背景缺失时的 fail-closed 文案模板, ``{label}`` 由 ``rules.label`` 填入 ——
+#: 市场名是**数据**, 不写死在文案里 (CONTRIBUTING §3.5)。模块级常量: 服务层与测试
+#: 引用同一份, 避免各写一遍后悄悄漂移。
+ANALYZE_UNSUPPORTED_NO_OVERVIEW = (
+    "{label}暂不支持 AI 轮动分析: 该分析必须结合大盘背景(涨跌家数/成交额/涨停统计), "
+    "而{label}没有对应的数据源。拿别的市场的背景去解释{label}轮动, 会生成"
+    "「读起来通顺但事实错误」的结论, 因此这里直接拒绝而不是降级。"
+    "{label}的轮动请直接查看「涨幅RPS轮动」矩阵。"
+)
 
 
 def _dim_label(kind: str) -> str:
@@ -320,6 +340,8 @@ async def analyze_rotation_stream(
     depth_service=None,
     kind: str = "concept",
     level: int | None = None,
+    *,
+    market: Market = Market.CN,
 ) -> AsyncIterator[str]:
     """流式维度轮动分析(概念或行业): yield 出每个 NDJSON 事件。
 
@@ -330,9 +352,27 @@ async def analyze_rotation_stream(
         quote_service / depth_service: 可选, 大盘背景装配依赖。
         kind: "concept"(概念) 或 "industry"(行业)。
         level: 行业层级(1/2/3), 仅 kind=industry 有效。
+        market: 市场。keyword-only —— 既有调用方按位置传前七个参数, 加默认值即可
+            保持 A 股行为逐字节不变。🔴 非 A 股直接 fail-closed。
     """
     from app.services.rps_rotation import build_rps_rotation
     from app.services.market_overview_builder import build_market_overview
+
+    # 🔴 fail closed: 判据是规则表的**能力位**而不是市场名比较 (CONTRIBUTING §3.5,
+    # 由 tests/test_market_architecture_guard.py 强制)。走协议自带的 error 事件而不是
+    # 抛 HTTPException —— 前端 rotationAnalyzeStream 是 NDJSON 生成器, error 事件能被
+    # 它如实渲染成一行提示; 流式端点已经回了 200, 此时抛 4xx 只会变成静默的空流。
+    rules = rules_for(market)
+    if not rules.has_market_overview:
+        logger.info("rotation analyze: %s 无大盘背景源, fail-closed", rules.market.value)
+        yield json.dumps(
+            {
+                "type": "error",
+                "message": ANALYZE_UNSUPPORTED_NO_OVERVIEW.format(label=rules.label),
+            },
+            ensure_ascii=False,
+        )
+        return
 
     dim = _dim_label(kind)
     page = "行业分析" if kind == "industry" else "概念分析"

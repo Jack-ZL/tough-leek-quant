@@ -303,8 +303,8 @@ export function ConceptAnalysis() {
 		!rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
 
 	const marketQuery = useQuery({
-		queryKey: QK.marketSnapshot,
-		queryFn: api.marketSnapshot,
+		queryKey: QK.marketSnapshot(market),
+		queryFn: () => api.marketSnapshot(market),
 		staleTime: 60_000,
 		enabled: boardReady,
 	})
@@ -405,7 +405,8 @@ export function ConceptAnalysis() {
 				subtitle={`${marketQuery.data?.as_of ?? rowsQuery.data?.date ?? '最新'} · ${stats.length} 个概念 · ${totalSymbols} 只标的`}
 				right={
 					<div className="flex items-center gap-1">
-						{/* RPS 轮动: 打开涨幅轮动矩阵对话框 */}
+						{/* RPS 轮动: 打开概念涨幅轮动矩阵对话框。market 必传 —— 港股态整页
+						    已在上面 noSourceCopy 分支返回, 走不到这里, 但对话框本身按市场分派。 */}
 						<button
 							onClick={() => setShowRps(true)}
 							className="inline-flex items-center gap-1 rounded-btn border border-amber-400/40 bg-amber-400/15 px-2.5 py-1.5 text-[11px] text-amber-400 font-medium transition-colors hover:bg-amber-400/25 hover:border-amber-400/60"
@@ -501,7 +502,7 @@ export function ConceptAnalysis() {
 			)}
 
 			<AnimatePresence>
-				{showRps && <RpsRotationDialog onClose={() => setShowRps(false)} />}
+				{showRps && <RpsRotationDialog onClose={() => setShowRps(false)} market={market} />}
 			</AnimatePresence>
 		</>
 	)

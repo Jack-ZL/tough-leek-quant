@@ -28,10 +28,10 @@ import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
-import { boardNoSourceCopy } from '@/lib/board-market-support'
+import { boardDimensionSource, boardNoSourceCopy } from '@/lib/board-market-support'
 import { marketContent } from '@/lib/marketContent'
 import { useMarket } from '@/lib/marketStore'
-import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
+import { groupsFromSnapshotField, resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
 
 const KEYWORDS = ['industry', '行业', 'sector', '申万', '中信']
@@ -296,11 +296,21 @@ function groupByIndustryLevel(groups: DimensionGroup[], level: IndustryLevel): D
 
 export function IndustryAnalysis() {
 	const market = useMarket()
-	// 无行业源的市场 (方案 §3.4): 整页只给空态文案, 不渲染 A 股行业。
-	// 🔴 提前算出来是为了**同时关掉下面三个查询** —— 港股态还去拉 A 股行业表/行情
-	// 快照既是白拉, 也让「不显示假数据」只停在渲染层。与 concept-analysis 同口径。
+	// 维度源按市场分派 (lib/board-market-support.ts): A 股走扩展数据表 (同花顺行业),
+	// 港股走行情快照自带的恒生行业列, 无源的市场整页只给空态文案。
+	// 🔴 提前算出来是为了**同时关掉不该发的查询** —— 港股态还去拉 A 股行业表既是白拉,
+	// 也让「不显示假数据」只停在渲染层; 反之 A 股态不该去拉港股快照。与 concept-analysis 同口径。
+	const dimensionSource = boardDimensionSource('industry', market)
 	const noSourceCopy = boardNoSourceCopy('industry', market)
-	const boardReady = noSourceCopy === null
+	const boardReady = dimensionSource !== null
+	/** 扩展数据通道 (A 股): 分类来自 ext_hy_ths 表, 有配置/一键拉取/层级选择。 */
+	const useExtData = dimensionSource?.kind === 'ext-data'
+	/** 快照通道 (港股): 分类随 market-snapshot 的 industry 列下发, 无扩展表可配。 */
+	const snapshotField = dimensionSource?.kind === 'snapshot-field' ? dimensionSource.field : null
+	/** 快照通道的分类人类名 (港股 = 恒生行业), 由维度源表给出, 页面不写死市场。 */
+	const snapshotLabel = dimensionSource?.kind === 'snapshot-field' ? dimensionSource.label : null
+	/** 市场人类名 (A股/港股) —— 空态文案里指路用, 同样不写死。 */
+	const marketLabel = marketContent(market).label
 	const [fieldConfig, setFieldConfig] = useState<AnalysisFieldConfig>(loadConfig)
 	const [showConfig, setShowConfig] = useState(false)
 	const [search, setSearch] = useState('')
@@ -316,7 +326,7 @@ export function IndustryAnalysis() {
 	}, [])
 	const [showRps, setShowRps] = useState(false)
 
-	const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList, enabled: boardReady })
+	const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList, enabled: useExtData })
 	const availableConfigs = configsQuery.data?.items ?? []
 	// 用户配置的 configId 可能已失效 (扩展数据被删除), 此时回退到自动选择,
 	// 避免用失效 ID 请求接口报错; 用户仍可点配置按钮重新选择。
@@ -328,7 +338,7 @@ export function IndustryAnalysis() {
 	const rowsQuery = useQuery({
 		queryKey: QK.extDataRows(activeConfigId, undefined, PAGE_LIMIT),
 		queryFn: () => api.extDataRows(activeConfigId, { limit: PAGE_LIMIT }),
-		enabled: boardReady && !!activeConfigId,
+		enabled: useExtData && !!activeConfigId,
 	})
 
 	// 内置行业预设 (ext_hy_ths) 无数据时的一键拉取: 走通用拉取端点
@@ -341,14 +351,14 @@ export function IndustryAnalysis() {
 			queryClient.invalidateQueries({ queryKey: QK.extDataRows(PRESET_INDUSTRY_ID, undefined, PAGE_LIMIT) })
 		},
 	})
-	// 是否处于「内置行业预设存在但无数据」状态 → 显示获取按钮
+	// 是否处于「内置行业预设存在但无数据」状态 → 显示获取按钮 (仅扩展数据通道)
 	const needsIndustryFetch =
-		!!activeConfig && activeConfig.id === PRESET_INDUSTRY_ID &&
+		useExtData && !!activeConfig && activeConfig.id === PRESET_INDUSTRY_ID &&
 		!rowsQuery.isLoading && (rowsQuery.data?.total ?? 0) === 0
 
 	const marketQuery = useQuery({
-		queryKey: QK.marketSnapshot,
-		queryFn: api.marketSnapshot,
+		queryKey: QK.marketSnapshot(market),
+		queryFn: () => api.marketSnapshot(market),
 		staleTime: 60_000,
 		enabled: boardReady,
 	})
@@ -360,7 +370,17 @@ export function IndustryAnalysis() {
 	)
 
 	const industryLevel = fieldConfig.hierarchyLevel ?? 2
-	const groups = useMemo(() => groupByIndustryLevel(resolved.groups, industryLevel), [resolved.groups, industryLevel])
+	// 快照通道: 分类列就在行情行上, 直接聚成分组 (港股 industry = 恒生行业)。
+	const snapshotGroups = useMemo(
+		() => (snapshotField ? groupsFromSnapshotField(marketQuery.data?.rows ?? [], snapshotField) : []),
+		[marketQuery.data?.rows, snapshotField],
+	)
+	// 🔴 层级拆分只对扩展数据通道有意义: 同花顺行业是「一级-二级-三级」拼接串, 按
+	// 层级取第 N 段; 恒生行业是**单层扁平**分类, 走同一套拆分会按 '-' 误切行业名。
+	const groups = useMemo(
+		() => (useExtData ? groupByIndustryLevel(resolved.groups, industryLevel) : snapshotGroups),
+		[useExtData, resolved.groups, industryLevel, snapshotGroups],
+	)
 
 	const stats = useMemo(() => {
 		return groups
@@ -426,17 +446,20 @@ export function IndustryAnalysis() {
 	if (noSourceCopy) {
 		return (
 			<div className="flex h-full flex-col">
-				<PageHeader title="行业板块" subtitle={marketContent(market).label} />
+				<PageHeader title="行业板块" subtitle={marketLabel} />
 				<EmptyState icon={Layers3} title={noSourceCopy.title} hint={noSourceCopy.hint} />
 			</div>
 		)
 	}
 
-	if (configsQuery.isLoading) {
+	// 🔴 这两个提前 return 只属于扩展数据通道: 港股态 configsQuery 根本没发,
+	// `activeConfig` 恒 undefined, 不加 `useExtData` 会把港股整页挡在「暂无行业数据 +
+	// 从同花顺获取」的引导上 —— 那是 A 股的出路, 港股没有同花顺行业表可拉。
+	if (useExtData && configsQuery.isLoading) {
 		return <div className="flex h-full items-center justify-center"><RefreshCw className="h-5 w-5 animate-spin text-muted" /></div>
 	}
 
-	if (!activeConfig) {
+	if (useExtData && !activeConfig) {
 		// 极端情况: 无任何行业配置。仍提供一键获取内置行业数据入口
 		return (
 			<>
@@ -465,7 +488,8 @@ export function IndustryAnalysis() {
 		)
 	}
 
-	const industryLevelLabel = `${industryLevel}级行业`
+	// A 股是同花顺 N 级行业 (拼接串按层级取段); 快照通道是单层扁平分类, 名字由维度源表给
+	const industryLevelLabel = useExtData ? `${industryLevel}级行业` : (snapshotLabel ?? '行业')
 
 	return (
 		<>
@@ -474,17 +498,24 @@ export function IndustryAnalysis() {
 				subtitle={`${industryLevelLabel} · ${marketQuery.data?.as_of ?? rowsQuery.data?.date ?? '最新'} · ${stats.length} 个行业 · ${totalSymbols} 只标的`}
 				right={
 					<div className="flex items-center gap-1">
-						{/* RPS 轮动: 打开行业涨幅轮动矩阵对话框 */}
-						<button
-							onClick={() => setShowRps(true)}
-							className="inline-flex items-center gap-1 rounded-btn border border-amber-400/40 bg-amber-400/15 px-2.5 py-1.5 text-[11px] text-amber-400 font-medium transition-colors hover:bg-amber-400/25 hover:border-amber-400/60"
-							title="行业涨幅轮动矩阵"
-						>
-							<Repeat className="h-3.5 w-3.5" />涨幅RPS轮动分析
-						</button>
+						{/* RPS 轮动: 打开行业涨幅轮动矩阵对话框。
+						    🔴 判据是 `boardReady` 而不是 `useExtData`: /api/rps/rotation 已按 market
+						    分派, 港股走恒生行业 (rps_rotation._rotation_hk), 是本地真数据。早先这里
+						    用 useExtData 把港股一起挡掉, 是因为当时后端还没有 market 分派 —— 现在
+						    挡着就等于「有数据却说没有」。层级选择器与 AI 分析区块由对话框自己按
+						    lib/board-market-support.ts 的 ROTATION_SUPPORT 表决定渲染与否。 */}
+						{boardReady && (
+							<button
+								onClick={() => setShowRps(true)}
+								className="inline-flex items-center gap-1 rounded-btn border border-amber-400/40 bg-amber-400/15 px-2.5 py-1.5 text-[11px] text-amber-400 font-medium transition-colors hover:bg-amber-400/25 hover:border-amber-400/60"
+								title="行业涨幅轮动矩阵"
+							>
+								<Repeat className="h-3.5 w-3.5" />涨幅RPS轮动分析
+							</button>
+						)}
 						<button
 							onClick={() => {
-								rowsQuery.refetch();
+								if (useExtData) rowsQuery.refetch();
 								marketQuery.refetch()
 							}}
 							disabled={rowsQuery.isFetching || marketQuery.isFetching}
@@ -493,16 +524,23 @@ export function IndustryAnalysis() {
 						>
 							<RefreshCw className={cn('h-4 w-4', (rowsQuery.isFetching || marketQuery.isFetching) && 'animate-spin')} />
 						</button>
-						<button onClick={() => setShowConfig(true)} className="p-1.5 text-muted hover:bg-surface hover:text-accent" title="配置数据源">
-							<Settings2 className="h-4 w-4" />
-						</button>
+						{/* 配置数据源配的是扩展数据表 (维度字段/层级); 快照通道没有可配项 */}
+						{useExtData && (
+							<button onClick={() => setShowConfig(true)} className="p-1.5 text-muted hover:bg-surface hover:text-accent" title="配置数据源">
+								<Settings2 className="h-4 w-4" />
+							</button>
+						)}
 					</div>
 				}
 			/>
 
 			<div className="min-h-full bg-[radial-gradient(circle_at_12%_0%,rgba(245,158,11,0.12),transparent_28%),radial-gradient(circle_at_85%_8%,rgba(244,63,94,0.08),transparent_28%)] px-6 py-5">
 				<div className="mx-auto max-w-[1440px] space-y-5">
-					<SectorRotationCard kind="industry" />
+					{/* 🔴 板块轮动矩阵港股态隐藏: 它直读全市场**分钟K**聚合, 而港股没有分钟K源
+					    (后端 `HK_RULES.has_minute_bars = false`, 请求会 fail-closed 返回
+					    `reason: 'no_minute_source'`)。这不是「后端还没接 market 分派」—— 分派已经
+					    有了, 缺的是数据源本身; 接上港股分钟K之前, 渲染出来只会是一张永久空态卡。 */}
+					{useExtData && <SectorRotationCard kind="industry" />}
 
 					<HeroPanel leading={leading[0]} falling={falling[0]} activeIndustry={activeIndustry} industryBreadth={industryBreadth} />
 
@@ -542,7 +580,7 @@ export function IndustryAnalysis() {
 							/>
 							<IndustryFocus stat={selected} activeSymbol={previewSymbol} onStockClick={handleStockClick} />
 						</div>
-					) : rowsQuery.isLoading ? (
+					) : (useExtData ? rowsQuery.isLoading : marketQuery.isLoading) ? (
 						<div className="rounded-2xl border border-border bg-surface px-6 py-16 text-center text-sm text-muted">正在计算行业强度...</div>
 					) : needsIndustryFetch ? (
 						<PresetFetchState
@@ -551,6 +589,18 @@ export function IndustryAnalysis() {
 							isLoading={fetchMutation.isPending}
 							error={fetchMutation.error}
 							onFetch={() => fetchMutation.mutate()}
+						/>
+					) : snapshotField ? (
+						// 🔴 快照通道的空态分两种, 不能都报「未匹配到行业数据」:
+						// 「还没同步」的出路是去同步, 「同步了但没分类」的出路是查维表,
+						// 混成一句会让用户反复点刷新 (那正是「暂无数据」式文案的毛病)。
+						// 市场名与分类名都取自数据 (marketContent / 维度源表), 不写死「港股」。
+						<EmptyState
+							icon={Layers3}
+							title={marketQuery.data?.as_of ? `${marketLabel}行情缺少行业分类` : `${marketLabel}行情尚未同步`}
+							hint={marketQuery.data?.as_of
+								? `已取到${marketLabel}行情，但 ${snapshotField}（${snapshotLabel}）列为空：标的维表可能还没同步，或上游行业字段整批缺失。请到「数据 → ${marketLabel}数据」点「同步维表」后重试。`
+								: `还没有${marketLabel}日K指标数据。请到「数据 → ${marketLabel}数据」先「同步维表」再同步日K；${snapshotLabel}随维表一起落库，本页无需额外配置数据源。`}
 						/>
 					) : (
 						<EmptyState icon={Layers3} title="未匹配到行业数据" hint={resolved.hint || '请检查扩展数据是否包含行业/板块相关字段'} />
@@ -579,7 +629,7 @@ export function IndustryAnalysis() {
 					}}
 				/>
 			)}
-			{showRps && <RpsRotationDialog onClose={() => setShowRps(false)} kind="industry" />}
+			{showRps && <RpsRotationDialog onClose={() => setShowRps(false)} kind="industry" market={market} />}
 		</>
 	)
 }

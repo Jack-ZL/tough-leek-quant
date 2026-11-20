@@ -6,6 +6,8 @@ import { api, friendlyStreamError } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct } from '@/lib/format'
+import { type Market } from '@/lib/market'
+import { rotationSupport } from '@/lib/board-market-support'
 import { MarkdownRenderer } from '@/components/financials/MarkdownRenderer'
 import { Modal } from '@/components/Modal'
 
@@ -13,6 +15,11 @@ interface Props {
 	onClose: () => void
 	/** 维度: concept 概念(默认) / industry 行业 */
 	kind?: 'concept' | 'industry'
+	/**
+	 * 🔴 必填: 轮动矩阵与 AI 分析都按市场分派。缺省值会让港股态静默请求 A 股矩阵
+	 * (串市场), 而 `lib/market.ts` 头注明确禁止用展示层兜底去构造查询参数。
+	 */
+	market: Market
 }
 
 const DEFAULT_DAYS = 12
@@ -47,14 +54,18 @@ function rankColorClass(rank: number, total: number): string {
 	return 'text-accent'
 }
 
-export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
+export function RpsRotationDialog({ onClose, kind = 'concept', market }: Props) {
 	// 维度文案: concept→概念, industry→行业
 	const dimLabel = kind === 'industry' ? '行业' : '概念'
+	// 控件与文案按市场取表 (lib/board-market-support.ts): 层级选择器 / AI 分析区块
+	// 是否渲染都是**数据**, 组件里不写 `market === 'HK'`。
+	const support = rotationSupport(market)
 	const [days, setDays] = useState(DEFAULT_DAYS)
 	const [reversed, setReversed] = useState(false)        // false=高→低, true=低→高
 	const [selected, setSelected] = useState<string | null>(null)  // 点中的成员名, 高亮追踪
-	// 行业层级(仅 industry): 1/2/3 级, 默认 2 级。concept 时为 null 不生效。
-	const [level, setLevel] = useState<number>(kind === 'industry' ? 2 : 0)
+	// 行业层级(仅 industry 且该市场行业名分层): 1/2/3 级, 默认 2 级。其余情况为 0 不生效。
+	const showLevels = kind === 'industry' && support.industryLevels
+	const [level, setLevel] = useState<number>(showLevels ? 2 : 0)
 
 	// ---- AI 轮动分析状态 (组件内, 不建全局 store: 切页即关对话框) ----
 	const [analysis, setAnalysis] = useState('')            // 累积的 Markdown 报告
@@ -69,8 +80,8 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 		setAnalysisError('')
 		setAnalysisMeta(null)
 		try {
-			const lv = kind === 'industry' ? level : undefined
-			for await (const ev of api.rotationAnalyzeStream(daysParam, focusParam, kind, lv)) {
+			const lv = showLevels ? level : undefined
+			for await (const ev of api.rotationAnalyzeStream(daysParam, focusParam, kind, lv, market)) {
 				if (ev.type === 'meta') setAnalysisMeta({ summary: ev.summary })
 				else if (ev.type === 'delta') setAnalysis(a => a + (ev.content ?? ''))
 				else if (ev.type === 'error') setAnalysisError(ev.message ?? '未知错误')
@@ -81,13 +92,13 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 		} finally {
 			setAnalyzing(false)
 		}
-	}, [kind, level])
+	}, [kind, level, market, showLevels])
 
-	// 数据请求: React Query 缓存, 同 (kind, level, days) 5 分钟内重开秒开
-	const lvParam = kind === 'industry' ? level : undefined
+	// 数据请求: React Query 缓存, 同 (market, kind, level, days) 5 分钟内重开秒开
+	const lvParam = showLevels ? level : undefined
 	const { data, isLoading, error } = useQuery({
-		queryKey: [...QK.rpsRotation(days), kind, lvParam],
-		queryFn: () => api.rpsRotation(days, kind, lvParam),
+		queryKey: [...QK.rpsRotation(days, market), kind, lvParam],
+		queryFn: () => api.rpsRotation(days, kind, lvParam, market),
 		staleTime: 5 * 60 * 1000,
 	})
 
@@ -221,8 +232,9 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 					<span className="text-[11px] text-muted">
 						{conceptCount > 0 ? `${dates.length} 天 · ${conceptCount} 个${dimLabel}` : '暂无数据'}
 					</span>
-					{/* 行业层级选择器: 1/2/3 级, 默认 2 级。仅 kind=industry 显示 */}
-					{kind === 'industry' && (
+					{/* 行业层级选择器: 1/2/3 级, 默认 2 级。仅「行业维度 + 该市场行业名分层」时显示
+					    (恒生行业是单层分类, 无 "-" 可拆 → 表里 industryLevels=false) */}
+					{showLevels && (
 						<div className="ml-1 flex items-center rounded-btn border border-border bg-base/60 p-0.5">
 							{[1, 2, 3].map(lv => (
 								<button
@@ -247,7 +259,10 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 				</button>
 			</div>
 
-			{/* 上半区: AI 轮动分析 */}
+			{/* 上半区: AI 轮动分析。无大盘背景源的市场 (表里 aiAnalysis=false) 只渲染一条
+			    说明, 不渲染「生成分析」按钮 —— 后端同样会 fail-closed 推 error 事件, 但把
+			    点不动的按钮摆在那里让用户点了再报错, 不如一开始就把原因说清楚 (§4)。 */}
+			{support.aiAnalysis ? (
 			<div className="shrink-0 border-b border-border flex flex-col max-h-[42%]">
 				{/* 标题栏: 标题 + meta 摘要 + focus 输入 + 触发按钮 */}
 				<div className="flex items-center gap-2 px-4 py-1.5 bg-elevated/30 shrink-0">
@@ -304,11 +319,19 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 						</div>
 					) : (
 						<div className="px-4 py-4 text-center text-[11px] text-muted/60">
-							点击「生成分析」,AI 将从主线研判 / 新晋强势 / 退潮预警 / 机构vs游资 等角度分析最近 {days} 天的概念轮动
+							点击「生成分析」,AI 将从主线研判 / 新晋强势 / 退潮预警 / 机构vs游资 等角度分析最近 {days} 天的{dimLabel}轮动
 						</div>
 					)}
 				</div>
 			</div>
+			) : (
+				<div className="shrink-0 border-b border-border px-4 py-2.5">
+					<div className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+						<AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px text-muted/70" />
+						<span>{support.aiAnalysisHint}</span>
+					</div>
+				</div>
+			)}
 
 			{/* 工具栏 */}
 			<div className="flex items-center gap-3 px-4 py-2 border-b border-border shrink-0">
@@ -359,8 +382,8 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 						加载失败,请稍后重试
 					</div>
 				) : rowCount === 0 ? (
-					<div className="flex items-center justify-center py-16 text-[11px] text-muted">
-						暂无{dimLabel}数据,请先在「{kind === 'industry' ? '行业板块' : '概念板块'}」页配置并获取{dimLabel}数据源
+					<div className="flex items-center justify-center px-6 py-16 text-center text-[11px] leading-relaxed text-muted">
+						{support.emptyHint(dimLabel)}
 					</div>
 				) : (
 					<div

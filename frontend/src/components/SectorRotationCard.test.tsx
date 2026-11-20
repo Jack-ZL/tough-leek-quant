@@ -386,3 +386,68 @@ it('切换图: 易主标注走 markPoint, 颜色与走势线同源, 强弱用圆
   expect(intensity.data[idx - 1]).toBeNull()
   expect(typeof intensity.data[idx]).toBe('number')
 })
+
+// ===== 市场归属与空态文案 =====
+
+/**
+ * 空态渲染不会触发 chart.setOption, 所以不能复用 renderCard 的 waitFor。
+ */
+async function renderCardRaw(data: unknown) {
+  apiMock.sectorRotation.mockResolvedValue(data)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  await act(async () => {
+    root!.render(
+      <QueryClientProvider client={client}>
+        <SectorRotationCard kind="industry" />
+      </QueryClientProvider>,
+    )
+  })
+  await vi.waitFor(() => {
+    expect(apiMock.sectorRotation).toHaveBeenCalled()
+  }, { timeout: 3000 })
+  return client
+}
+
+it('🔴 请求写死 market=CN: 本卡片直读全市场分钟K, 港股没有这个源', async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  const client = await renderCardRaw(payload())
+  expect(apiMock.sectorRotation.mock.calls[0][0]).toMatchObject({ kind: 'industry', market: 'CN' })
+  // query key 里也要有 market: 将来别的市场复用本卡片时, 不会命中 A 股的缓存
+  const rotation = client.getQueryCache().getAll().find(q => q.queryKey[0] === 'sector-rotation')
+  expect(rotation?.queryKey).toContain('CN')
+})
+
+it('🔴 no_minute_source 有自己的文案, 不落到「请先开启全量分钟能力」的默认兜底', async () => {
+  // 后端对无分钟K源的市场 fail-closed 返回这个 reason。默认兜底那句会指引用户
+  // 去开启一个该市场根本不存在的能力 —— 属于「给了假出路」, 比不给更糟。
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  await renderCardRaw({ status: 'no_data', reason: 'no_minute_source', kind: 'industry', market: 'HK' })
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain('该市场没有分钟K数据源')
+  }, { timeout: 3000 })
+  expect(host.textContent).not.toContain('请先开启全量分钟能力')
+})
+
+it('🔴 minute_missing 是整卡隐藏, no_minute_source 是显式文案 —— 两者语义不同不许合并', async () => {
+  // minute_missing = 「有这个能力, 今天还没落盘」→ 整卡隐藏 (空态占位白占首屏, 盘中自然会有);
+  // no_minute_source = 「这个市场根本没有分钟K源」→ 必须明说, 否则用户以为功能坏了。
+  // 把后者并进前者的隐藏分支, 就等于把「不支持」静默成「暂时没有」。
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  await renderCardRaw({ status: 'no_data', reason: 'minute_missing', kind: 'industry' })
+  await vi.waitFor(() => {
+    expect(apiMock.sectorRotation).toHaveBeenCalled()
+  }, { timeout: 3000 })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  expect(host.textContent).toBe('')
+})
+
+it('未知 reason 才落到默认兜底 (兜底本身没被删掉)', async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  await renderCardRaw({ status: 'no_data', reason: 'something_new', kind: 'industry' })
+  await vi.waitFor(() => {
+    expect(host.textContent).toContain('暂无板块切换数据')
+  }, { timeout: 3000 })
+})

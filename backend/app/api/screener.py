@@ -11,14 +11,16 @@ import re
 import time
 from dataclasses import asdict, replace
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.config import settings
 from app.db_safe import quote_ident
+from app.market import Market, parse_market
 from app.services import screener_work, strategy_cache, strategy_pool, strategy_run_queue
+from app.services.market_snapshot import build_market_snapshot, supported_markets
 from app.services.screener import ScreenerService
 from app.services.shared_work import WorkBusyError
 from app.strategy import config as strategy_config
@@ -765,38 +767,29 @@ def get_cached_result(
 
 
 @router.get("/market-snapshot")
-def market_snapshot(request: Request):
-    """最新全市场轻量行情快照，供板块/概念聚合分析使用。"""
-    import polars as pl
+def market_snapshot(
+    request: Request,
+    # 🔴 用 Annotated 而不是 `market: str | None = Query(None)`: 后者的**默认值是
+    # Query 对象本身**, 直接调用端点函数(本仓库测试的既有做法)时 `market is None`
+    # 恒假 → parse_market 认不出 → 一律 400 (同 api/kline.py:search_instruments)。
+    market: Annotated[str | None, Query(description="市场 (CN/HK); 缺省 CN")] = None,
+):
+    """最新全市场轻量行情快照，供板块/概念聚合分析使用。
 
-    repo = request.app.state.repo
-    svc = ScreenerService(repo)
-    as_of = svc.latest_date()
-    if not as_of:
-        return {"as_of": None, "rows": []}
+    ``market`` 缺省 CN (既有调用方不传参, 行为逐字不变)。🔴 传了**非法**值返回 400
+    而不是静默回退 CN —— 静默回退会让用户以为看的是港股。各市场读**各自的 enriched
+    目录**, 不合并 (港股不进 unified 视图, 见 services/market_snapshot.py 模块注释)。
 
-    df = svc._load_enriched_for_date(as_of)
-    if df.is_empty():
-        return {"as_of": str(as_of), "rows": []}
-
-    if "close" in df.columns and "total_shares" in df.columns and "market_cap" not in df.columns:
-        df = df.with_columns((pl.col("close") * pl.col("total_shares")).alias("market_cap"))
-    if "close" in df.columns and "float_shares" in df.columns and "float_market_cap" not in df.columns:
-        df = df.with_columns((pl.col("close") * pl.col("float_shares")).alias("float_market_cap"))
-
-    cols = [
-        "symbol", "name", "close", "change_pct", "amount", "volume",
-        "turnover_rate", "vol_ratio_5d", "total_shares", "float_shares",
-        "market_cap", "float_market_cap", "consecutive_limit_ups",
-    ]
-    df = df.select([c for c in cols if c in df.columns])
-    rows = df.to_dicts()
-    for r in rows:
-        for k, v in list(r.items()):
-            if isinstance(v, float) and not math.isfinite(v):
-                r[k] = None
-
-    return {"as_of": str(as_of), "rows": rows}
+    港股额外带 ``industry`` 列 (恒生行业): A 股行业分类走扩展数据表, 港股没有对应的
+    扩展表, 分类只能随快照下发, 前端按市场选维度源。
+    """
+    resolved = Market.CN if market is None else parse_market(market)
+    if resolved is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知 market {market!r} (支持: {', '.join(m.value for m in supported_markets())})",
+        )
+    return build_market_snapshot(request.app.state.repo, resolved)
 
 
 def _run_all_progressive(
