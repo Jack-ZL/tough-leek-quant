@@ -413,7 +413,8 @@ def test_sync_daily_rejects_empty_symbols_list(env):
 
 
 def _stub_hk_daily_chain(monkeypatch, *, daily=0, adj=(0, []), adj_failed=(),
-                         enriched=0, enriched_uncovered=()):
+                         enriched=0, enriched_uncovered=(), halt_filtered=0,
+                         empty_symbols=()):
     """把 ``/sync_daily`` 的三个阶段 (日K → 复权因子 → enriched) 全换成假实现。
 
     返回 ``{"daily": [...], "adj": [...], "enriched": [...]}``: 每个列表**长度即调用
@@ -423,6 +424,8 @@ def _stub_hk_daily_chain(monkeypatch, *, daily=0, adj=(0, []), adj_failed=(),
     不挡的话它会真去读 ``kline_hk_daily``, 在空库上提前返回, 断言就看不出次序了。
     ``adj_failed`` / ``enriched_uncovered`` 非空时灌进路由传入的 ``failed_out`` /
     ``uncovered_out``, 用来触发两道 fail-closed 闸门。
+    ``halt_filtered`` / ``empty_symbols`` 灌进 ``drop_report`` —— 钉住「零成交日被
+    filter_halt_days 剔除」这件事**必须回报**, 否则 15.6% 的 symbol-day 静默消失。
     """
     caps: dict[str, list] = {"daily": [], "adj": [], "enriched": []}
 
@@ -438,6 +441,10 @@ def _stub_hk_daily_chain(monkeypatch, *, daily=0, adj=(0, []), adj_failed=(),
         out = kw.get("uncovered_out")
         if out is not None:
             out.extend(enriched_uncovered)
+        rep = kw.get("drop_report")
+        if rep is not None:
+            rep.halt_filtered_rows = halt_filtered
+            rep.empty_symbols = sorted(empty_symbols)
         return enriched
 
     monkeypatch.setattr(
@@ -451,9 +458,14 @@ def _stub_hk_daily_chain(monkeypatch, *, daily=0, adj=(0, []), adj_failed=(),
 
 #: ``/sync_daily`` 响应里与「复权因子/enriched 闸门」相关的默认字段。
 #: 抽出来是因为四个测试都要断言完整响应字典 (防止悄悄少回报一个字段)。
+#: 🔴 港股测试可改 (CONTRIBUTING §9): 新增的两个字段是本次「零成交日静默剔除」修复的
+#: 回报出口 —— ``enriched_halt_filtered_rows`` 是被 filter_halt_days 滤掉的行数,
+#: ``enriched_empty_symbols`` 是整段历史零成交 ⇒ enriched 0 行的标的。它们**在**
+#: coverage.json 的 covered 里, 不会出现在 enriched_uncovered, 不回报就是第二类静默。
 _IDLE_CHAIN_FIELDS = {
     "adj_factor_rows": 0, "adj_factor_failed": [],
     "enriched_skipped": None, "enriched_uncovered": [],
+    "enriched_halt_filtered_rows": 0, "enriched_empty_symbols": [],
 }
 
 
@@ -718,7 +730,38 @@ def test_sync_daily_reports_enriched_uncovered(env, monkeypatch, tmp_path):
         "symbols": 1, "rows_written": 5, "enriched_rows": 0,
         "adj_factor_rows": 0, "adj_factor_failed": [], "enriched_skipped": None,
         "enriched_uncovered": ["00700.HK"],
+        # 港股测试可改 (CONTRIBUTING §9): 本次新增的两个回报字段, 未触发时为默认值。
+        "enriched_halt_filtered_rows": 0, "enriched_empty_symbols": [],
     }
+
+
+def test_sync_daily_reports_halt_filtered_rows_and_empty_symbols(env, monkeypatch, tmp_path):
+    """🔴 ``/sync_daily`` 必须回报被 ``filter_halt_days`` 剔除的零成交日规模。
+
+    港股日K没有 amount 列, 零成交日的 open/high 又是非 0 的平移价, 主判据抓不到 ——
+    实测 233,704 行日K 里 36,445 行 (15.6%) 因此不进 enriched, 其中 17 只整段历史
+    零成交 ⇒ **0 行**。剔除本身正确 (无成交即无价格发现), 但这 17 只在
+    ``coverage.json`` 的 covered 里, 不会出现在 ``enriched_uncovered`` —— 不回报
+    就是第二类静默, 调用方只看到 ``enriched_rows`` 偏少而无从归因。
+    """
+    client, _, _ = env
+    _seed_dim(tmp_path, [_dim("00700.HK", "腾讯控股")])
+    seen = {}
+
+    async def fake_submit(repo, quote_service, make_run):
+        seen["run"] = make_run(lambda *a, **k: None)
+        return {"job_id": "hkd2", "reused": False}
+
+    monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
+    _stub_hk_daily_chain(
+        monkeypatch, daily=5, enriched=3, halt_filtered=2,
+        empty_symbols=("02916.HK", "04332.HK"),
+    )
+    assert client.post("/api/hk/sync_daily", json={}).status_code == 200
+    result = seen["run"]()
+    assert result["enriched_halt_filtered_rows"] == 2
+    assert result["enriched_empty_symbols"] == ["02916.HK", "04332.HK"]
+    assert result["enriched_rows"] == 3
 
 
 def test_sync_enriched_days_maps_to_start(env, monkeypatch):

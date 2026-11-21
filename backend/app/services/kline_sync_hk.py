@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
@@ -497,6 +498,30 @@ def sync_hk_adj_factor(
     return added, sorted(set(changed))
 
 
+@dataclass
+class HkEnrichedDropReport:
+    """:func:`sync_hk_enriched` 里被 :func:`filter_halt_days` 剔除的规模 (累加器)。
+
+    🔴 **存在的理由是「剔除本身正确但完全静默」**: 港股日K没有成交额列, 零成交日的
+    OHLC 是前收盘价的平移 (``open==high==low==close`` 且非 0), 故只被
+    ``(volume==0) & (amount==0)`` 这条判据命中。剔除是对的 —— 无成交即无价格发现,
+    留着会把 MA/ATR 压平 —— 但调用方只看到 ``enriched_rows`` 偏少, 分不清是
+    「本来没数据」「被复权因子闸门拒算」还是「被停牌判据滤掉」。
+
+    实测规模 (2026-11-21, 2838 只 / 233,704 行日K): 剔除 36,445 行 (15.6%),
+    与日K里 ``volume==0`` 的行数**逐一相等**; 其中 17 只每一天都零成交 ⇒ enriched
+    0 行, 且它们**在** ``coverage.json`` 的 covered 里, 不会出现在 ``uncovered_out``。
+
+    - ``halt_filtered_rows`` —— 被剔除的行数 (``raw.height - enriched.height``;
+      ``compute_enriched`` 里唯一减行的步骤就是 ``filter_halt_days``, 前复权用
+      ``join_asof(backward)`` 不减行, 已用全表行数恒等式验证)。
+    - ``empty_symbols`` —— 有原始日K但 enriched **0 行**的标的 (整段历史都零成交)。
+    """
+
+    halt_filtered_rows: int = 0
+    empty_symbols: list[str] = field(default_factory=list)
+
+
 def sync_hk_enriched(
     repo,
     *,
@@ -506,6 +531,7 @@ def sync_hk_enriched(
     on_progress=None,
     require_adj_factor: bool = True,
     uncovered_out: list[str] | None = None,
+    drop_report: HkEnrichedDropReport | None = None,
 ) -> int:
     """从已落库的港股**原始**日K重算 enriched → ``kline_hk_enriched/``。返回写入行数。
 
@@ -549,6 +575,12 @@ def sync_hk_enriched(
        但某些标的 ``uncovered`` → **只拒算这些标的**, 其余照常, 被拒的写进
        ``uncovered_out``。闸门 ② 补的是闸门 ① 的洞: 逐批 merge 且失败不回滚, 部分
        失败时库照样非空, 缺因子的标的会被 ``fill_null(1.0)`` 当成「从无分红」。
+
+    🔴 **第三类减量不是闸门而是判据**: 过了两道闸门的行仍可能被
+    :func:`filter_halt_days` 剔除 (零成交日无价格发现, 留着会把 MA/ATR 压平)。
+    剔除正确但**必须回报**, 故有 ``drop_report``: 传入 :class:`HkEnrichedDropReport`
+    即回填被剔除的行数与「整段历史零成交 ⇒ enriched 0 行」的标的。不传也会
+    ``logger.info`` 汇总, 两个调用方 (HTTP 端点 / 调度管道) 共用这一条出口。
     """
     from app.indicators.pipeline import compute_enriched
     from app.parquet import scan_daily_parquet
@@ -636,6 +668,8 @@ def sync_hk_enriched(
     step = max(1, min(batch_size or HK_ENRICHED_BATCH_SIZE, HK_ENRICHED_BATCH_SIZE))
     batches = [selected[i:i + step] for i in range(0, len(selected), step)]
     written = 0
+    halt_rows = 0
+    empty_symbols: list[str] = []
     for done, batch in enumerate(batches, start=1):
         raw = raw_scan.filter(pl.col("symbol").is_in(batch)).sort(["symbol", "date"]).collect(
             engine="streaming"
@@ -656,6 +690,19 @@ def sync_hk_enriched(
                 historical_shares=None,
                 market=Market.HK,
             )
+            # compute_enriched 里**唯一**减行的步骤是 filter_halt_days (前复权走
+            # join_asof(backward) 不减行), 故差值即被剔除的零成交日行数 —— 已用全表
+            # 恒等式验证: 日K 233,704 行 − 零成交 36,445 行 == enriched 197,259 行。
+            # 🔴 剔除本身正确 (无成交即无价格发现, 留着会把 MA/ATR 压平), 但**必须回报**:
+            # 港股零成交日的 OHLC 是前收盘价平移 (open==high==low==close 且非 0), 只被
+            # (volume==0)&(amount==0) 那条判据命中, 而港股日K没有 amount 列。不回报的话
+            # 调用方只看到 enriched_rows 偏少, 分不清是「没数据」还是「被滤掉」。
+            if enriched.height < raw.height:
+                halt_rows += raw.height - enriched.height
+                kept = set(enriched["symbol"].unique().to_list())
+                empty_symbols.extend(
+                    s for s in raw["symbol"].unique().to_list() if s not in kept
+                )
             # 计算用完整历史 (预热 + 连板递推), 发布只取 start 起的行 —— 与 A 股一致。
             output = enriched if start is None else enriched.filter(pl.col("date") >= start)
             if not output.is_empty():
@@ -666,6 +713,16 @@ def sync_hk_enriched(
 
     if written:
         repo.rebuild_views()
+    if drop_report is not None:
+        drop_report.halt_filtered_rows = halt_rows
+        drop_report.empty_symbols = sorted(empty_symbols)
+    if halt_rows:
+        shown = ", ".join(sorted(empty_symbols)[:20]) + ("…" if len(empty_symbols) > 20 else "")
+        logger.info(
+            "港股 enriched: filter_halt_days 剔除 %d 行零成交日 (%d 个标的整段历史"
+            "零成交 ⇒ enriched 0 行%s)",
+            halt_rows, len(empty_symbols), f": {shown}" if shown else "",
+        )
     logger.info(
         "港股 enriched 重算完成: %d 标的 / 写入 %d 行 (start=%s)",
         len(selected), written, start or "全量",
@@ -680,6 +737,7 @@ __all__ = [
     "HK_ENRICHED_BATCH_SIZE",
     "HK_KLINE_BEG_DEFAULT",
     "HkAdjCoverage",
+    "HkEnrichedDropReport",
     "hk_adj_coverage_path",
     "hk_adj_factor_path",
     "hk_daily_universe",

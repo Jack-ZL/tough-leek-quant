@@ -635,3 +635,44 @@ def test_enriched_progress_reports_empty_batches(tmp_path):
     )
     assert n == 6, "只有 00700.HK 有数据"
     assert calls == [(1, 3), (2, 3), (3, 3)], f"进度必须走满 3 批, 实得 {calls}"
+
+
+def test_enriched_reports_halt_filtered_rows_and_empty_symbols(tmp_path):
+    """🔴 零成交日被 ``filter_halt_days`` 剔除是**正确**的 (无成交即无价格发现, 留着
+    会把 MA/ATR 压平), 但**必须回报** —— 本用例钉的就是这个回报出口。
+
+    为什么港股特别容易踩: 日K没有 amount 列 (腾讯 ifzq 的 kline 端点不返回成交额),
+    落盘后 ``scan_daily_parquet`` 按 ``DAILY_STORAGE_SCHEMA`` 补出一列**全 null** 的
+    amount; 而零成交日的 open/high 非 0 (数据源给的是前收盘价平移), 主判据
+    ``(open==0)&(high==0)`` 抓不到, 只剩 ``(volume==0)&(amount==0)`` 这一条。
+    实测 2838 只 / 233,704 行日K 里有 36,445 行 (15.6%) 因此消失, 其中 17 只
+    **整段历史**零成交 ⇒ enriched 0 行 —— 而它们在 ``coverage.json`` 的 covered 里,
+    不会出现在 ``uncovered_out``。不回报就是两类静默。
+    """
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_hk_instruments(tmp_path, "00700.HK", float_shares=200_000_000)
+    _seed_hk_daily(repo, "00700.HK", days=30, volume=1_000_000)
+    # 整段历史零成交。注意 _seed_hk_daily 写的 amount 不会落盘 (DAILY_STORAGE_COLS
+    # 不含该列), 回读时由 scan_daily_parquet 补成 null —— 正是真实港股的形状。
+    _seed_hk_daily(repo, "02916.HK", days=30, volume=0.0)
+    sync_hk._write_hk_adj_coverage(tmp_path, {"00700.HK", "02916.HK"}, set())
+
+    report = sync_hk.HkEnrichedDropReport()
+    written = sync_hk.sync_hk_enriched(repo, drop_report=report)
+
+    assert written == 30, "只有 00700.HK 的 30 行该活下来"
+    assert report.halt_filtered_rows == 30, "被滤掉的 30 行必须回报, 不能静默"
+    assert report.empty_symbols == ["02916.HK"], "整段零成交的标的必须点名"
+    assert _read_hk_enriched(tmp_path)["symbol"].unique().to_list() == ["00700.HK"]
+
+
+def test_enriched_drop_report_defaults_to_zero_when_nothing_filtered(tmp_path):
+    """没有零成交日时回报必须是 0/空 —— 否则这个字段就成了新的噪声源。"""
+    repo = KlineRepository(DataStore(tmp_path))
+    _seed_hk_instruments(tmp_path, "00700.HK", float_shares=200_000_000)
+    _seed_hk_daily(repo, "00700.HK", days=10, volume=1_000_000)
+
+    report = sync_hk.HkEnrichedDropReport()
+    assert sync_hk.sync_hk_enriched(repo, drop_report=report) == 10
+    assert report.halt_filtered_rows == 0
+    assert report.empty_symbols == []

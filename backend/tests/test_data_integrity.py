@@ -271,6 +271,84 @@ def test_halt_filter_drops_legacy_zero_volume_row_after_ohlc_fill():
     assert result["symbol"].to_list() == ["600001.SH"]
 
 
+def test_halt_filter_drops_zero_volume_row_when_amount_is_all_null():
+    """🔴 港股日K**没有成交额列**: ``DAILY_STORAGE_SCHEMA`` 含 amount, 故
+    ``scan_daily_parquet`` 会给港股补出一列全 null 的 amount (腾讯 ifzq 的 kline
+    端点不返回成交额)。港股零成交日的 OHLC 是前收盘价平移 (``open==high==low==close``
+    且**非 0**), 主判据 ``(open==0)&(high==0)`` 抓不到, 只能靠
+    ``(volume==0)&(amount==0)``。裸比 null 会让整条表达式求值为 null, 而
+    ``filter(~null)`` 在 polars 里**丢行** —— 即靠三值逻辑「意外」剔除, 而非靠判据。
+    ``fill_null(0)`` 后判据显式为 True, 存活集合不变, 但语义不再依赖 null 传播:
+    上游哪天开始返回真实 amount, 行为不会静默翻转。
+    """
+    from app.indicators.pipeline import filter_halt_days
+
+    result = filter_halt_days(pl.DataFrame({
+        "symbol": ["00700.HK", "00105.HK"],
+        "open": [500.0, 3.35],
+        "high": [505.0, 3.35],
+        "low": [498.0, 3.35],
+        "close": [502.0, 3.35],
+        "volume": [12_000_000.0, 0.0],
+        # 显式 Float64: 与 scan_daily_parquet 按 DAILY_STORAGE_SCHEMA 补出的列同型
+        # (裸 [None, None] 会推成 Null dtype, 走不到真实那条路径)。
+        "amount": pl.Series("amount", [None, None], dtype=pl.Float64),
+    }))
+
+    assert result["symbol"].to_list() == ["00700.HK"]
+
+
+def test_halt_filter_keeps_zero_volume_row_with_positive_amount():
+    """零成交但有成交额不算停牌: 兼容判据要求 volume 与 amount **同时**为 0。"""
+    from app.indicators.pipeline import filter_halt_days
+
+    result = filter_halt_days(pl.DataFrame({
+        "symbol": ["600004.SH"],
+        "open": [10.0], "high": [10.0],
+        "volume": [0.0], "amount": [1000.0],
+    }))
+
+    assert result["symbol"].to_list() == ["600004.SH"]
+
+
+def test_halt_filter_keeps_positive_volume_row_when_amount_is_null():
+    """有成交、成交额缺失 ⇒ 保留。``False & null`` 在 polars 里求值为 ``False``,
+    故这一支加固前后行为一致 (6 种组合逐一实测过存活集合相同)。"""
+    from app.indicators.pipeline import filter_halt_days
+
+    result = filter_halt_days(pl.DataFrame({
+        "symbol": ["09988.HK"],
+        "open": [120.0], "high": [122.0],
+        "volume": [5_000_000.0],
+        "amount": pl.Series("amount", [None], dtype=pl.Float64),
+    }))
+
+    assert result["symbol"].to_list() == ["09988.HK"]
+
+
+def test_halt_filter_treats_null_amount_exactly_as_zero_amount():
+    """加固的语义钉: ``amount`` 全 null 与全 0 必须给出**完全相同**的存活集合。
+
+    这条在加固前后都成立 (裸比 null 时 ``filter(~null)`` 同样丢行), 钉的是**意图**:
+    剔除必须来自写死的判据, 而不是来自 polars 的 null 传播。前者上游换成返回真实
+    amount 也不变; 后者会静默翻转 —— 那正是 15.6% 的 symbol-day 消失却无人察觉的成因。
+    """
+    from app.indicators.pipeline import filter_halt_days
+
+    base = {
+        "symbol": ["00700.HK", "00105.HK", "02916.HK"],
+        "open": [500.0, 3.35, 1.20],
+        "high": [505.0, 3.40, 1.20],
+        "volume": [12_000_000.0, 0.0, 0.0],
+    }
+    null_amount = filter_halt_days(pl.DataFrame({
+        **base, "amount": pl.Series("amount", [None, None, None], dtype=pl.Float64),
+    }))
+    zero_amount = filter_halt_days(pl.DataFrame({**base, "amount": [0.0, 0.0, 0.0]}))
+
+    assert null_amount["symbol"].to_list() == zero_amount["symbol"].to_list() == ["00700.HK"]
+
+
 def test_missing_tail_day_flagged(tmp_path):
     # 周四有数据, 周五(工作日)整天停机缺失, 今天周一启动
     _write_daily_partition(tmp_path, "kline_daily", THURSDAY, None)

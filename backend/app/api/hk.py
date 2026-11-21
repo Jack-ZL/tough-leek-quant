@@ -216,6 +216,7 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
             )
             enriched_rows = 0
             enriched_uncovered: list[str] = []
+            enriched_drop = kline_sync_hk.HkEnrichedDropReport()
             adj_rows = 0
             adj_failed: list[str] = []
             enriched_skipped: str | None = None
@@ -250,7 +251,7 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
                     # 而裁剪发布范围会让「首次同步」漏掉预热期之前的行。
                     enriched_rows = kline_sync_hk.sync_hk_enriched(
                         repo, symbols=universe, on_progress=on_enriched,
-                        uncovered_out=enriched_uncovered,
+                        uncovered_out=enriched_uncovered, drop_report=enriched_drop,
                     )
             return {
                 "symbols": len(universe),
@@ -265,6 +266,15 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
                 # 必须回报: 否则调用方只看到 enriched_rows 偏少, 分不清是「本来没数据」
                 # 还是「被闸门挡了」—— 那正是完整性凭据要消灭的静默。
                 "enriched_uncovered": enriched_uncovered,
+                # 被 filter_halt_days 剔除的零成交日行数。剔除是对的 (无成交即无价格
+                # 发现, 留着会把 MA/ATR 压平), 但**必须回报**: 港股实测 233,704 行日K
+                # 里有 36,445 行 (15.6%) 是零成交日, 不回报的话这 15.6% 的 symbol-day
+                # 就凭空消失, 且 enriched_rows 偏少无从归因。
+                "enriched_halt_filtered_rows": enriched_drop.halt_filtered_rows,
+                # 整段历史都零成交 ⇒ enriched **0 行**的标的。它们**在** coverage.json
+                # 的 covered 里 (有日K、有因子), 所以不会出现在 enriched_uncovered ——
+                # 实测 17 只, 不回报就是第二类静默。
+                "enriched_empty_symbols": enriched_drop.empty_symbols,
             }
 
         return run
