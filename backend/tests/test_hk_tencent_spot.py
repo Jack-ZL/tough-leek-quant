@@ -435,6 +435,30 @@ def test_fetch_raises_when_every_batch_fails():
         hk_spot.fetch_hk_spot(client, symbols)
 
 
+def test_raise_on_partial_turns_a_missing_batch_into_an_error():
+    """🔴 ``raise_on_partial=True`` 时缺批必须抛错 —— 供把结果当**白名单**的调用方。
+
+    行情展示少一批只是那一轮少几只, 下一轮自愈 (故默认 False, 见
+    ``test_fetch_single_batch_failure_is_soft``)。但港股维表同步拿「腾讯没返回」
+    当「不在市」的判据, 缺批会把整批真实股票误判成退市并从维表里删掉,
+    且**不报任何错** —— 这是 PR6 换源引入腾讯在市闸门后必须堵住的口子。
+    """
+    client = _FakeClient({"hk00700": HK_00700}, errors={0: TencentError("批 0 熔断中")})
+    symbols = [f"{i:05d}.HK" for i in range(SNAPSHOT_BATCH)] + ["00700.HK"]
+
+    with pytest.raises(TencentError, match="调用方要求全批成功"):
+        hk_spot.fetch_hk_spot(client, symbols, raise_on_partial=True)
+
+
+def test_raise_on_partial_does_not_fire_when_all_batches_succeed():
+    """全批成功时不得误伤, 否则维表同步会永远失败。"""
+    client = _FakeClient({"hk00700": HK_00700, "hk09988": HK_09988})
+
+    recs = hk_spot.fetch_hk_spot(client, ["00700.HK", "09988.HK"], raise_on_partial=True)
+
+    assert sorted(r["symbol"] for r in recs) == ["00700.HK", "09988.HK"]
+
+
 def test_fetch_drops_index_rows_from_mixed_response():
     """🔴 同端点会混返未请求的指数行 → 映射阶段丢弃, 不混进股票行情。
 

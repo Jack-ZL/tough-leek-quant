@@ -10,8 +10,15 @@ A 股那 11 处 ``kline_daily/**/*.parquet`` 式的递归 glob、以及 ``instru
 刻意**不**把港股塞进 ``sync_instruments``: 那个函数是 A 股盘前 9:10 的关键路径,
 港股拉取失败绝不能连累它。
 
-数据源: 东财 clist (``m:128``), 免 Key。实测口径与陷阱见
-``app/plugins/eastmoney/hk.py`` 模块 docstring 与 ``docs/hk-market-plan.md`` §3.1。
+数据源 (PR6 换源): 东财 **datacenter-web** 的 F10 概况报表
+``RPT_HKF10_INFO_ORGPROFILE`` 出属性, 腾讯 ``qt.gtimg.cn`` 批量快照出「在市」闸门
+与最新价。免 Key。
+
+🔴 **不再走 push2 的 clist 列表接口** —— push2 集群对本机 IP 级封禁 (2026-11 实测,
+详见 :mod:`app.plugins.eastmoney.hk_profile` 模块 docstring)。换源顺带拿到 clist
+没有的**每手股数** (``TRADE_UNIT``), 并让 ``tick_size`` 第一次有真实价格可依据。
+``hk.fetch_hk_spot`` / ``hk.hk_instrument_rows`` 那一路**保留不删**: 它是封禁解除后
+的等价替代, 且由 ``tests/test_hk_instrument_sync.py`` 继续钉住契约。
 """
 from __future__ import annotations
 
@@ -21,8 +28,10 @@ from pathlib import Path
 import polars as pl
 
 from app.market_time import cn_today
-from app.plugins.eastmoney import hk
+from app.plugins.eastmoney import hk_profile
 from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
+from app.plugins.tencent import hk_spot
+from app.plugins.tencent.client import TencentClient, TencentError
 from app.services.fs_utils import atomic_write_parquet
 from app.services.instrument_sync import _preserve_instrument_fields
 
@@ -33,14 +42,17 @@ HK_INSTRUMENT_RELPATH = "instruments_hk/instruments_hk.parquet"
 
 #: 需要从历史维表逐行补全的字段。
 #:
-#: 比 A 股的 ``_SHARE_FIELDS`` 多一个 ``industry``: 东财 f100 (恒生行业) 偶发返回
-#: ``"-"``, 而行业是概念/行业板块功能的主键, 不能被一次抖动掏空。
+#: 比 A 股的 ``_SHARE_FIELDS`` 多一个 ``industry``: 东财行业字段偶发返回 ``"-"``,
+#: 而行业是概念/行业板块功能的主键, 不能被一次抖动掏空 (换源后实测在市 2862 行里
+#: 有 7 行无行业, 全是债券)。
 #: **不含** ``limit_up``/``limit_down`` —— 港股无涨跌停, 两列恒 None (保留列只为
 #: 与 A 股 schema 对齐), 没有「历史值」可言。
-#: **含** ``lot_size`` —— 东财 clist 不提供每手股数 (``hk_instrument_rows`` 恒写
-#: None), 该列由财务主指标表的 ``PER_SHARES`` 独立回填 (见
-#: :func:`app.services.financial_sync_hk.backfill_hk_lot_size`)。若不列入保留集,
-#: 每次重跑维表同步都会把已回填的每手股数冲回 None。
+#: **含** ``lot_size`` —— 换源后该列由 F10 的 ``TRADE_UNIT`` 直接给出 (实测在市
+#: 2862 行仅 1 行为空), 不再依赖财务宽表回填; 但仍列入保留集, 一是兜住那 1 行空值,
+#: 二是 :func:`app.services.financial_sync_hk.backfill_hk_lot_size` 的回填结果
+#: 不该被一次维表重跑冲掉。
+#: **含** ``tick_size`` —— 它依赖腾讯快照的最新价, 闸门那一路若某只标的当轮无价
+#: (盘中临时停牌), 保留历史价位比写成 None 更接近事实。
 _HK_PRESERVE_FIELDS = (
     "listing_date", "total_shares", "float_shares", "tick_size", "industry", "lot_size",
 )
@@ -57,23 +69,49 @@ _MIN_FRESH_RATIO = 0.5
 
 def fetch_hk_instrument_rows(
     *,
-    fs: str = hk.FS_HK_EQUITY,
     client: EastmoneyClient | None = None,
+    tencent_client: TencentClient | None = None,
 ) -> list[dict]:
-    """拉港股快照 → ``instruments_hk`` 维表行 (未落库)。
+    """拉港股 F10 概况 + 腾讯在市闸门 → ``instruments_hk`` 维表行 (未落库)。
 
-    拉取失败抛 :class:`EastmoneyError`, **不返回空列表** —— 空列表和「真的没有标的」
-    在调用方无法区分, 而后者会导致覆盖写盘掏空维表。
+    两个源各司一职, **缺一不可** (实测数据见
+    :mod:`app.plugins.eastmoney.hk_profile` 模块 docstring):
+
+    - 东财 datacenter-web ``RPT_HKF10_INFO_ORGPROFILE`` 出属性: 名称 / 上市日 /
+      股本 / **每手股数** / **恒生行业**。但它**没有在市状态列**, 全量 6920 行里
+      混着债券、待上市新股与约 2200 个退市/长期停牌代码, 单用会把死代码灌进维表。
+    - 腾讯 ``qt.gtimg.cn`` 批量快照出「在市」闸门 + 最新价。最新价不是顺带的:
+      港股价位表按价格分档 (:func:`app.plugins.eastmoney.hk.hk_tick_size`),
+      而 F10 概况**没有任何价格列**, 没有闸门就同时没有 ``tick_size``。
+      实测 5122 个候选代码 → 2862 只在市。
+
+    拉取失败抛 :class:`EastmoneyError` / :class:`TencentError`, **不返回空列表** ——
+    空列表和「真的没有标的」在调用方无法区分, 而后者会导致覆盖写盘掏空维表。
+    🔴 腾讯那一路开 ``raise_on_partial=True``: 缺一批时「没返回」既可能是退市
+    也可能是那批请求失败, 二者不可区分, 默认行为会把最多 300 只在市股票静默
+    写成退市。宁可整轮失败保留历史维表。
     """
-    own_client = client is None
-    if own_client:
+    own_em = client is None
+    own_tx = tencent_client is None
+    if own_em:
         client = EastmoneyClient()
+    if own_tx:
+        tencent_client = TencentClient()
     try:
-        rows = hk.fetch_hk_spot(client, fs=fs)
+        profiles = hk_profile.fetch_hk_org_profiles(client)
+        # 只把股票代码发给腾讯: 6920 行里 1798 行是债券/待上市新股, 白发配额。
+        candidates = hk_profile.hk_profile_symbols(profiles)
+        live = hk_spot.fetch_hk_spot(
+            tencent_client, candidates, raise_on_partial=True,
+        )
     finally:
-        if own_client:
+        if own_em:
             client.close()
-    return hk.hk_instrument_rows(rows)
+        if own_tx:
+            tencent_client.close()
+
+    live_prices = {r["symbol"]: r["last_price"] for r in live if r.get("last_price")}
+    return hk_profile.hk_profile_instrument_rows(profiles, live_prices=live_prices)
 
 
 def _carry_over_when_incomplete(
@@ -115,22 +153,33 @@ def _carry_over_when_incomplete(
     return merged, carried
 
 
-def sync_instruments_hk(data_dir: Path, *, fs: str = hk.FS_HK_EQUITY) -> int:
+def sync_instruments_hk(data_dir: Path) -> int:
     """全量同步港股标的维表 → ``data/instruments_hk/instruments_hk.parquet``。
 
     返回写入的行数; 拉取失败返回 **0 且不写盘** (保留上一次的维表)。
+    两个源任一失败都算失败 —— 缺在市闸门时写盘等于把死代码当在市标的落库。
     """
     try:
-        rows = fetch_hk_instrument_rows(fs=fs)
+        rows = fetch_hk_instrument_rows()
     except EastmoneyError as e:
-        logger.warning("港股标的维表拉取失败, 保留历史维表不覆盖: %s", e)
+        logger.warning("港股标的维表拉取失败 (东财 F10 概况), 保留历史维表不覆盖: %s", e)
+        return 0
+    except TencentError as e:
+        logger.warning("港股标的维表拉取失败 (腾讯在市闸门), 保留历史维表不覆盖: %s", e)
         return 0
 
     if not rows:
         logger.warning("港股标的维表返回 0 行, 保留历史维表不覆盖")
         return 0
 
-    df = pl.DataFrame(rows)
+    # 🔴 必须 infer_schema_length=None (全行推断), 不能用 polars 默认的前 100 行。
+    # 维表按代码升序, 前 100 行全是 00xxx 港币柜台 ⇒ hkd_counter 整段为 None ⇒
+    # 被推成 Null dtype, 翻到 8xxxx 人民币柜台时抛
+    # "could not append value: '00016.HK' of type: str"。
+    # 实测 2862 行时必现 (脱网单测行数少, 测不出来)。同 ext_data.py:1070 的惯例。
+    # limit_up/limit_down 恒为 None → 全行推断后仍是 Null dtype, 与 A 股
+    # instruments.parquet 现状一致 (港股无涨跌停), 不是回归。
+    df = pl.DataFrame(rows, infer_schema_length=None)
     df = _preserve_instrument_fields(
         df,
         data_dir,

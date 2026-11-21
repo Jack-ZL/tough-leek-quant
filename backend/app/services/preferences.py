@@ -802,10 +802,10 @@ def get_hk_sync_schedule() -> dict:
 
     返回 ``{"enabled", "hour", "minute", "include_cny_counter"}``。
 
-    默认关闭的理由: 港股是可选增量功能, 且维表口径 ``FS_HK_EQUITY`` (t:3 主板 +
-    t:4 GEM) 的各 ``t:`` 子类语义尚待联网复测(见 ``plugins/eastmoney/hk.py`` 的
-    ⚠️ 注释与 docs/hk-market-plan.md §3.1.1)。默认开启会让每天 ~2900 个标的的
-    拉取在用户尚未确认口径前就跑起来, 白白消耗 push2 限流配额。
+    默认关闭的理由: 港股是可选增量功能, 且维表口径尚待用户确认 —— 换源后
+    (PR6) 维表 = 东财 F10 概况 ∩ 腾讯在市闸门, 实测约 2900 只 (主板 + GEM,
+    不含 REITs/债券/窝轮)。默认开启会让这批标的的每日拉取在用户尚未确认口径前
+    就跑起来, 白白消耗 datacenter-web 与 qt.gtimg.cn 的限流配额。
     """
     d = load().get("hk_sync_schedule") or {}
     if not isinstance(d, dict):

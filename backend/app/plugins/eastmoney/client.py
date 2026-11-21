@@ -443,3 +443,53 @@ class EastmoneyClient:
         if payload.get("code") == 9201:
             return []  # 合法空结果: 该标的无此类记录
         raise EastmoneyError(f"datacenter 报表 {report_name} 失败: {payload.get('message')}")
+
+    def datacenter_report_all(
+        self,
+        report_name: str,
+        flt: str | None = None,
+        columns: str = "ALL",
+        page_size: int = 500,
+        max_pages: int = 200,
+        sort_columns: str | None = None,
+        sort_types: int | str | None = None,
+    ) -> list[dict]:
+        """通用 datacenter 报表**全量翻页**拉取 (PR6: 港股维表换源)。
+
+        与 :meth:`datacenter_report` 完全同一套错误语义 —— 逐页委托给它, 所以
+        ``9201`` 合法空 → 停止翻页返回已累积行, 报表名不存在 (9501) / 列不存在
+        等 → 抛 :class:`EastmoneyError`。不自己拼 ``_get_json``: 该私有方法
+        **从不在本文件之外调用** (全仓实测), 翻页逻辑复用单页方法即可保持一致。
+
+        🔴 终止条件是「本页行数 < page_size」而不是读 ``result["pages"]``:
+        单页方法已把 ``pages`` 丢掉, 而短页/空页作末页判据对本接口实测可靠
+        (``RPT_HKF10_INFO_ORGPROFILE`` 6920 行 / pageSize 500 → 14 页, 末页 420 行)。
+        总行数恰为 page_size 整数倍时会多请求一次空页, 代价可忽略。
+
+        ``max_pages`` 是防跑飞硬闸: 上游若改了分页语义 (例如忽略 pageNumber
+        恒返回第一页), 宁可截断并告警, 不可无限请求 —— 那会同时打爆令牌桶与
+        内存, 且累积的是重复行。默认 200 页 × 500 行 = 10 万行, 远超现有任何
+        港股报表 (最大的 ``RPT_HKF10_FN_BALANCE`` 也才 1276 页 × 50)。
+        """
+        out: list[dict] = []
+        for page in range(1, max_pages + 1):
+            rows = self.datacenter_report(
+                report_name,
+                flt=flt,
+                columns=columns,
+                page_size=page_size,
+                page_number=page,
+                sort_columns=sort_columns,
+                sort_types=sort_types,
+            )
+            out.extend(rows)
+            if len(rows) < page_size:
+                return out
+        logger.warning(
+            "datacenter 报表 %s 翻到 max_pages=%d 上限仍未结束, 已截断 (累计 %d 行) — "
+            "上游分页语义可能变了, 需人工复核",
+            report_name,
+            max_pages,
+            len(out),
+        )
+        return out

@@ -378,6 +378,99 @@ class TestDatacenterReport:
 
 
 # ================================================================
+# client.datacenter_report_all (翻页语义)
+# ================================================================
+
+class TestDatacenterReportAll:
+    """🔴 终止条件是**短页**, 不是信封里的 ``pages`` 字段。
+
+    ``datacenter_report`` 刻意丢弃 ``result["pages"]`` (见其 docstring: 该字段
+    实测不可信), 所以翻页层拿不到总页数, 只能靠「本页行数 < page_size」判尾。
+    实测 ``RPT_HKF10_INFO_ORGPROFILE`` 全量 6920 行 / 14 页 (pageSize 500),
+    末页 420 行。
+    """
+
+    def _client_serving(self, pages: list[list[dict]], page_size: int = 2):
+        """按 ``pageNumber`` 发牌的假传输层, 并记录每次请求的参数。"""
+        captured: list[dict] = []
+
+        def fake_get(base, path, params):
+            captured.append(dict(params))
+            idx = params["pageNumber"] - 1
+            data = pages[idx] if idx < len(pages) else []
+            return {"success": True, "result": {"pages": len(pages), "data": data}}
+
+        c = EastmoneyClient(sleeper=lambda _: None)
+        c._get_json = fake_get  # type: ignore[method-assign]
+        return c, captured, page_size
+
+    def test_accumulates_until_short_page(self):
+        c, captured, _ = self._client_serving([[{"A": 1}, {"A": 2}], [{"A": 3}, {"A": 4}],
+                                               [{"A": 5}]])
+
+        rows = c.datacenter_report_all("RPT_X", page_size=2)
+
+        assert [r["A"] for r in rows] == [1, 2, 3, 4, 5]
+        assert [p["pageNumber"] for p in captured] == [1, 2, 3], "短页即终止, 不该多请一页"
+
+    def test_exact_multiple_stops_on_empty_page(self):
+        """行数正好是 page_size 整数倍时, 必须再请一页拿到空页才停 (否则会漏判)。"""
+        c, captured, _ = self._client_serving([[{"A": 1}, {"A": 2}], []])
+
+        rows = c.datacenter_report_all("RPT_X", page_size=2)
+
+        assert len(rows) == 2
+        assert [p["pageNumber"] for p in captured] == [1, 2]
+
+    def test_legal_empty_returns_empty_list(self):
+        """``code=9201`` (合法空) 由 ``datacenter_report`` 转成 ``[]``, 翻页自然终止。"""
+        c = EastmoneyClient(sleeper=lambda _: None)
+        c._get_json = lambda base, path, params: {  # type: ignore[method-assign]
+            "success": False, "code": 9201, "message": "返回数据为空", "result": None,
+        }
+
+        assert c.datacenter_report_all("RPT_X") == []
+
+    def test_hard_failure_propagates(self):
+        """非 9201 的失败必须抛错, 不得把半截数据当全量返回。"""
+        c = EastmoneyClient(sleeper=lambda _: None)
+        c._get_json = lambda base, path, params: {  # type: ignore[method-assign]
+            "success": False, "code": 9501, "message": "报表配置不存在,RPT_X",
+        }
+
+        with pytest.raises(EastmoneyError, match="RPT_X"):
+            c.datacenter_report_all("RPT_X")
+
+    def test_max_pages_is_a_runaway_guard(self, caplog):
+        """``max_pages`` 只在上游异常 (永远返回满页) 时兜底, 且必须留痕。"""
+        full = [{"A": i} for i in range(2)]
+        c, captured, _ = self._client_serving([full] * 99)
+
+        with caplog.at_level("WARNING"):
+            rows = c.datacenter_report_all("RPT_X", page_size=2, max_pages=2)
+
+        assert len(rows) == 4
+        assert len(captured) == 2
+        assert "max_pages=2" in caplog.text
+
+    def test_query_params_forwarded_to_every_page(self):
+        """filter / columns / 排序必须逐页透传, 否则第 2 页起口径就变了。"""
+        c, captured, _ = self._client_serving([[{"A": 1}], []])
+
+        c.datacenter_report_all("RPT_X", flt='(SECURITY_CODE="00700")', columns="A,B",
+                                page_size=1, sort_columns="SECURITY_CODE", sort_types=1)
+
+        assert len(captured) == 2
+        for p in captured:
+            assert p["reportName"] == "RPT_X"
+            assert p["filter"] == '(SECURITY_CODE="00700")'
+            assert p["columns"] == "A,B"
+            assert p["pageSize"] == 1
+            assert p["sortColumns"] == "SECURITY_CODE"
+            assert p["sortTypes"] == 1
+
+
+# ================================================================
 # get_profile: 缓存 / TTL / 降级
 # ================================================================
 

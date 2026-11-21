@@ -10,8 +10,9 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from app.plugins.eastmoney import hk
+from app.plugins.eastmoney import hk, hk_profile
 from app.plugins.eastmoney.client import EastmoneyError
+from app.plugins.tencent.client import TencentError
 from app.services import instrument_sync_hk as sync_hk
 from app.services.fs_utils import atomic_write_parquet
 
@@ -28,6 +29,27 @@ def _row(code: str, name: str, price: float, *, shares: float = 1e9,
     }
 
 
+def _profile(code: str, name: str, *, industry: str | None = "软件服务",
+             trade_unit: int | None = 100, shares: int | None = 9_092_644_500,
+             listed: str | None = "2004-06-16 00:00:00") -> dict:
+    """最小可用的 F10 概况行 (``RPT_HKF10_INFO_ORGPROFILE``, 35 列里只填用到的)。
+
+    PR6 换源后的**主**fixture; ``_row`` (clist) 保留是因为下面多数测试测的是
+    服务层落库/防掏空行为, 用哪个映射器造行都一样 (两者输出同一套 16 列契约)。
+    """
+    return {
+        "SECUCODE": f"{code}.HK",
+        "SECURITY_CODE": code,
+        "SECURITY_NAME_ABBR": name,
+        "BELONG_INDUSTRY": industry,
+        "INDUSTRY_TYPE": "通讯服务-媒体与娱乐-互动媒体与服务-互动媒体与服务",
+        "TRADE_UNIT": trade_unit,
+        "HK_SHARES": shares,
+        "LISTING_DATE": listed,
+        "BELONG_MARKET": "香港主板",
+    }
+
+
 ROWS = [
     _row("00700", "腾讯控股", 389.0, shares=9.19e9),
     _row("09988", "阿里巴巴-W", 120.0, shares=1.99e10, listed=20191126, industry="专业零售"),
@@ -40,7 +62,10 @@ def patched_fetch(monkeypatch):
     """把 fetch 换成可控桩, 返回一个 setter 让各测试决定返回什么/抛什么。"""
     state: dict = {"rows": None, "exc": None}
 
-    def _fake(*, fs=hk.FS_HK_EQUITY, client=None):
+    # 🔴 签名原为 ``(*, fs=hk.FS_HK_EQUITY, client=None)``。PR6 换源后维表不再走
+    # clist, ``fs`` (东财列表过滤器) 这个参数**已无语义** —— 留着一个不起作用的
+    # 参数比删掉它更危险 (调用方以为能改口径)。
+    def _fake(*, client=None, tencent_client=None):
         if state["exc"] is not None:
             raise state["exc"]
         return state["rows"]
@@ -77,6 +102,44 @@ def test_synced_schema_matches_hk_instrument_columns_plus_as_of(tmp_path, patche
     assert df["as_of"].null_count() == 0
 
 
+def test_schema_inference_covers_all_rows_not_just_the_first_100(tmp_path, patched_fetch):
+    """🔴 回归: polars 默认只按**前 100 行**推断 schema, 港股维表必炸。
+
+    维表按代码升序, 前 100 行全是 ``00xxx`` 港币柜台 ⇒ ``hkd_counter`` 整段为
+    ``None`` ⇒ 被推成 ``Null`` dtype; 翻到 ``8xxxx`` 人民币柜台时抛
+    ``ComputeError: could not append value: "00016.HK" of type: str``。
+
+    实测 2862 行时 100% 复现 (2026-11-21 真机), 但脱网单测行数少测不出来 ——
+    所以这里刻意造 102 行, 让配对柜台落在第 100 行之后。
+    """
+    codes = [f"{i:05d}" for i in range(1, 101)] + ["09988", "89988"]
+    # 🔴 89988 的名称必须以 R 结尾: 双柜台是三信号判定 (代码 8 开头 + 名称 R 结尾
+    # + 配对港币代码在列表里), 少一个信号就判成非人民币柜台, hkd_counter 会
+    # **合法地**整列为空, 这条回归也就测不到东西了。
+    names = {c: f"名称{c}" for c in codes}
+    names["09988"], names["89988"] = "阿里巴巴-W", "阿里巴巴-WR"
+    rows = hk_profile.hk_profile_instrument_rows(
+        [_profile(c, names[c]) for c in codes],
+        live_prices={f"{c}.HK": 10.0 for c in codes},
+    )
+    assert len(rows) == 102
+    assert all(r["hkd_counter"] is None for r in rows[:100]), "前 100 行必须全空才会触发"
+    assert rows[-1]["hkd_counter"] == "09988.HK", "第 102 行才出现非空值"
+
+    patched_fetch["rows"] = rows
+    n = sync_hk.sync_instruments_hk(tmp_path)
+
+    assert n == 102
+    df = _read(tmp_path)
+    assert df.schema["hkd_counter"] == pl.String, "不得退化成 Null dtype"
+    got = df.filter(pl.col("symbol") == "89988.HK")
+    assert got["hkd_counter"][0] == "09988.HK"
+    # 港股无涨跌停 → 恒 None → 全行推断后仍是 Null dtype, 与 A 股
+    # instruments.parquet 现状一致。钉住以免被误当成 schema 缺陷去「修」。
+    assert df.schema["limit_up"] == pl.Null
+    assert df.schema["limit_down"] == pl.Null
+
+
 def test_dual_counter_survives_round_trip(tmp_path, patched_fetch):
     """两个柜台都落库, 靠 is_cny_counter 区分; 统计口径只算港币柜台。"""
     patched_fetch["rows"] = hk.hk_instrument_rows(ROWS)
@@ -91,18 +154,43 @@ def test_dual_counter_survives_round_trip(tmp_path, patched_fetch):
     assert cny["hkd_counter"].to_list() == ["09988.HK"]
 
 
-def test_price_limit_and_lot_size_columns_stay_null(tmp_path, patched_fetch):
-    """港股无涨跌停 → limit_up/down 恒 None; 东财不给每手股数 → lot_size 恒 None。
+def test_price_limit_columns_stay_null(tmp_path, patched_fetch):
+    """港股无涨跌停 → limit_up/down 恒 None。
 
-    保留这三列只为与 A 股 schema 对齐, 让共用读代码不必分叉。**不得**填 0:
+    保留这两列只为与 A 股 schema 对齐, 让共用读代码不必分叉。**不得**填 0:
     存量守卫把「limit_up 为 0/null」当无限价处理, 但 0 会被读成「限价 0 元」。
+
+    🔴 本测试原名 ``test_price_limit_and_lot_size_columns_stay_null``, 连
+    ``lot_size`` 一起断言全 None, 理由是「东财不给每手股数」。PR6 换源后该断言
+    **事实上已不成立** —— F10 概况的 ``TRADE_UNIT`` 就是每手股数。故拆出
+    :func:`test_lot_size_comes_from_trade_unit` 反向钉住, 而不是把旧断言删掉了事。
     """
     patched_fetch["rows"] = hk.hk_instrument_rows(ROWS)
     sync_hk.sync_instruments_hk(tmp_path)
     df = _read(tmp_path)
 
-    for col in ("limit_up", "limit_down", "lot_size"):
+    for col in ("limit_up", "limit_down"):
         assert df[col].null_count() == df.height, f"{col} 应为全 None"
+
+
+def test_lot_size_comes_from_trade_unit(tmp_path, patched_fetch):
+    """⭐ 换源收益: 每手股数直接来自 F10 的 ``TRADE_UNIT``, 不再依赖财务宽表回填。
+
+    取值已逐只核对港交所真实每手股数 (2026-11-21 实测):
+    ``00005`` 汇丰 400 / ``00700`` 腾讯 100 / ``02318`` 平安 500 / ``03988`` 中行 1000。
+    clist 那一路拿不到这个字段 (``f292`` 已实测排除), 是换源的直接动机之一。
+    """
+    patched_fetch["rows"] = hk_profile.hk_profile_instrument_rows(
+        [_profile("00700", "腾讯控股", trade_unit=100),
+         _profile("00005", "汇丰控股", trade_unit=400)],
+        live_prices={"00700.HK": 344.0, "00005.HK": 129.2},
+    )
+    sync_hk.sync_instruments_hk(tmp_path)
+    df = _read(tmp_path)
+
+    assert dict(zip(df["symbol"], df["lot_size"], strict=True)) == {
+        "00700.HK": 100, "00005.HK": 400,
+    }
 
 
 def test_float_shares_equals_total_shares_for_hk(tmp_path, patched_fetch):
@@ -216,8 +304,9 @@ def test_preserve_fields_covers_hk_specific_columns():
 
     🔴 ``lot_size`` 在 PR2a 时**不**在保留集里 —— 那时东财 clist 不提供每手股数,
     该列恒为 None, 保留它没有意义。PR2b 起它由财务宽表的 ``PER_SHARES`` 回填
-    (``financial_sync_hk.backfill_hk_lot_size``), 而 clist 重同步仍写 None:
-    不在保留集里的话, **每次维表重同步都会抹掉回填结果**, 下单取整随即失效。
+    (``financial_sync_hk.backfill_hk_lot_size``); PR6 换源后改由 F10 的
+    ``TRADE_UNIT`` 直接给出, 但**仍须留在保留集**: 一是实测在市 2862 行里有 1 行
+    ``TRADE_UNIT`` 为空, 二是回填结果不该被一次维表重跑冲掉。
 
     ``limit_up`` / ``limit_down`` 仍恒为 None (港股无涨跌停, 见
     ``app.market.HK_RULES.has_price_limit=False``), 故继续排除。
@@ -229,10 +318,14 @@ def test_preserve_fields_covers_hk_specific_columns():
 
 
 def test_backfilled_lot_size_survives_instrument_resync(tmp_path, patched_fetch):
-    """回填的每手股数必须扛过维表重同步 (clist 恒写 None)。
+    """已有的每手股数必须扛过维表重同步 (本轮 F10 未给 ``TRADE_UNIT`` 时)。
 
     这是 ``_HK_PRESERVE_FIELDS`` 含 ``lot_size`` 的行为级证明: 只断言常量在名单里
     挡不住「名单对了但 coalesce 路径没走到」的情况。
+
+    🔴 前置条件原为「clist 恒写 None」。PR6 换源后 ``lot_size`` 正常有值, 但
+    实测在市 2862 行里仍有 1 行 ``TRADE_UNIT`` 为空 —— 保留集正是为这种缺值兜底,
+    故改用「F10 缺 TRADE_UNIT」构造同一场景, 测试意图不变。
     """
     out = tmp_path / sync_hk.HK_INSTRUMENT_RELPATH
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -243,13 +336,16 @@ def test_backfilled_lot_size_survives_instrument_resync(tmp_path, patched_fetch)
         "lot_size": [100],
     }), out)
 
-    rows = hk.hk_instrument_rows([_row("00700", "腾讯控股", 389.0)])
-    assert rows[0]["lot_size"] is None, "前置条件: clist 不提供每手股数"
+    rows = hk_profile.hk_profile_instrument_rows(
+        [_profile("00700", "腾讯控股", trade_unit=None)],
+        live_prices={"00700.HK": 344.0},
+    )
+    assert rows[0]["lot_size"] is None, "前置条件: 本轮 F10 未给每手股数"
     patched_fetch["rows"] = rows
 
     sync_hk.sync_instruments_hk(tmp_path)
     df = _read(tmp_path)
-    assert df["lot_size"].to_list() == [100], "回填值被重同步抹掉了"
+    assert df["lot_size"].to_list() == [100], "历史值被重同步抹掉了"
     assert df["name"].to_list() == ["腾讯控股"], "非保留列应取新值"
 
 
@@ -264,53 +360,167 @@ def test_a_share_preserve_default_unchanged():
 # fetch 层: 口径与 client 生命周期
 # ---------------------------------------------------------------------------
 
-class _FakeClient:
-    def __init__(self, pages):
-        self._pages = pages
-        self.closed = False
-        self.calls: list[dict] = []
+class _FakeEmClient:
+    """假 EastmoneyClient: 换源后维表只用 ``datacenter_report_all`` 一个方法。"""
 
-    def _push2_data(self, base, path, params):
-        self.calls.append(dict(params))
-        pn = params["pn"]
-        return self._pages[pn - 1] if pn <= len(self._pages) else None
+    def __init__(self, rows):
+        self._rows = rows
+        self.closed = False
+        self.calls: list[tuple] = []
+
+    def datacenter_report_all(self, report_name, **kwargs):
+        self.calls.append((report_name, kwargs))
+        return list(self._rows)
 
     def close(self):
         self.closed = True
 
 
-def test_fetch_defaults_to_equity_universe():
-    """默认口径 = 主板 + GEM, 不含 REITs/债券/窝轮牛熊证。"""
-    client = _FakeClient([{"total": 1, "diff": [ROWS[0]]}])
-    rows = sync_hk.fetch_hk_instrument_rows(client=client)
+class _FakeTxClient:
+    """假 TencentClient: 只为生命周期断言存在, 快照本身被 ``patched_sources`` 挡掉。"""
 
-    assert len(rows) == 1
-    assert client.calls[0]["fs"] == hk.FS_HK_EQUITY
-    assert "m:128+t:3" in hk.FS_HK_EQUITY and "m:128+t:4" in hk.FS_HK_EQUITY
-    assert "t:5" not in hk.FS_HK_EQUITY, "窝轮牛熊证混入会污染全市场统计"
-    assert "t:1" not in hk.FS_HK_EQUITY and "t:2" not in hk.FS_HK_EQUITY
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
-def test_fetch_closes_only_self_created_client():
-    """注入的 client 由调用方负责关闭; 自建的必须关 (否则连接泄漏)。"""
-    injected = _FakeClient([{"total": 1, "diff": [ROWS[0]]}])
-    sync_hk.fetch_hk_instrument_rows(client=injected)
-    assert injected.closed is False, "不该关掉调用方传进来的 client"
+def _live(symbol: str, price: float) -> dict:
+    """腾讯快照归一化后的最小记录 (只填维表用得到的两键)。"""
+    return {"symbol": symbol, "last_price": price}
 
 
-def test_fetch_closes_self_created_client_on_error(monkeypatch):
-    """抛错路径也要关 client (finally), 否则封禁重试期间连接堆积。"""
+@pytest.fixture
+def patched_sources(monkeypatch):
+    """把两个数据源都换成桩, 返回可写的 state。
+
+    🔴 桩打在**服务层看到的插件边界**上 (``sync_hk.hk_profile`` / ``sync_hk.hk_spot``),
+    不打在 httpx 上: 本文件测的是「服务怎么把两个源拼成维表」, 腾讯字段下标的
+    归一化由 ``tests/test_hk_tencent_spot.py`` 单独钉住, 两层各自可替换。
+    """
+    state: dict = {"profiles": [], "live": [], "gate_kwargs": None, "gate_symbols": []}
+
+    def _fake_profiles(client):
+        return list(state["profiles"])
+
+    def _fake_gate(client, symbols, **kwargs):
+        state["gate_kwargs"] = kwargs
+        state["gate_symbols"] = list(symbols)
+        return list(state["live"])
+
+    monkeypatch.setattr(sync_hk.hk_profile, "fetch_hk_org_profiles", _fake_profiles)
+    monkeypatch.setattr(sync_hk.hk_spot, "fetch_hk_spot", _fake_gate)
+    return state
+
+
+def test_fetch_universe_is_profile_intersect_tencent_live(patched_sources):
+    """🔴 维表口径 = F10 概况 ∩ 腾讯在市。两个过滤各自挡掉什么, 必须分别钉住。
+
+    F10 概况全量 6920 行**不是**在市股票清单 (报表无在市状态列): 含债务证券
+    (``4xxxx`` / 字母开头)、待上市新股 (``H2xxx``)、REITs 与约 2200 个退市/长期
+    停牌代码。实测 5122 个 5 位 0/8 开头代码经腾讯闸门后剩 **2862** 只, 与 clist
+    ``m:128+t:3,t:4`` 记载的主板 2621 + GEM 310 = 2931 同量级。
+
+    本测试替换掉原 ``test_fetch_defaults_to_equity_universe``: 那条断言的是
+    ``fs == hk.FS_HK_EQUITY`` (clist 的 ``t:`` 子类过滤器), 换源后该参数已不存在,
+    但「不含 REITs/债券/窝轮」的**意图**照旧, 改由代码前缀 + 在市闸门两道承担。
+    """
+    patched_sources["profiles"] = [
+        _profile("00700", "腾讯控股"),
+        _profile("09988", "阿里巴巴-W", industry="专业零售"),
+        _profile("89988", "阿里巴巴-WR", industry="专业零售"),
+        _profile("00011", "恒生银行", industry="银行"),        # 已退市 → 腾讯不返回
+        _profile("00405", "越秀房产信托基金", industry=None),   # REIT → 腾讯归一化丢弃
+        _profile("40001", "CCB N2611C", industry=None),        # 债务证券 → 首位非 0/8
+        _profile("H2001", "Aqara", industry="软件服务"),        # 待上市新股 → 非 5 位数字
+    ]
+    patched_sources["live"] = [
+        _live("00700.HK", 344.0), _live("09988.HK", 83.35), _live("89988.HK", 71.1),
+    ]
+
+    rows = sync_hk.fetch_hk_instrument_rows(
+        client=_FakeEmClient([]), tencent_client=_FakeTxClient(),
+    )
+
+    assert sorted(r["symbol"] for r in rows) == ["00700.HK", "09988.HK", "89988.HK"]
+    # 债券/待上市新股在**发给腾讯之前**就剔掉, 不白占 300 只/请求的批量配额
+    assert "40001.HK" not in patched_sources["gate_symbols"]
+    assert not any(not s[:5].isdigit() for s in patched_sources["gate_symbols"])
+    # 双柜台三信号判定沿用 clist 那一路的口径 (换源不换语义)
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["89988.HK"]["is_cny_counter"] is True
+    assert by_sym["89988.HK"]["hkd_counter"] == "09988.HK"
+    assert by_sym["09988.HK"]["is_cny_counter"] is False
+
+
+def test_fetch_demands_all_tencent_batches(patched_sources):
+    """🔴 在市闸门必须开 ``raise_on_partial``。
+
+    缺一批时「腾讯没返回这只」既可能是退市/停牌, 也可能是那批请求失败 ——
+    二者不可区分。默认行为 (丢一批继续) 会把最多 300 只在市股票**静默**写成退市
+    并落库, 搜索/标的池随即少一批票, 且日志里只有一条 warning。
+    """
+    patched_sources["profiles"] = [_profile("00700", "腾讯控股")]
+    patched_sources["live"] = [_live("00700.HK", 344.0)]
+
+    sync_hk.fetch_hk_instrument_rows(
+        client=_FakeEmClient([]), tencent_client=_FakeTxClient(),
+    )
+
+    assert patched_sources["gate_kwargs"] == {"raise_on_partial": True}
+
+
+def test_fetch_closes_only_self_created_clients(patched_sources):
+    """注入的两个 client 由调用方负责关闭; 自建的必须关 (否则连接泄漏)。"""
+    em, tx = _FakeEmClient([]), _FakeTxClient()
+    patched_sources["profiles"] = [_profile("00700", "腾讯控股")]
+    patched_sources["live"] = [_live("00700.HK", 344.0)]
+
+    sync_hk.fetch_hk_instrument_rows(client=em, tencent_client=tx)
+
+    assert em.closed is False, "不该关掉调用方传进来的东财 client"
+    assert tx.closed is False, "不该关掉调用方传进来的腾讯 client"
+
+
+def test_fetch_closes_self_created_clients_on_error(monkeypatch):
+    """抛错路径也要关**两个** client (finally), 否则封禁重试期间连接堆积。
+
+    🔴 刻意**不**用 ``patched_sources``: 那个 fixture 把 ``fetch_hk_org_profiles``
+    整个换掉, 假 client 的方法根本不会被调用, 抛错路径也就测不到。
+    """
     created: list = []
 
-    class _Boom(_FakeClient):
+    class _BoomEm(_FakeEmClient):
         def __init__(self):
             super().__init__([])
             created.append(self)
 
-        def _push2_data(self, base, path, params):
+        def datacenter_report_all(self, report_name, **kwargs):
             raise EastmoneyError("boom")
 
-    monkeypatch.setattr(sync_hk, "EastmoneyClient", _Boom)
+    class _BoomTx(_FakeTxClient):
+        def __init__(self):
+            super().__init__()
+            created.append(self)
+
+    monkeypatch.setattr(sync_hk, "EastmoneyClient", _BoomEm)
+    monkeypatch.setattr(sync_hk, "TencentClient", _BoomTx)
     with pytest.raises(EastmoneyError):
         sync_hk.fetch_hk_instrument_rows()
-    assert created and created[0].closed is True
+    assert len(created) == 2, "两个 client 都该被自建并登记"
+    assert all(c.closed for c in created), "抛错路径漏关 client"
+
+
+def test_tencent_gate_error_keeps_history_untouched(tmp_path, patched_fetch):
+    """在市闸门失败 → 返回 0 且**不写盘**。
+
+    缺闸门时写盘等于把 F10 概况里约 2200 个退市/非股票代码当在市标的落库,
+    比保留昨天的维表严重得多 (fail closed, CONTRIBUTING §4)。
+    """
+    _seed_history(tmp_path, ["00700.HK", "09988.HK"])
+    before = _read(tmp_path)
+    patched_fetch["exc"] = TencentError("港股快照: 全部 10 批失败")
+
+    assert sync_hk.sync_instruments_hk(tmp_path) == 0
+    assert _read(tmp_path).equals(before), "历史维表被覆盖"

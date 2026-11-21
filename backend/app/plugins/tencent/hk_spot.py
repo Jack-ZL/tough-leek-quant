@@ -243,6 +243,8 @@ def map_hk_spot_fields(tx_code: str, fields: list[str], fetched_ms: int) -> dict
 def fetch_hk_spot(
     client: TencentClient,
     symbols: Iterable[str],
+    *,
+    raise_on_partial: bool = False,
 ) -> list[dict]:
     """批量拉取港股实时快照 → 已归一化的行情记录列表。
 
@@ -258,6 +260,12 @@ def fetch_hk_spot(
 
     ⚠️ 无效代码上游**不报错也不返回对应行** (实测 60 只请求返回 47 行),
     所以「返回行数 < 请求行数」是常态, 只记 debug 不告警。
+
+    ``raise_on_partial=True`` (PR6 港股维表换源新增) 把「部分批失败」也升级为抛错。
+    🔴 只给**把返回值当白名单用**的调用方开: 维表同步拿本函数结果当「在市闸门」,
+    此时「没返回」既可能是退市/停牌, 也可能是那一批请求失败 —— 两者不可区分,
+    默认行为 (丢一批继续) 会把 300 只在市股票静默写成退市。行情展示类调用方
+    (自选/详情) 缺一批只是少显示几只, 下一轮轮询自愈, 保持默认 ``False``。
     """
     wanted = sorted({s for s in symbols if s and s.strip()})
     if not wanted:
@@ -299,6 +307,11 @@ def fetch_hk_spot(
     if failed_batches == total_batches:
         raise TencentError(
             f"港股快照: 全部 {total_batches} 批失败 (请求 {len(codes)} 只), 本轮空手而归"
+        )
+    if raise_on_partial and failed_batches:
+        raise TencentError(
+            f"港股快照: {failed_batches}/{total_batches} 批失败 (请求 {len(codes)} 只, "
+            f"已得 {len(records)} 条) — 调用方要求全批成功, 缺批时无法区分「退市」与「请求失败」"
         )
     logger.info(
         "腾讯港股快照拉取完成: %d 条 (请求 %d 只, %d 批, 失败 %d 批)",
