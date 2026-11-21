@@ -133,9 +133,35 @@ describe('港股概念: 无源 → 明示 + 不用 A 股数据冒充 (方案 §3
     expect(hkConcept.hint).toContain('人气榜')
   })
 
-  it('文案给出扩展数据通道这条后路 (方案: 零代码改动即可接入)', () => {
-    expect(hkConcept.hint).toContain('扩展数据')
-    expect(hkConcept.hint).toContain('无需改代码')
+  it('文案给出扩展数据通道这条后路, 且**不谎称零代码改动**', () => {
+    // 🔴 原来这里钉的是 `toContain('无需改代码')`, 那句话是**假的**, 已改文案:
+    // `BOARD_DIMENSION_SOURCE.concept.HK === null` 会让 Page.tsx 在查询之前就提前 return,
+    // 配了扩展表也点不亮本页 —— 必须先把那个格子从 null 改成 ext-data。
+    // 方案 §589 的原话是「**架构上**无需改动」(指页面主体/查询链/渲染层都不用动),
+    // 文案漏掉「架构上」三个字就变成了对用户的空头承诺 (CONTRIBUTING §13 不要把猜测当事实)。
+    expect(hkConcept.hint).toContain('扩展数据通道')
+    expect(hkConcept.hint).toContain('本文件注释')
+    expect(hkConcept.hint).not.toContain('无需改代码')
+    // 🔴 源码标识符 (BOARD_DIMENSION_SOURCE) 属于维护者信息, 只准出现在注释里, 不准进 UI。
+    expect(hkConcept.hint).not.toContain('BOARD_DIMENSION_SOURCE')
+  })
+
+  it('🔴 文案长度受控: EmptyState 把 hint 渲染成单个 <p>, 太长就是无断行的墙', () => {
+    // 实测容器 `max-w-md`(≈448px) + `text-sm`, 中文一行约 30 字。
+    // 218 字 ≈ 11 行已经是下限附近的可读极限; 中途一度写到 311 字(≈15 行), 故钉死上限。
+    // 要加内容请先问「这句是用户需要的还是维护者需要的」, 后者写进源码注释。
+    expect(hkConcept.hint.length).toBeLessThanOrEqual(230)
+    expect(hkConcept.hint).not.toContain('\n')
+  })
+
+  it('🔴 文案点破「行业有源、概念无源」, 不与行业页的真实数据自相矛盾', () => {
+    // PR6-1 之后港股行业走维表 f100 恒生行业, 行业页在港股态**有**数据。
+    // 概念页只说「东财板块中心只覆盖 A 股」会被读成「东财没有港股分类」, 与行业页冲突。
+    expect(hkConcept.hint).toContain('恒生行业')
+    expect(hkConcept.hint).toContain('行业分类不在此列')
+    // 同时钉住被删掉的那句错话: 港股行业分类恰恰来自东财, 只是不走板块中心端点。
+    expect(hkConcept.hint).not.toContain('东财网页版')
+    expect(hkConcept.hint).not.toContain('没有港股板块分类')
   })
 
   it('文案告诉用户怎么回到 A 股 (侧栏切换器是全局市场状态的唯一入口)', () => {
@@ -146,7 +172,12 @@ describe('港股概念: 无源 → 明示 + 不用 A 股数据冒充 (方案 §3
     // 行业页已有源, 这里钉的是「概念文案里的板块名必须是概念」,
     // 避免 HK_NO_SOURCE_HINT 被写成硬编码的「行业」而两个页面共用。
     expect(hkConcept.hint).toContain('概念')
-    expect(hkConcept.hint).not.toContain('行业板块')
+    // 🔴 原来钉的是 `not.toContain('行业板块')`, 但上一条测试**故意**让文案提到行业
+    // (为了解释有源/无源的区别), 那个断言就会挡住正确的文案。这里换成钉**真实意图**:
+    // 概念页不得声称「行业也无源」, 也不得把行业页的标题/空态搬过来。
+    expect(hkConcept.hint).not.toContain('不渲染任何港股行业数据')
+    expect(hkConcept.hint).not.toContain('港股无行业板块数据源')
+    expect(hkConcept.title).not.toContain('行业')
   })
 })
 

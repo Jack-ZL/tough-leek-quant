@@ -117,6 +117,28 @@ describe('港股: 前端隐藏 + 明示无源', () => {
     expect(text()).not.toContain('从同花顺获取概念分类数据后即可使用概念板块')
   })
 
+  it('🔴 端到端: 行业对照句真的落到 DOM, 被删掉的错话不许回潮', async () => {
+    await mount()
+    // 「表里有」≠「页面上有」: 这条钉的是**渲染结果**, 防止将来给 EmptyState 传了 title 漏传 hint。
+    // 用户往往刚从行业板块页(港股态有恒生行业数据)切过来, 少了这句会读成自相矛盾。
+    expect(text()).toContain('港股的行业分类不在此列')
+    expect(text()).toContain('恒生行业')
+    // PR6-1 之前文案写着「东财网页版同样没有港股板块分类」—— 港股行业分类恰恰来自东财 f100,
+    // 那句话与行业页的真实数据直接冲突, 已删。「无需改代码」同理(见 board-market-support.test.ts)。
+    expect(text()).not.toContain('东财网页版')
+    expect(text()).not.toContain('无需改代码')
+  })
+
+  it('🔴 端到端: 港股态整页零可交互元素 (没有按钮能点出一次 A 股请求)', async () => {
+    await mount()
+    // 提前 return 之后不该留下任何 A 股态入口(配置数据源 / 拉取 / RPS 轮动 / 排序 / 搜索)。
+    // 只要还剩一个按钮, 用户就能点出一次白拉, 甚至一次 A 股数据泄漏 —— 比文案写错严重得多。
+    expect(host.querySelectorAll('button, a, input, select, [role="button"]').length).toBe(0)
+    // 整页只剩 PageHeader + EmptyState 两块。
+    expect(host.querySelector('h1')?.textContent).toBe('概念板块')
+    expect(host.querySelector('h2')?.textContent).toBe(boardNoSourceCopy('concept', 'HK')!.title)
+  })
+
   it('切回 A 股后恢复正常渲染 (门控可逆, 不是一次性降级)', async () => {
     await mount()
     expect(text()).toContain(boardNoSourceCopy('concept', 'HK')!.title)

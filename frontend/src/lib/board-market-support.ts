@@ -62,6 +62,19 @@ export interface BoardNoSourceCopy {
 }
 
 /**
+ * 概念页专属的对照句: 点破「港股行业有源、概念无源」这层区别。
+ *
+ * 🔴 为什么必须说: 用户往往刚从**行业板块**页切过来, 而那一页在港股态是正常渲染恒生行业的。
+ * 只说「东财板块中心只覆盖 A 股」会被读成自相矛盾 —— 恒生行业恰恰**也来自东财**(维表 f100),
+ * 只是走的不是板块中心那个端点。不点破, 用户要么以为行业页的数据是假的, 要么以为概念页坏了。
+ *
+ * 只挂在概念页: 行业页在港股态**有源**, `boardNoSourceCopy('industry','HK')` 恒为 null,
+ * 根本渲染不到无源文案, 挂上去就是死代码。
+ */
+const HK_CONCEPT_VS_INDUSTRY_NOTE =
+	'港股的行业分类不在此列：恒生行业走维表（东财 f100）而非板块中心，行业页在港股态可正常使用。'
+
+/**
  * 无源空态文案。**只在 `BOARD_DIMENSION_SOURCE` 为 null 的格子里非 null** ——
  * 两张表的一致性由 `board-market-support.test.ts` 钉住, 不靠人记。
  */
@@ -70,7 +83,7 @@ export const BOARD_NO_SOURCE_COPY: Record<BoardKind, Record<Market, BoardNoSourc
 		CN: null,
 		HK: {
 			title: '港股无概念板块数据源',
-			hint: HK_NO_SOURCE_HINT('概念'),
+			hint: HK_NO_SOURCE_HINT('概念', HK_CONCEPT_VS_INDUSTRY_NOTE),
 		},
 	},
 	industry: {
@@ -146,11 +159,30 @@ export function boardNoSourceCopy(kind: BoardKind, market: Market): BoardNoSourc
 // 返回 31 地域 / 496 行业 / 554 概念, **全是 A 股** (BK0882 猪肉概念 等); `t:4/t:5/t:6`
 // 返回空。akshare `stock_board.html` 里港股只有**人气榜**, 板块接口全是
 // `stock_board_concept_*_em` / `stock_board_industry_*_em` / `*_ths` (A 股)。
-// 东财网页版同样没有港股板块。
-function HK_NO_SOURCE_HINT(kindLabel: string): string {
-	return `已实测确认：东财板块中心的地域/行业/概念三类板块全部只覆盖 A 股，akshare 港股侧仅提供人气榜，`
-		+ `东财网页版同样没有港股板块分类。因此本页不渲染任何港股${kindLabel}数据，也不会用 A 股${kindLabel}冒充`
-		+ `（CONTRIBUTING §4 fail closed：宁可明说没有，不可显示假数据）。`
-		+ `${kindLabel}成分走扩展数据通道，将来若找到港股${kindLabel}源，在「数据 → 扩展数据」配一张表即可接入，无需改代码。`
+//
+// 🔴 但「东财没有港股板块分类」这句话是**错的**, 别写进文案: 港股行业分类来自东财
+// `clist/get?fs=m:128` 的 **f100 恒生行业**(见 services/instrument_sync_hk.py), PR6-1 起
+// 已接通。准确的口径是「东财**板块中心**(BK 板块)只覆盖 A 股」, 而不是「东财没有港股分类」。
+// 早先的文案写了后半句, 与行业页的真实数据自相矛盾, 已删。
+//
+// `extraNote` 插在「不冒充」与「后路」之间: 收尾那句「切回 A 股」是行动指引, 必须留在最后。
+//
+// 🔴 文案长度是有约束的: `EmptyState` 把 hint 渲染成**单个 `<p>`**, 容器 `max-w-md`(≈448px),
+// 中文一行约 30 字。超过 ~210 字就是十几行无断行的墙, 用户不会读。所以这里只留用户需要的
+// 四件事(无源依据 / 不冒充 / 行业页可用 / 怎么回 A 股), **接入改法写在下面这段注释里而不是
+// 文案里** —— 那是维护者信息, 而且 `BOARD_DIMENSION_SOURCE` 是源码标识符, 不该出现在 UI。
+//
+// 接入港股概念源的正确改法 (文案里那句「改法见注释」指的就是这里):
+//   1. 把 `BOARD_DIMENSION_SOURCE.concept.HK` 从 `null` 改成 `{ kind: 'ext-data' }`;
+//      这一步**不可省** —— 只要它是 null, `boardNoSourceCopy` 就返回非 null,
+//      `concept-analysis/Page.tsx` 会在发任何查询之前提前 return, 配了扩展表也点不亮本页。
+//   2. 把 `BOARD_NO_SOURCE_COPY.concept.HK` 改回 `null` (两表一致性由测试钉住, 漏改会红)。
+//   3. 在「数据 → 扩展数据」配一张 symbol/concept 表。
+//   页面主体、查询链、渲染层都不用动 —— 这才是方案 §589「架构上无需改动」的准确含义。
+function HK_NO_SOURCE_HINT(kindLabel: string, extraNote = ''): string {
+	return `实测确认：东财板块中心的地域/行业/概念三类板块全部只覆盖 A 股，akshare 港股侧仅提供人气榜，`
+		+ `因此本页不渲染港股${kindLabel}数据，也不会用 A 股${kindLabel}冒充（CONTRIBUTING §4 fail closed）。`
+		+ extraNote
+		+ `将来可经扩展数据通道接入港股${kindLabel}源（改法见本文件注释）。`
 		+ `查看 A 股${kindLabel}板块请用侧栏市场切换器切回 A 股。`
 }
