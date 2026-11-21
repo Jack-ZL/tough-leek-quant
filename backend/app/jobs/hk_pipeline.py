@@ -139,6 +139,7 @@ def run_hk_sync(
     截面。)
     """
     from app.plugins.eastmoney.client import EastmoneyClient
+    from app.plugins.tencent.client import TencentClient
     from app.services import instrument_sync_hk, kline_sync_hk
 
     emit = on_progress or (lambda stage, done, total: None)
@@ -154,8 +155,13 @@ def run_hk_sync(
     }
     data_dir = repo.store.data_dir
 
-    # 三个阶段共用一个 client: 复用连接池, 也让限流令牌桶按同一 host 统一排队。
+    # 🔴 换源后日K与复权因子分属**两个上游主机**, 故各持一个 client:
+    #   日K      → 腾讯 ``ifzq.gtimg.cn``  (东财 push2his 对本机 IP 级封禁)
+    #   复权因子 → 东财 ``datacenter-web`` (F10 分红, 与 push2 不同主机, 未被封)
+    # 两个 client 各自持有连接池与「按 host 分桶」的令牌桶/熔断器, 互不牵连
+    # (一个源被限流不该拖慢另一个)。维表阶段自建 client, 见 instrument_sync_hk。
     client = EastmoneyClient()
+    tx_client = TencentClient()
     try:
         # --- 1. 维表 (软失败) -------------------------------------------------
         emit("instruments", 0, 0)
@@ -190,7 +196,7 @@ def run_hk_sync(
                 repo,
                 include_cny_counter=include_cny_counter,
                 incremental=True,
-                client=client,
+                client=tx_client,
                 on_progress=_throttled_progress("日K"),
             )
         except Exception as e:
@@ -256,6 +262,7 @@ def run_hk_sync(
             result["errors"].append(msg)
     finally:
         client.close()
+        tx_client.close()
 
     logger.info(
         "港股同步完成: 维表 %d / 标的 %d / 日K +%d 行 / 因子 +%d 行 / enriched +%d 行"

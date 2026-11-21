@@ -2,21 +2,30 @@
 
 与 A 股 :mod:`app.services.kline_sync` **物理与代码双隔离** (方案 §4 闸3):
 A 股那条链路深度耦合能力路由/偏好档位/TickFlow 补齐, 港股按用户决策是「行情/K线
-直连东财」, 不走偏好路由。硬塞进 ``sync_and_persist_daily_batch`` 会让两个市场的
-失败互相连累, 且 A 股那条是关键路径。
+直连数据源」, **不走偏好路由**。硬塞进 ``sync_and_persist_daily_batch`` 会让两个
+市场的失败互相连累, 且 A 股那条是关键路径。
+(原决策原文是「直连东财」; 2026-11 东财 push2 集群对本机 IP 级封禁后, **日K行情**
+已换源到腾讯 ifzq, 但「不走偏好路由」这一条不变 —— 换的是源, 不是架构。)
 
 复用的是**纯函数**部分, 这些与路由无关:
-- ``hk.fetch_hk_kline``      港股单标的日K (secid 前缀 116)
-- ``provider._map_kline_row`` CSV 行 → 内部日K契约 (港股行格式与 A 股实测一致)
+- ``tencent.hk_kline.*``     港股单标的日K (🔴 2026-11 起由东财 push2his **换源**到
+  腾讯 ifzq —— push2 集群对本机 IP 级封禁, 详见该模块 docstring)
 - ``kline_sync._normalize_daily`` 规范化 + 停牌日过滤 + canonical 列裁剪
 - ``repo.append_hk_daily``   按日分区 merge-upsert 落库
-- ``hk_dividend.*``          F10 分红事件 → 复权因子 (港股无 TickFlow 因子源)
+- ``hk_dividend.*``          F10 分红事件 → 复权因子 (港股无 TickFlow 因子源)。
+  🔴 这条**仍是东财且不需要换源**: 它走 ``datacenter-web`` 主机, 与被封的 ``push2``
+  集群不同主机, 2026-11 实测可用。
 - ``kline_sync._merge_adj_factor_store`` 因子库 merge-upsert, 与 A 股**同一个函数**
 
-⚠️ **成交量单位**: 港股东财原生单位是「股」, A 股是「手」。本模块按原样落库
+⚠️ **成交量单位**: 港股东财原生单位是「股」, A 股是「手」。腾讯日K同为「股」
+(交叉验证见 :mod:`app.plugins.tencent.hk_kline`)。本模块按原样落库
 (不做单位换算), 下游经 :func:`app.market.shares_per_volume_unit` 换算。落库前
 必须确认 enriched 生成走 ``market=Market.HK``, 否则换手率高 100 倍 ——
 见 ``docs/hk-market-plan.md`` §3.1.2。
+
+⚠️ **腾讯日K无成交额列** ⇒ 落库帧不含 ``amount`` (上游 6 列端点不提供, 自己造一个
+就是编造数据)。全链路 ``amount`` 均为可选列, 缺它是安全的; 补回的可行路径与代价已
+探明并记录在 :mod:`app.plugins.tencent.hk_kline` 的「刻意不做」段, 勿重复调研。
 """
 from __future__ import annotations
 
@@ -30,9 +39,10 @@ from typing import NamedTuple
 import polars as pl
 
 from app.market import Market, SymbolMarketMismatchError
-from app.plugins.eastmoney import hk, hk_dividend
+from app.plugins.eastmoney import hk_dividend
 from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
-from app.plugins.eastmoney.provider import _map_kline_row
+from app.plugins.tencent import hk_kline
+from app.plugins.tencent.client import TencentClient, TencentError
 from app.services.fs_utils import atomic_write_text
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
 from app.services.kline_sync import _merge_adj_factor_store, _normalize_daily
@@ -40,9 +50,10 @@ from app.services.kline_sync import _merge_adj_factor_store, _normalize_daily
 logger = logging.getLogger(__name__)
 
 #: 全量回填起点。与 A 股 ``provider._KLINE_BEG_DEFAULT`` 同值, 但**不 import**:
-#: 港股最早上市标的远晚于 1990, 用同一起点只是让「全量」语义一致, 东财按标的
-#: 实际上市日返回, 不会产生空行。
-HK_KLINE_BEG_DEFAULT = "19900101"
+#: 两个市场的「全量」语义各自独立, 共用常量会让一处改动静默波及另一处。
+#: 🔴 早于此日的历史**刻意不回填** (与换源前的东财路径同窗口 —— 不在换源改动里
+#: 顺带改数据口径): 少数 1990 年前上市的老股 (汇丰 1972 等) 因此只有 1990 起的序列。
+HK_KLINE_BEG_DEFAULT = date(1990, 1, 1)
 
 
 def hk_daily_universe(
@@ -73,41 +84,46 @@ def hk_daily_universe(
 
 
 def iter_hk_daily_frames(
-    client: EastmoneyClient,
+    client: TencentClient,
     symbols: Sequence[str],
     *,
-    beg: str = HK_KLINE_BEG_DEFAULT,
-    end: str = "20500101",
-    fqt: int = 0,
+    beg: date | None = HK_KLINE_BEG_DEFAULT,
+    end: date | None = None,
 ) -> Iterator[pl.DataFrame]:
     """逐标的拉港股日K, 一标的一帧流式产出 (供调用方逐批落盘, 控制峰值内存)。
 
-    单标的软失败 (记 warning + 跳过): 港股有长期停牌标的, 东财对其返回空 klines,
-    一只失败不该中断整轮同步。限速由 client 令牌桶承担。
+    单标的软失败 (记 warning + 跳过): 港股有长期停牌/已退市标的, 腾讯对其返回
+    0 行, 一只失败不该中断整轮同步。限速/熔断/重试由 :class:`TencentClient` 自己
+    持有 (令牌桶 + 熔断器按主机分桶), 此处不叠加 sleep。
 
-    ``fqt`` 必须为 **0** (不复权): 项目契约是落库原始价, 复权在读端按除权因子重建。
+    🔴 **落库必须是原始价 (不复权)**。换源前这条靠一个 ``fqt=0`` 入参守卫, 现在是
+    **结构性**保证: :mod:`app.plugins.tencent.hk_kline` 只调 ``kline/kline``
+    (不复权端点), 从不调 ``hkfqkline`` (等差复权, 反推不出乘性因子)。故 ``fqt``
+    入参已删除而非留成惰性参数 —— 没有生产调用方传它, 留着只会让人以为还能调。
+    由 ``test_uses_raw_endpoint_never_hkfqkline`` 钉死。
+
+    ⚠️ 产出帧**不含 ``amount`` 列** (腾讯 6 列端点不提供成交额), 见模块 docstring。
     """
-    if fqt != 0:
-        raise ValueError(f"港股日K落库必须用原始价 (fqt=0), 收到 fqt={fqt}")
     for symbol in symbols:
         try:
-            lines = hk.fetch_hk_kline(client, symbol, beg, end, fqt=fqt)
-        except EastmoneyError as e:
+            rows = hk_kline.fetch_hk_kline_rows(client, symbol, beg=beg, end=end)
+        except TencentError as e:
             logger.warning("港股日K %s 拉取失败, 跳过: %s", symbol, e)
             continue
         except SymbolMarketMismatchError as e:
             # 维表里混进了非港股 symbol (脏数据/上游改口径)。跳过而非中断:
             # 一只脏数据不该让整轮同步失败, 但必须记 warning 让人能发现。
+            # 与网络失败分开告警: 脏数据是永久性的, 下一轮不会自愈。
             logger.warning("港股日K %s 非港股 symbol, 跳过: %s", symbol, e)
             continue
-        if not lines:
-            logger.debug("港股日K %s 返回 0 行 (可能长期停牌或未上市)", symbol)
-            continue
-        rows = [r for r in (_map_kline_row(symbol, line) for line in lines) if r]
         if not rows:
-            logger.warning("港股日K %s 返回 %d 行但全部无法解析", symbol, len(lines))
+            logger.debug("港股日K %s 返回 0 行 (可能长期停牌/退市, 或区间内无交易日)", symbol)
             continue
-        df = _normalize_daily(pl.DataFrame(rows), default_symbol=symbol)
+        df = hk_kline.parse_hk_kline_rows(symbol, rows)
+        if df.is_empty():
+            logger.warning("港股日K %s 返回 %d 行但全部无法解析", symbol, len(rows))
+            continue
+        df = _normalize_daily(df, default_symbol=symbol)
         if not df.is_empty():
             yield df
 
@@ -134,7 +150,7 @@ def sync_hk_daily(
     end: date | None = None,
     include_cny_counter: bool = False,
     incremental: bool = True,
-    client: EastmoneyClient | None = None,
+    client: TencentClient | None = None,
     on_progress=None,
 ) -> int:
     """同步港股日K → ``kline_hk_daily/``。返回写入的行数。
@@ -156,20 +172,21 @@ def sync_hk_daily(
         latest = latest_hk_daily_date(repo)
         if latest is not None:
             start = latest + timedelta(days=1)
-    beg = start.strftime("%Y%m%d") if start else HK_KLINE_BEG_DEFAULT
-    end_s = end.strftime("%Y%m%d") if end else "20500101"
+    # beg/end 直接传 date: 腾讯要 ISO 格式 (``YYYY-MM-DD``), 换源前这里是东财的
+    # ``YYYYMMDD`` 字符串。end=None ⇒ 该侧留空, 上游语义「取到最新」。
+    beg = start if start is not None else HK_KLINE_BEG_DEFAULT
     if start is not None and end is not None and start > end:
         logger.info("港股日K同步: 起点 %s 晚于终点 %s, 已是最新", start, end)
         return 0
 
     own_client = client is None
     if own_client:
-        client = EastmoneyClient()
+        client = TencentClient()
     written = 0
     done = 0
     total = len(universe)
     try:
-        for df in iter_hk_daily_frames(client, universe, beg=beg, end=end_s):
+        for df in iter_hk_daily_frames(client, universe, beg=beg, end=end):
             repo.append_hk_daily(df)
             written += df.height
             done += 1
@@ -183,7 +200,7 @@ def sync_hk_daily(
         repo.rebuild_views()
     logger.info(
         "港股日K同步完成: %d 标的 / 写入 %d 行 (beg=%s end=%s)",
-        total, written, beg, end_s,
+        total, written, beg, end or "最新",
     )
     return written
 

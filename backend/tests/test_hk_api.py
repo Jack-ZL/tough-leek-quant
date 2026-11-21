@@ -412,6 +412,51 @@ def test_sync_daily_rejects_empty_symbols_list(env):
     assert client.post("/api/hk/sync_daily", json={"symbols": []}).status_code == 400
 
 
+def _stub_hk_daily_chain(monkeypatch, *, daily=0, adj=(0, []), adj_failed=(),
+                         enriched=0, enriched_uncovered=()):
+    """把 ``/sync_daily`` 的三个阶段 (日K → 复权因子 → enriched) 全换成假实现。
+
+    返回 ``{"daily": [...], "adj": [...], "enriched": [...]}``: 每个列表**长度即调用
+    次数**, 元素即该次调用的 kwargs —— 用来钉住链条次序与透传。
+
+    🔴 必须显式挡掉复权因子: 换源后这一环被补进了 HTTP 端点 (此前只有调度管道跑),
+    不挡的话它会真去读 ``kline_hk_daily``, 在空库上提前返回, 断言就看不出次序了。
+    ``adj_failed`` / ``enriched_uncovered`` 非空时灌进路由传入的 ``failed_out`` /
+    ``uncovered_out``, 用来触发两道 fail-closed 闸门。
+    """
+    caps: dict[str, list] = {"daily": [], "adj": [], "enriched": []}
+
+    def _fake_adj(repo, **kw):
+        caps["adj"].append(kw)
+        out = kw.get("failed_out")
+        if out is not None:
+            out.extend(adj_failed)
+        return adj
+
+    def _fake_enriched(repo, **kw):
+        caps["enriched"].append(kw)
+        out = kw.get("uncovered_out")
+        if out is not None:
+            out.extend(enriched_uncovered)
+        return enriched
+
+    monkeypatch.setattr(
+        hk_api.kline_sync_hk, "sync_hk_daily",
+        lambda repo, **kw: caps["daily"].append(kw) or daily,
+    )
+    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_adj_factor", _fake_adj)
+    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", _fake_enriched)
+    return caps
+
+
+#: ``/sync_daily`` 响应里与「复权因子/enriched 闸门」相关的默认字段。
+#: 抽出来是因为四个测试都要断言完整响应字典 (防止悄悄少回报一个字段)。
+_IDLE_CHAIN_FIELDS = {
+    "adj_factor_rows": 0, "adj_factor_failed": [],
+    "enriched_skipped": None, "enriched_uncovered": [],
+}
+
+
 def test_sync_daily_submits_job_with_explicit_symbols(env, monkeypatch):
     client, _, _ = env
     seen = {}
@@ -426,17 +471,12 @@ def test_sync_daily_submits_job_with_explicit_symbols(env, monkeypatch):
     assert r.json()["job_id"] == "hkjob1"
 
     # 闭包必须真的把 symbols 透传给同步函数, 而不是只在请求体里躺着
-    captured = {}
-    monkeypatch.setattr(
-        hk_api.kline_sync_hk, "sync_hk_daily",
-        lambda repo, **kw: captured.update(kw) or 7,
-    )
-    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", lambda repo, **kw: 0)
+    caps = _stub_hk_daily_chain(monkeypatch, daily=7)
     assert seen["run"]() == {
-        "symbols": 2, "rows_written": 7, "enriched_rows": 0, "enriched_uncovered": [],
+        "symbols": 2, "rows_written": 7, "enriched_rows": 0, **_IDLE_CHAIN_FIELDS,
     }
-    assert captured["symbols"] == ["00700.HK", "09988.HK"]
-    assert captured["incremental"] is True
+    assert caps["daily"][0]["symbols"] == ["00700.HK", "09988.HK"]
+    assert caps["daily"][0]["incremental"] is True
 
 
 def test_sync_daily_uses_dim_table_when_symbols_omitted(env, monkeypatch, tmp_path):
@@ -506,21 +546,80 @@ def test_sync_daily_runs_enriched_stage_by_default(env, monkeypatch, tmp_path):
         return {"job_id": "j", "reused": False}
 
     monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
-    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_daily", lambda repo, **kw: 5)
-    cap = {}
-    monkeypatch.setattr(
-        hk_api.kline_sync_hk, "sync_hk_enriched",
-        lambda repo, **kw: cap.update(kw) or 5,
-    )
+    caps = _stub_hk_daily_chain(monkeypatch, daily=5, enriched=5)
 
     assert client.post("/api/hk/sync_daily", json={}).status_code == 200
     assert seen["run"]() == {
-        "symbols": 1, "rows_written": 5, "enriched_rows": 5, "enriched_uncovered": [],
+        "symbols": 1, "rows_written": 5, "enriched_rows": 5, **_IDLE_CHAIN_FIELDS,
     }
+    cap = caps["enriched"][0]
     assert cap["symbols"] == ["00700.HK"], "enriched 阶段应复用同一份标的清单"
     # .get 而非 []: 路由不显式传 start, 断言的是**有效值**(全量发布)而非传参形式
     assert cap.get("start") is None, "全量发布 (按日分区 merge-upsert 幂等)"
     assert callable(cap["on_progress"])
+
+
+def test_sync_daily_runs_adj_factor_before_enriched(env, monkeypatch, tmp_path):
+    """🔴 复权因子必须在 enriched **之前**跑, 且复用同一份标的清单。
+
+    为什么这条要单独钉: ``sync_hk_enriched`` 默认 ``require_adj_factor=True``, 缺
+    ``adj_factor_hk/coverage.json`` 就 fail-closed 返回 **0 行**, 而该文件只由
+    ``sync_hk_adj_factor`` 产出。换源前 HTTP 端点漏了这一环 (只有调度管道
+    ``hk_pipeline.run_hk_sync`` 跑), 于是手工点「同步日K」永远拿不到 enriched,
+    且响应里看不出原因 —— 正是完整性凭据要消灭的那类静默。
+    """
+    client, _, _ = env
+    _seed_dim(tmp_path, [_dim("00700.HK", "腾讯控股")])
+    seen = {}
+
+    async def fake_submit(repo, quote_service, make_run):
+        seen["run"] = make_run(lambda *a, **k: None)
+        return {"job_id": "j", "reused": False}
+
+    monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
+    caps = _stub_hk_daily_chain(monkeypatch, daily=5, adj=(12, ["00700.HK"]), enriched=5)
+    client.post("/api/hk/sync_daily", json={})
+    out = seen["run"]()
+
+    assert [len(caps[k]) for k in ("daily", "adj", "enriched")] == [1, 1, 1], "三阶段各跑一次"
+    assert caps["adj"][0]["symbols"] == ["00700.HK"], "复权因子应复用同一份标的清单"
+    assert callable(caps["adj"][0]["on_progress"])
+    assert out["adj_factor_rows"] == 12
+    assert out["enriched_rows"] == 5, "因子完整时不该被闸门挡下"
+    assert out["enriched_skipped"] is None
+
+
+def test_sync_daily_skips_enriched_when_adj_factor_incomplete(env, monkeypatch, tmp_path):
+    """🔴 复权因子**部分失败** → 跳过 enriched 并回报原因 (fail closed)。
+
+    ``sync_hk_adj_factor`` 逐批 merge 且部分失败不回滚, 所以失败后因子库是「非空但
+    不完整」的中间态。此时放行 enriched, 失败标的的前复权会**静默失真** (用错因子
+    算 MA/MACD, 数值看着还挺像)。宁可这一轮不出 enriched, 等下一轮补齐。
+    判定与 ``hk_pipeline.run_hk_sync`` 完全一致。
+    """
+    client, _, _ = env
+    _seed_dim(tmp_path, [_dim("00700.HK", "腾讯控股"), _dim("09988.HK", "阿里巴巴-W")])
+    seen = {}
+
+    async def fake_submit(repo, quote_service, make_run):
+        seen["run"] = make_run(lambda *a, **k: None)
+        return {"job_id": "j", "reused": False}
+
+    monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
+    caps = _stub_hk_daily_chain(
+        monkeypatch, daily=5, adj=(3, []),
+        adj_failed=("09988.HK", "09988.HK"), enriched=99,
+    )
+    client.post("/api/hk/sync_daily", json={})
+    out = seen["run"]()
+
+    assert caps["enriched"] == [], "因子不完整时不该算 enriched"
+    assert out["enriched_rows"] == 0
+    assert out["enriched_skipped"] is not None
+    assert "fail closed" in out["enriched_skipped"]
+    # 去重后回报: 同一标的多批失败只算一个, 否则前端看到的数字是批次数而非标的数
+    assert out["adj_factor_failed"] == ["09988.HK"]
+    assert out["adj_factor_rows"] == 3, "已成功写入的因子行仍要如实回报"
 
 
 def test_sync_daily_enriched_stage_can_be_disabled(env, monkeypatch, tmp_path):
@@ -535,18 +634,14 @@ def test_sync_daily_enriched_stage_can_be_disabled(env, monkeypatch, tmp_path):
         return {"job_id": "j", "reused": False}
 
     monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
-    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_daily", lambda repo, **kw: 5)
-    called = []
-    monkeypatch.setattr(
-        hk_api.kline_sync_hk, "sync_hk_enriched",
-        lambda repo, **kw: called.append(kw) or 99,
-    )
+    caps = _stub_hk_daily_chain(monkeypatch, daily=5, enriched=99)
 
     client.post("/api/hk/sync_daily", json={"enriched": False})
     assert seen["run"]() == {
-        "symbols": 1, "rows_written": 5, "enriched_rows": 0, "enriched_uncovered": [],
+        "symbols": 1, "rows_written": 5, "enriched_rows": 0, **_IDLE_CHAIN_FIELDS,
     }
-    assert called == [], "关掉开关后不该调用 enriched"
+    assert caps["enriched"] == [], "关掉开关后不该调用 enriched"
+    assert caps["adj"] == [], "复权因子只服务于 enriched, 关掉后同样不该跑"
 
 
 # ---------------------------------------------------------------------------
@@ -617,16 +712,11 @@ def test_sync_daily_reports_enriched_uncovered(env, monkeypatch, tmp_path):
         return {"job_id": "hkd1", "reused": False}
 
     monkeypatch.setattr(hk_api, "_submit_job", fake_submit)
-    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_daily", lambda repo, **kw: 5)
-
-    def fake(repo, **kw):
-        kw["uncovered_out"].append("00700.HK")
-        return 0
-
-    monkeypatch.setattr(hk_api.kline_sync_hk, "sync_hk_enriched", fake)
+    _stub_hk_daily_chain(monkeypatch, daily=5, enriched_uncovered=("00700.HK",))
     assert client.post("/api/hk/sync_daily", json={}).status_code == 200
     assert seen["run"]() == {
         "symbols": 1, "rows_written": 5, "enriched_rows": 0,
+        "adj_factor_rows": 0, "adj_factor_failed": [], "enriched_skipped": None,
         "enriched_uncovered": ["00700.HK"],
     }
 

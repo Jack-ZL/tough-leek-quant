@@ -59,6 +59,12 @@ class _FakeClient:
         self.closed = True
 
 
+class _FakeTencentClient(_FakeClient):
+    """腾讯侧假 client (日K)。与东财**分开计数**: 管道现在同时持有两个实例。"""
+
+    instances: ClassVar[list[_FakeTencentClient]] = []
+
+
 class _RecordingScheduler:
     """记录 add_job/remove_job 调用, 不启事件循环。
 
@@ -107,10 +113,21 @@ class _RaisingJobStore:
 
 @pytest.fixture
 def fake_client(monkeypatch):
+    """把**两个**上游 client 类都换成假实现。
+
+    🔴 换源后港股管道同时持有两个 client: 日K 走腾讯 ``ifzq`` (东财 push2his 对
+    本机 IP 级封禁), 复权因子仍走东财 ``datacenter-web`` (F10 分红, 与 push2 不同
+    主机, 未被封)。两者都得挡掉 —— 真 client 会建连接池, 且腾讯是港股当前**唯一**
+    可用日K源, 不该被测试流量消耗配额。东财实例记在 ``instances``, 腾讯实例记在
+    ``_FakeTencentClient.instances``。
+    """
     _FakeClient.instances = []
+    _FakeTencentClient.instances = []
     import app.plugins.eastmoney.client as em_client
+    import app.plugins.tencent.client as tx_client
 
     monkeypatch.setattr(em_client, "EastmoneyClient", _FakeClient)
+    monkeypatch.setattr(tx_client, "TencentClient", _FakeTencentClient)
     return _FakeClient
 
 
@@ -623,35 +640,48 @@ def test_include_cny_counter_propagates(tmp_path, stub_services, fake_client, no
     assert stub_services["kwargs"]["daily"]["include_cny_counter"] is True
 
 
-def test_daily_uses_incremental_and_shared_client(
+def test_daily_uses_incremental_and_per_source_clients(
     tmp_path, stub_services, fake_client, no_active_job
 ):
-    """日K必须增量(否则每天全量回填), 且三阶段共用同一个 client 复用连接池。"""
+    """日K必须增量(否则每天全量回填), 且日K与复权因子**各用各的** client。
+
+    🔴 换源前这里钉的是「三阶段共用同一个 client 复用连接池」(原名
+    ``test_daily_uses_incremental_and_shared_client``)。现在日K走腾讯 ``ifzq``、
+    复权因子仍走东财 ``datacenter-web``, 是**两个不同主机**: 共用一个对象既复用不了
+    连接池, 还会让两个源的限流令牌桶/熔断器互相牵连 (一个被限流就拖慢另一个)。
+    """
     hk_pipeline.run_hk_sync(_FakeRepo(tmp_path))
     daily_kw = stub_services["kwargs"]["daily"]
+    adj_kw = stub_services["kwargs"]["adj"]
     assert daily_kw["incremental"] is True
-    assert daily_kw["client"] is stub_services["kwargs"]["adj"]["client"]
+    assert daily_kw["client"] is not adj_kw["client"], "两个源不该共用 client"
+    assert isinstance(daily_kw["client"], _FakeTencentClient), "日K该走腾讯 client"
+    assert isinstance(adj_kw["client"], _FakeClient), "复权因子仍走东财 datacenter-web"
     assert len(fake_client.instances) == 1
+    assert len(_FakeTencentClient.instances) == 1
 
 
 # ============================================================
 # 5. 资源清理
 # ============================================================
 
-
 def test_client_closed_on_success(tmp_path, stub_services, fake_client, no_active_job):
     hk_pipeline.run_hk_sync(_FakeRepo(tmp_path))
     assert len(fake_client.instances) == 1
     assert fake_client.instances[0].closed is True
+    # 🔴 换源后多了一个腾讯 client, 同样必须 close (否则连接池泄漏)
+    assert len(_FakeTencentClient.instances) == 1
+    assert _FakeTencentClient.instances[0].closed is True
 
 
 @pytest.mark.parametrize("stage", ["daily", "adj_factor", "enriched"])
 def test_client_closed_on_stage_failure(tmp_path, stub_services, fake_client,
                                        no_active_job, stage):
-    """任一阶段抛异常, client 都必须 close (finally 保证, 否则连接泄漏)。"""
+    """任一阶段抛异常, **两个** client 都必须 close (finally 保证, 否则连接泄漏)。"""
     stub_services["raise"][stage] = RuntimeError("boom")
     hk_pipeline.run_hk_sync(_FakeRepo(tmp_path))
     assert fake_client.instances[0].closed is True
+    assert _FakeTencentClient.instances[0].closed is True
 
 
 def test_client_closed_when_universe_empty(tmp_path, stub_services, fake_client,
@@ -659,6 +689,7 @@ def test_client_closed_when_universe_empty(tmp_path, stub_services, fake_client,
     stub_services["universe"] = []
     hk_pipeline.run_hk_sync(_FakeRepo(tmp_path))
     assert fake_client.instances[0].closed is True
+    assert _FakeTencentClient.instances[0].closed is True
 
 
 # ============================================================

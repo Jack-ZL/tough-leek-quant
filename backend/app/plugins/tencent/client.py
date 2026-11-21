@@ -48,9 +48,12 @@ SNAPSHOT_BATCH = 300
 # m1 分钟K单请求根数上限(实测请求 1400 仍只返回 320)
 MKLINE_M1_MAX = 320
 
-# 日K单请求根数: 实测 900 根正常返回(hkHSI 回溯到 2023-03-17), 与 m1 的 320 硬顶
-# 不同, 未见低上限。取 800 覆盖「365 天默认窗口 + 长假余量」并留一倍冗余。
-KLINE_DAILY_MAX = 800
+# 日K单请求根数上限。🔴 实测 (2026-11-21, hk00005) 服务端硬顶**恰好 2000**, 且
+# 超限是**静默失败**: count=2000 正常返回 2000 行, count=2500/3000/5000 一律
+# code=0 + **0 行**, 不报错 —— 「要太多就什么都拿不到」会被当成「该标的无数据」
+# 而静默跳过, 所以下面的 clamp 是**承重**的, 不是防御性冗余。
+# (旧值 800 是当时只探到 900 仍正常、未见上限时的保守取值。)
+KLINE_DAILY_MAX = 2000
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -297,11 +300,28 @@ class TencentClient:
         rows = node.get("m1") or []
         return rows if isinstance(rows, list) else []
 
-    def kline_daily(self, code: str, count: int = KLINE_DAILY_MAX) -> list[list]:
+    def kline_daily(
+        self,
+        code: str,
+        count: int = KLINE_DAILY_MAX,
+        *,
+        beg: str | None = None,
+        end: str | None = None,
+    ) -> list[list]:
         """单标的日K → 原始行列表 ``[date, 开, 收, 高, 低, 量]``。
 
         真机实测 (2026-11-16, ``hkHSI``): ``ifzq.gtimg.cn`` 与 ``web.ifzq.gtimg.cn``
         返回逐字节相同, 统一用既有 ``IFZQ_BASE`` 裸域 (与 :meth:`kline_m1` 一致)。
+
+        ``beg``/``end``: 可选的 ``YYYY-MM-DD`` 日期区间, ``None`` 则该侧留空
+        (上游语义「不限」)。默认全 ``None`` ⇒ 只按 ``count`` 取最近 N 根,
+        与既有调用方 (港股指数链路) 行为逐字节不变。
+
+        🔴 **给了区间且区间内根数 > ``count`` 时, 返回的是区间「尾部」``count`` 根**,
+        不是从头开始: 实测 ``hk00005,day,2020-01-01,2026-11-21,800`` → 800 行但只
+        覆盖 2023-08-23 起。要回填全历史必须**从近往远**翻页 (每页把 ``end`` 改成
+        「本页最早日 − 1 天」), 从远往近翻会永远拿同一段最近数据。翻页实现见
+        :func:`app.plugins.tencent.hk_kline.fetch_hk_kline_rows`。
 
         🔴 **列序是 开/收/高/低 —— 收盘在第 3 列 (index 2), 不是常见的 OHLC 序**。
         与 :meth:`kline_m1` 同款反直觉排列, 按 ``row[2]`` 当最高价会让上下影线全错。
@@ -312,14 +332,18 @@ class TencentClient:
         两源对「这个数是什么单位」各执一词 → **原样透传, 严禁乘除折算**。
         指数的量额在本仓唯一功能作用是 :func:`filter_halt_days` 的停牌判据
         (指数无流通股本 → 无换手率, MA/MACD 只用 close), 不参与任何定量计算。
+        ⚠️ 但**个股**的量已另有独立交叉验证为「股」: 腾讯日K ``hk00700``
+        2026-11-20 量 ``41094469.000`` 与腾讯快照 ``[6]`` ``41094469.0`` 逐位相同,
+        而快照该位由 :mod:`app.plugins.tencent.hk_spot` 钉死为股。
 
-        code: 带市场前缀的腾讯代码 (港股指数为 ``hkHSI`` 这种 ``hk`` + 大写代码)。
+        code: 带市场前缀的腾讯代码 (港股指数为 ``hkHSI`` 这种 ``hk`` + 大写代码,
+        港股个股为 ``hk00700``)。
         """
         count = max(1, min(int(count), KLINE_DAILY_MAX))
         text = self._get_text(
             IFZQ_BASE,
             "/appstock/app/kline/kline",
-            {"param": f"{code},day,,,{count}"},
+            {"param": f"{code},day,{beg or ''},{end or ''},{count}"},
         )
         try:
             payload = json.loads(text)

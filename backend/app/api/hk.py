@@ -172,6 +172,10 @@ def sync_hk_instruments(request: Request) -> dict:
 async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
     """异步触发港股日K同步 → ``kline_hk_daily/``, 立即返回 job_id。
 
+    ``enriched=true`` (默认) 时链条是 **日K → 复权因子 → enriched**, 与调度管道
+    :func:`app.jobs.hk_pipeline.run_hk_sync` 同序同闸门; 复权因子部分失败则跳过
+    enriched 并在响应里回报原因 (fail closed)。
+
     轮询 ``/api/pipeline/jobs/{job_id}`` 拿进度 (与盘后管道同一套任务存储)。
     若已有数据任务在跑, 返回该任务 id 而不是另起一个 (防撞限流)。
     """
@@ -212,21 +216,51 @@ async def sync_hk_daily(request: Request, req: HkDailySyncRequest) -> dict:
             )
             enriched_rows = 0
             enriched_uncovered: list[str] = []
+            adj_rows = 0
+            adj_failed: list[str] = []
+            enriched_skipped: str | None = None
             if req.enriched:
-                def on_enriched(done: int, total: int) -> None:
+                # 🔴 复权因子**必须**在 enriched 之前跑, 且此前 HTTP 端点漏了这一步:
+                # ``sync_hk_enriched`` 默认 ``require_adj_factor=True``, 缺
+                # ``adj_factor_hk/coverage.json`` 就 fail-closed 返回 **0 行**。
+                # 该文件只由 ``sync_hk_adj_factor`` 产出, 而换源前它仅被调度管道
+                # (``hk_pipeline.run_hk_sync``) 调用 ⇒ 手工点「同步日K」永远拿不到
+                # enriched, 且看不出原因。这里补上与调度管道**同序同闸门**的一环。
+                def on_adj(done: int, total: int) -> None:
                     pct = int(done * 100 / total) if total else 100
-                    progress("hk_enriched", pct, f"港股 enriched {done}/{total}", stage_pct=pct)
+                    progress("hk_adj", pct, f"港股复权因子 {done}/{total}", stage_pct=pct)
 
-                # 不传 start: enriched 按日分区 merge-upsert, 全量发布是幂等的,
-                # 而裁剪发布范围会让「首次同步」漏掉预热期之前的行。
-                enriched_rows = kline_sync_hk.sync_hk_enriched(
-                    repo, symbols=universe, on_progress=on_enriched,
-                    uncovered_out=enriched_uncovered,
+                adj_rows, _changed = kline_sync_hk.sync_hk_adj_factor(
+                    repo, symbols=universe, failed_out=adj_failed, on_progress=on_adj,
                 )
+                if adj_failed:
+                    # 与 hk_pipeline 同一 fail-closed 判定: 因子库此时**非空但不完整**
+                    # (逐批 merge 且部分失败不回滚), 放行 enriched 会让失败标的的
+                    # 前复权静默失真 —— 宁可这一轮不出 enriched, 等下一轮补齐。
+                    enriched_skipped = (
+                        f"复权因子有 {len(set(adj_failed))} 个标的拉取失败, 因子库不完整, "
+                        "本轮跳过 enriched (fail closed, 重跑本接口即可补齐)"
+                    )
+                else:
+                    def on_enriched(done: int, total: int) -> None:
+                        pct = int(done * 100 / total) if total else 100
+                        progress("hk_enriched", pct, f"港股 enriched {done}/{total}", stage_pct=pct)
+
+                    # 不传 start: enriched 按日分区 merge-upsert, 全量发布是幂等的,
+                    # 而裁剪发布范围会让「首次同步」漏掉预热期之前的行。
+                    enriched_rows = kline_sync_hk.sync_hk_enriched(
+                        repo, symbols=universe, on_progress=on_enriched,
+                        uncovered_out=enriched_uncovered,
+                    )
             return {
                 "symbols": len(universe),
                 "rows_written": written,
+                "adj_factor_rows": adj_rows,
+                "adj_factor_failed": sorted(set(adj_failed)),
                 "enriched_rows": enriched_rows,
+                # 非空 = enriched 被复权因子完整性闸门挡下, 附原因。不回报的话
+                # 调用方只看到 enriched_rows=0, 分不清是「没数据」还是「被闸门挡了」。
+                "enriched_skipped": enriched_skipped,
                 # 非空 = 这些标的复权因子覆盖不完整, 被 enriched **拒算** (fail closed)。
                 # 必须回报: 否则调用方只看到 enriched_rows 偏少, 分不清是「本来没数据」
                 # 还是「被闸门挡了」—— 那正是完整性凭据要消灭的静默。

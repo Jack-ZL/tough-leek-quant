@@ -1,6 +1,13 @@
 """港股日K同步: universe 口径、单位透传、软失败、增量起点与落库隔离。
 
-网络一律用假 client 挡掉 (东财 push2 对突发请求有 IP 级临时封禁, 测试触网不可复现)。
+网络一律用假 client 挡掉 (测试触网不可复现; 且腾讯 ifzq 是港股当前**唯一**可用
+日K源, 不该被测试流量消耗配额)。
+
+🔴 2026-11 换源: 日K由东财 ``push2his`` 改走腾讯 ``ifzq`` (push2 集群对本机 IP 级
+封禁)。本文件的假 client 与样本行随之从「东财 CSV 字符串 + secid 116」改为
+「腾讯行列表 + hk 前缀代码」; 被钉住的**契约本身不变** (原始价、量单位股、
+canonical 列、软失败、增量起点、落库隔离)。复权因子仍走东财 datacenter-web,
+故 ``test_hk_adj_factor.py`` 不受影响。
 """
 
 from __future__ import annotations
@@ -11,32 +18,46 @@ import polars as pl
 import pytest
 
 from app.market import Market
-from app.plugins.eastmoney.client import EastmoneyError
+from app.plugins.tencent.client import TencentError
 from app.services import kline_sync_hk as sync_hk
 from app.services.fs_utils import atomic_write_parquet
 from app.services.instrument_sync_hk import HK_INSTRUMENT_RELPATH
 from app.tickflow.repository import DataStore, KlineRepository
 
-#: 实测 00700 在 2026-11-13 的东财日K行。列序: 日期,开,收,高,低,量,额,振幅%,涨跌幅%,涨跌额,换手率%
-#: ⚠️ volume=31493353 的单位是**股** (A 股同位置是手), 这是本文件最重要的断言对象。
-KLINE_00700 = "2026-11-13,393.000,386.600,395.200,385.600,31493353,12251162810,3.2,1.1,4.2,0.35"
-KLINE_00700_PREV = "2026-11-12,388.000,393.000,394.000,386.000,28000000,10900000000,2.1,1.3,5.0,0.31"
+#: 实测 00700 腾讯日K原始行 (2026-11-20, ``ifzq.gtimg.cn/appstock/app/kline/kline``)。
+#: 🔴 列序 ``[date, 开, **收**, 高, 低, 量]`` —— 收盘在 index 2, 不是常见 OHLC 序。
+#: 🔴 ``volume=41094469`` 单位是**股** (A 股同位置是手): 与同一日腾讯快照
+#:    ``qt.gtimg.cn`` 的 ``[6]`` 位 (``41094469.0``) **逐位相同**, 而快照该位已由
+#:    ``test_hk_tencent_spot`` 钉死为股 —— 两个独立端点互证, 见下
+#:    :data:`SNAPSHOT_00700_VOLUME`。
+KLINE_00700 = ["2026-11-20", "341.000", "344.000", "349.600", "339.600", "41094469.000"]
+KLINE_00700_PREV = ["2026-11-19", "361.800", "348.400", "365.000", "345.000", "76426269.000"]
+
+#: 腾讯快照 ``hk00700`` 在 2026-11-20 的 ``[6]`` 位实测值 (单位: 股)。
+#: 换源前本文件用「成交额/成交量落在当日高低价之间」当单位与列序的自洽探针;
+#: 腾讯 6 列端点**不提供成交额**, 故改用这个更强的交叉验证 (两个独立端点逐位比对,
+#: 而 VWAP 探针自身在 960 行实测里还有 1 行越界)。
+SNAPSHOT_00700_VOLUME = 41094469.0
 
 
 class _FakeClient:
-    """按 symbol 返回预置 kline; 记录调用参数以便断言 beg/end/fqt。"""
+    """按腾讯代码返回预置日K行; 记录调用参数以便断言 code/beg/end/count。
 
-    def __init__(self, table: dict[str, list[str] | Exception]):
+    🔴 换源前这里模拟东财 ``client.kline(secid, beg, end, klt=101, fqt=0)``;
+    现改为模拟 :meth:`app.plugins.tencent.client.TencentClient.kline_daily`。
+    """
+
+    def __init__(self, table: dict[str, list | Exception]):
         self._table = table
         self.calls: list[dict] = []
         self.closed = False
 
-    def kline(self, secid, beg, end, *, klt=101, fqt=0):
-        self.calls.append({"secid": secid, "beg": beg, "end": end, "klt": klt, "fqt": fqt})
-        out = self._table.get(secid.split(".", 1)[1])
+    def kline_daily(self, code, count=2000, *, beg=None, end=None):
+        self.calls.append({"code": code, "count": count, "beg": beg, "end": end})
+        out = self._table.get(code[len("hk"):])
         if isinstance(out, Exception):
             raise out
-        return out or []
+        return list(out or [])
 
     def close(self):
         self.closed = True
@@ -88,8 +109,12 @@ def test_universe_tolerates_missing_is_cny_counter_column(tmp_path):
 def test_volume_is_persisted_in_shares_not_lots():
     """🔴 港股 volume 落库必须是**股**, 不得乘 100。
 
-    东财原生单位就是股 (两条独立交叉验证见 docs/hk-market-plan.md §3.1.2)。
-    在这里乘 100 会让下游换手率/VWAP 全部错位, 且**不报错**。
+    腾讯日K原生单位就是股。在这里乘 100 会让下游换手率全部错位, 且**不报错**。
+
+    🔴 换源后的交叉验证方式: 旧断言用「成交额/成交量落在当日高低价之间」当单位与
+    列序的自洽探针, 但腾讯 6 列端点**不提供成交额**。改用**同日腾讯快照**的 ``[6]``
+    位逐位比对 —— 快照该位由 ``test_hk_tencent_spot`` 独立钉死为股, 两个端点互证,
+    比 VWAP 探针更强 (后者自身在 960 行实测里有 1 行越界)。
     """
     client = _FakeClient({"00700": [KLINE_00700]})
     frames = list(sync_hk.iter_hk_daily_frames(client, ["00700.HK"]))
@@ -97,55 +122,79 @@ def test_volume_is_persisted_in_shares_not_lots():
     assert len(frames) == 1
     row = next(iter(frames)).row(0, named=True)
     assert row["symbol"] == "00700.HK"
-    assert row["date"] == dt.date(2026, 11, 13)
-    assert row["volume"] == 31493353.0, "volume 被换算过"
-    # 自洽性: 成交额 / 成交量 必须落在当日高低价之间 (否则单位或列序错了)
-    vwap = row["amount"] / row["volume"]
-    assert row["low"] <= vwap <= row["high"], f"VWAP {vwap} 不在 [{row['low']}, {row['high']}]"
+    assert row["date"] == dt.date(2026, 11, 20)
+    assert row["volume"] == SNAPSHOT_00700_VOLUME, (
+        f"日K量 {row['volume']} 与同日快照量 {SNAPSHOT_00700_VOLUME} 不一致 (单位被换算过?)"
+    )
+    assert "amount" not in row, "腾讯 6 列端点不提供成交额, 不得凭空造一列"
 
 
 def test_ohlc_column_order_is_close_before_high_low():
-    """东财 CSV 列序是 日期,开,**收**,高,低 —— 收在第 3 列, 与常见 OHLC 序不同。
+    """腾讯日K列序是 ``日期,开,**收**,高,低,量`` —— 收在第 3 列, 与常见 OHLC 序不同。
 
     映射错位的症状是 high/low 互换、close 变成 high, 而数据看起来「还挺像」,
-    极难发现。用一行各值互不相同的样本钉死。
+    极难发现。用一行各值互不相同的**实测**样本钉死。
     """
     client = _FakeClient({"00700": [KLINE_00700]})
     row = next(iter(sync_hk.iter_hk_daily_frames(client, ["00700.HK"]))).row(0, named=True)
-    assert row["open"] == 393.0
-    assert row["close"] == 386.6
-    assert row["high"] == 395.2
-    assert row["low"] == 385.6
+    assert row["open"] == 341.0
+    assert row["close"] == 344.0
+    assert row["high"] == 349.6
+    assert row["low"] == 339.6
 
 
 def test_frames_use_canonical_daily_columns():
-    """落库列必须与 A 股 canonical 一致, 否则 unified 视图/读端会分叉。"""
+    """落库列必须是 A 股 canonical 的**子集且同序**, 否则 unified 视图/读端会分叉。
+
+    🔴 换源后不再等于全集: 腾讯 6 列端点不提供成交额, ``amount`` 缺席。
+    ``_normalize_daily`` 只保留存在的 canonical 列且按 canonical 排序, 故断言
+    方式是「子集 + 同序」而非「相等」。下游对此是宽容的 (``append_hk_enriched``
+    按存在的列落盘, 指标计算不用成交额, 读端该列默认隐藏)。
+    """
     from app.services.kline_sync import CANONICAL_DAILY_COLS
 
     client = _FakeClient({"00700": [KLINE_00700]})
     df = next(iter(sync_hk.iter_hk_daily_frames(client, ["00700.HK"])))
-    assert df.columns == CANONICAL_DAILY_COLS
+    expected = [c for c in CANONICAL_DAILY_COLS if c != "amount"]
+    assert df.columns == expected
+    assert set(df.columns) <= set(CANONICAL_DAILY_COLS), "出现了 canonical 之外的列"
 
 
-def test_fqt_must_be_zero():
-    """项目契约: 落库原始价, 复权在读端按除权因子重建。前复权价落库会污染历史。"""
-    client = _FakeClient({"00700": [KLINE_00700]})
-    with pytest.raises(ValueError):
-        list(sync_hk.iter_hk_daily_frames(client, ["00700.HK"], fqt=1))
+def test_no_fqt_knob_remains_on_the_service():
+    """🔴 换源前这里钉的是「fqt 必须为 0」; 现在 ``fqt`` 入参**已删除**。
+
+    钉住「删除」这个事实, 而不是留一个恒为 0 的惰性参数: 「落库原始价」这条契约
+    改由**结构**保证 —— 插件只调不复权端点 ``kline/kline``, 从不调等差复权的
+    ``hkfqkline`` (由 ``test_hk_tencent_kline.test_uses_raw_endpoint_never_hkfqkline``
+    钉死)。留着 fqt 入参会让人以为还能调, 而腾讯侧一旦传 ``qfq`` 拿到的是**等差**
+    复权价, 反推乘性因子会凭空造出除权事件 (汇丰实测 207 个, 真实约 3 个)。
+    """
+    import inspect
+
+    assert "fqt" not in inspect.signature(sync_hk.iter_hk_daily_frames).parameters
 
 
-def test_secid_uses_hk_prefix_116():
+def test_tencent_code_uses_hk_prefix():
+    """🔴 换源前钉的是东财 secid ``116.00700``; 腾讯侧代码形如 ``hk00700``。
+
+    前缀错 (或漏) 的症状是上游返回空数据而非报错 —— 整轮同步「成功」写入 0 行。
+    """
     client = _FakeClient({"00700": [KLINE_00700]})
     list(sync_hk.iter_hk_daily_frames(client, ["00700.HK"]))
-    assert client.calls[0]["secid"] == "116.00700"
-    assert client.calls[0]["klt"] == 101
+    assert client.calls[0]["code"] == "hk00700"
 
 
 def test_beg_end_are_passed_through():
+    """🔴 换源后 beg/end 是 ``date`` 且以 **ISO** 格式下发 (东财要 ``YYYYMMDD``)。
+
+    格式错的症状同样是静默空返回, 不是报错。
+    """
     client = _FakeClient({"00700": [KLINE_00700]})
-    list(sync_hk.iter_hk_daily_frames(client, ["00700.HK"], beg="20260101", end="20261113"))
-    assert client.calls[0]["beg"] == "20260101"
-    assert client.calls[0]["end"] == "20261113"
+    list(sync_hk.iter_hk_daily_frames(
+        client, ["00700.HK"], beg=dt.date(2026, 1, 1), end=dt.date(2026, 11, 20)
+    ))
+    assert client.calls[0]["beg"] == "2026-01-01"
+    assert client.calls[0]["end"] == "2026-11-20"
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +202,9 @@ def test_beg_end_are_passed_through():
 # ---------------------------------------------------------------------------
 
 def test_single_symbol_failure_does_not_abort_the_run(caplog):
-    """港股有长期停牌标的, 东财对其返回空/报错。一只失败不该中断整轮同步。"""
+    """港股有长期停牌标的, 腾讯对其返回空/报错。一只失败不该中断整轮同步。"""
     client = _FakeClient({
-        "00700": EastmoneyError("boom"),
+        "00700": TencentError("boom"),
         "09988": [KLINE_00700],
     })
     with caplog.at_level("WARNING"):
@@ -199,7 +248,7 @@ def test_sync_writes_to_hk_dir_and_never_to_cn_dir(tmp_path):
     assert list((tmp_path / "kline_hk_daily").rglob("*.parquet")), "港股目录未写入"
     assert not list((tmp_path / "kline_daily").rglob("*.parquet")), "污染了 A 股目录"
     # 按日分区, 与 A 股同一布局
-    assert (tmp_path / "kline_hk_daily" / "date=2026-11-13").is_dir()
+    assert (tmp_path / "kline_hk_daily" / "date=2026-11-20").is_dir()
 
 
 def test_synced_data_is_queryable_via_view(tmp_path):
@@ -209,7 +258,7 @@ def test_synced_data_is_queryable_via_view(tmp_path):
     sync_hk.sync_hk_daily(repo, client=client, incremental=False)
 
     rows = repo.execute_all("SELECT symbol, volume FROM kline_hk_daily")
-    assert rows == [("00700.HK", 31493353.0)]
+    assert rows == [("00700.HK", 41094469.0)]
 
 
 def test_sync_skips_when_universe_empty(tmp_path):
@@ -230,11 +279,13 @@ def test_incremental_start_is_day_after_latest(tmp_path):
     client = _FakeClient({"00700": [KLINE_00700_PREV, KLINE_00700]})
     sync_hk.sync_hk_daily(repo, client=client, incremental=False)
 
-    assert sync_hk.latest_hk_daily_date(repo) == dt.date(2026, 11, 13)
+    assert sync_hk.latest_hk_daily_date(repo) == dt.date(2026, 11, 20)
 
     client2 = _FakeClient({"00700": []})
     sync_hk.sync_hk_daily(repo, client=client2)
-    assert client2.calls[0]["beg"] == "20261114"
+    # 🔴 换源后 beg 以 **ISO** 下发 (东财要 ``YYYYMMDD``); 增量起点语义不变,
+    # 仍是「已落库最大日 + 1 天」。
+    assert client2.calls[0]["beg"] == "2026-11-21"
 
 
 def test_incremental_noop_when_already_up_to_date(tmp_path):
