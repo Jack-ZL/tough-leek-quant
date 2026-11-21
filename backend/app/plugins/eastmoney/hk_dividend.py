@@ -173,14 +173,25 @@ def parse_hk_dividend_plan(text: str | None) -> HkDividendPlan | None:
 
 
 def _parse_ex_date(value) -> date | None:
-    """``EX_DIVIDEND_DATE`` (``'2026-05-15 00:00:00'`` / null) → :class:`date`。"""
+    """``EX_DIVIDEND_DATE`` → :class:`date`; 为空或无法解析 → ``None``。
+
+    🔴 上游**同一份报表里两种日期格式并存**: ``NOTICE_DATE`` 是
+    ``'2026-10-14 00:00:00'`` (横杠 + 时间尾巴), 而 ``EX_DIVIDEND_DATE`` /
+    ``DIVIDEND_DATE`` 是 ``'2026-11-05'`` (**斜杠**, 无时间)。2026-11-21 实测汇丰
+    ``00005`` 的 95 条事件, ``EX_DIVIDEND_DATE`` **全部**是斜杠格式,
+    ``datetime.fromisoformat`` 一律拒绝 ⇒ 整只标的的分红史被静默判成「无除权事件」,
+    复权因子库空着却把标的记进 ``coverage.json`` 的 covered (fail open), 下游
+    ``close == raw_close`` 且**不报错**。故两种分隔符都接受 —— 与
+    :mod:`app.plugins.tencent.hk_spot` 处理港股时间戳同一纪律 (那边也是斜杠)。
+    """
     if not value:
         return None
     s = str(value).strip()
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s[:19]).date()
+        # 先砍时间尾巴再统一分隔符; fromisoformat 接受纯日期串
+        return datetime.fromisoformat(s[:19].replace("/", "-")).date()
     except ValueError:
         logger.warning("港股分红除净日无法解析, 跳过: %r", value)
         return None

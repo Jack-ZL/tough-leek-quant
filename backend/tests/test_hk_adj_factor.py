@@ -379,6 +379,37 @@ def test_row_without_ex_date_is_skipped():
     assert f.is_empty()
 
 
+def test_ex_date_accepts_both_slash_and_dash_formats():
+    """🔴 上游 ``EX_DIVIDEND_DATE`` 实测是**斜杠**格式 ``'2026-11-05'``, 且无时间尾巴。
+
+    同一份 F10 报表里两种格式并存: ``NOTICE_DATE`` 是 ``'2026-10-14 00:00:00'``
+    (横杠 + 时间), ``EX_DIVIDEND_DATE`` / ``DIVIDEND_DATE`` 是斜杠。2026-11-21 实测
+    汇丰 ``00005`` 的 95 条事件**全部**是斜杠 —— 只认横杠会让整只标的的分红史被静默
+    判成「无除权事件」: 因子库空着, ``coverage.json`` 却把标的记成 covered
+    (fail open), 下游 ``close == raw_close`` 且**不报错**。两种分隔符都必须接受。
+    """
+    closes = _closes(
+        (dt.date(2026, 5, 14), 137.0), (dt.date(2026, 5, 15), 136.5),
+        (dt.date(2026, 11, 4), 138.5), (dt.date(2026, 11, 5), 136.0),
+    )
+    f = hd.build_hk_adj_factors("00005.HK", [
+        {"EX_DIVIDEND_DATE": "2026/11/05", "PLAN_EXPLAIN": "每股派港币1元"},
+        _ev("2026-05-15", "每股派港币1元"),   # 横杠 + " 00:00:00" 尾巴
+    ], closes)
+    assert sorted(d.isoformat() for d in f["trade_date"]) == ["2026-05-15", "2026-11-05"]
+
+
+def test_unparseable_ex_date_is_skipped_with_warning(caplog):
+    """真解析不出来才告警跳过 —— 与「格式是斜杠」必须区分开, 否则告警失去信号价值。"""
+    closes = _closes((dt.date(2026, 1, 1), 100.0))
+    with caplog.at_level(logging.WARNING, logger="app.plugins.eastmoney.hk_dividend"):
+        f = hd.build_hk_adj_factors("00005.HK", [
+            {"EX_DIVIDEND_DATE": "不是日期", "PLAN_EXPLAIN": "每股派港币1元"},
+        ], closes)
+    assert f.is_empty()
+    assert "除净日无法解析" in caplog.text
+
+
 def test_empty_events_gives_empty_frame():
     """无除权事件 → **空帧** (合法结果), 语义区别于「取数失败」。"""
     closes = _closes((dt.date(2026, 1, 1), 100.0))
