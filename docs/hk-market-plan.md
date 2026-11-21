@@ -570,8 +570,8 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 | # | 功能 | 数据源 |
 |---|---|---|
-| 5 | 南向资金 / 港股通 | `stock_hk_security_profile_em` 的 `是否沪港通标的` / `是否深港通标的`；`stock_hk_ggt_components_em`（港股通成份） |
-| 6 | AH 溢价 | `stock_zh_ah_name_tx` / `_spot_tx` / `_daily_tx` / `_spot_em`（15 分钟延时）。QuantMind 的 `ah_premium` 是三源拼装：A 收盘=本地库、H 收盘=akshare、汇率=中行折算价（`currency_boc_sina`） |
+| 5 | 南向资金 / 港股通 | ✅ **已落地**（PR8，见 §14）。**不用 akshare**：直连东财 datacenter `RPT_MUTUAL_DEAL_HISTORY`（`MUTUAL_TYPE` 002/004/006）。🔴 该表 `*_AMT` 单位是**百万元**；`HOLD_MARKET_CAP` 因口径无法自证而**刻意排除** |
+| 6 | AH 溢价 | ✅ **已落地**（PR8，见 §14）。**不用 akshare 三源拼装**：配对=东财 F10 `RPT_F10_BASIC_ORGINFO`，A/H 收盘=本地不复权日K，汇率=新浪 `hq` 快照（自带 `as_of`）。全项目**唯一**被批准的汇率换算，四条豁免前提见 §14 |
 | 7 | CCASS 机构持仓 | **可选，成本高**（QuantMind 为「聪明钱」写了 11 个前端组件 + 6 个测试文件），见 §16 |
 
 ### 第三梯队：补充维度
@@ -1962,6 +1962,156 @@ ruff：两个改动文件 + 新测试文件均 `All checks passed`（与 HEAD �
 另做了一次**反向验证**：把 HEAD 版本的错表读取注入回 `get_levels`，
 13 例中端点级 **5 例全红**（见陷阱 4），证明新测试确实钉住了缺陷本身，
 而不是「新旧代码都绿」的空测试。
+
+### PR8 完成情况（港股独有维度）—— 南向资金流 + AH 溢价
+
+§10 第二梯队的 #5、#6 两项。**两项都不落库**，理由与 PR7 分红日历相同：
+上游支持按窗口/全量直取，落库只会多出「同步没跑 → 数据是旧的」这一类失败模式。
+
+**落地文件**
+
+| 层 | 文件 | 要点 |
+| --- | --- | --- |
+| plugin | `app/plugins/sina/fx.py` | 新浪 `hq` 外汇快照取 HKD/CNY；`FX_SOURCE="sina_hq_fx"`，带三角自检与合理区间 |
+| plugin | `app/plugins/eastmoney/hsgt.py` | 东财 datacenter `RPT_MUTUAL_DEAL_HISTORY`；`SOUTHBOUND_MUTUAL_TYPES=("002","004","006")` |
+| plugin | `app/plugins/eastmoney/ah_pair.py` | 东财 F10 `RPT_F10_BASIC_ORGINFO`；`AH_FILTER_A_SHARE='(SECURITY_TYPE_CODE="058001001")'` |
+| service | `app/services/hk_connect_flow.py` | 12 列契约 + 5/20 日滚动合计 |
+| service | `app/services/ah_premium.py` | 9 列契约 + 配对消歧 + 溢价计算 |
+| api | `app/api/hk.py` | `GET /api/hk/connect-flow`、`GET /api/hk/ah-premium` |
+| 前端 | `src/custom/hk-connect-flow/`、`src/custom/hk-ah-premium/` | 两个 custom 扩展，**核心路由/导航零改动** |
+
+**🔴 与 §10 原方案的两处偏离（均为实测后修正）**
+
+1. **不用 akshare**。原方案写的是 `stock_hk_ggt_components_em` /
+   `stock_zh_ah_name_tx` / `currency_boc_sina` 等 akshare 接口。实测直连
+   东财 datacenter 与新浪 hq 都能拿到同样的字段，且**少一层依赖、少一层
+   列名漂移风险**（§3.1 的选型结论在此同样成立）。akshare 仍只作财务类兜底 extra。
+2. **AH 配对的汇率不用中行折算价**，改用新浪实时快照。原因见下面「汇率豁免」一节：
+   中行折算价是**日频官方价**，与 A/H 收盘价的时点错配更大；新浪快照自带
+   `as_of` 日期，能满足「带日期 + 界面显式可见」这两条豁免前提。
+
+**🔴 单位陷阱：`RPT_MUTUAL_DEAL_HISTORY` 的 `*_AMT` 是百万元，不是元**
+
+同一张东财报表家族里，`RPT_MUTUAL_DEAL_HISTORY` 的 `BUY_AMT/SELL_AMT/NET_DEAL_AMT/
+DEAL_AMT/ACCUM_DEAL_AMT` 单位是**百万元**，而 `RPT_MUTUAL_TOP10DEAL` 的**同名列**
+单位是**元**，`HOLD_MARKET_CAP` 又是**元**。列名相同、单位不同 —— 抄错一处就是
+**静默 10⁶ 倍偏差**，且图表照样画得出来。处理：`HSGT_AMT_UNIT = 1_000_000`
+写成模块级具名常量并在 `_amt_to_yuan` 单点换算；服务层与 API 层**一律以元为单位**，
+前端不再乘除。浮点噪声（实测出现 `-482.780000000001`）在换算处 `round(2)` 收口。
+
+**🔴 刻意排除 `HOLD_MARKET_CAP`（南向持股市值）**
+
+这是本次唯一「拿到了但不用」的字段。实测 14 天里 `004/002` 的比值恒为
+`1.00029`，且逐年单调趋近 `1.0` —— 这是**机械联动**，不是两个独立统计量。
+若按 `006 = 002 + 004` 汇总，持股市值会**恰好翻倍**；而上游对 006 的
+`HOLD_MARKET_CAP` 究竟是「合计」还是「另一口径」没有任何文档，也找不到
+第二个独立源可交叉验证。CONTRIBUTING §4「不猜、不造」→ 在**数据源层**就排除
+（`HSGT_EXCLUDED_COLUMNS` 逐列写明排除理由），而不是取回来再在前端藏起来。
+前端页面脚注明确写「本页不提供持股市值」并给出原因，避免用户以为是漏做。
+
+**🔴 汇率豁免：AH 溢价是全项目唯一被批准的货币换算**
+
+项目默认**禁止**任何汇率换算（`tencent/hk_kline.py:52`、`tencent/hk_spot.py:36`、
+`financial_analyzer.py:217,288` 均写明「换算即伪造」）。AH 溢价在数学上
+无法回避换算（A 是 CNY、H 是 HKD），因此它必须**挣得**这个豁免，条件是四条
+同时成立，缺一条就 502 而不是兜底：
+
+1. **明确来源** —— 响应带 `fx_source`；
+2. **带日期** —— 响应带 `fx_as_of`；
+3. **响应与界面都显式可见** —— 前端把汇率做成页面**第一个** section 的常驻横幅
+   （不是 `<details>`、不是 tooltip、不是可关掉的提示），并写明
+   「汇率错 1% 会让每一只标的的溢价同向偏移 1%」；
+4. **取不到就 502** —— `fetch_hkd_cny(..., strict=True)`，**绝不回落 1.0**。
+   回落 1.0 会让所有溢价看起来仍然合理（港股通标的的 A/H 价差本来就在几十个百分点量级），
+   是典型的「看起来对但错」。
+
+插件层另加两道自证：三角校验（`HKD/CNY × USD/HKD` 与 `USD/CNY` 的偏差
+上限 `FX_TRIANGLE_MAX_DEVIATION=0.01`）与合理区间 `[0.6, 1.2]`。
+两者任一不过 → 抛错 → 502。
+
+**🔴 AH 配对消歧：宁缺勿造**
+
+`RPT_F10_BASIC_ORGINFO` 全量 8387 行（`pageSize=9000` 一页取完，0.67s，
+因此**不需要**服务端缓存）。从中筛出有 H 代码的候选时踩到四类脏数据，
+处理原则统一是**整组丢弃 + 计数上报**，不猜：
+
+| 情况 | 实测例子 | 处理 |
+| --- | --- | --- |
+| 占位 A 代码 | `A04021.SZ`、`A11047.SH` 等 **9 个** | `A_SYMBOL_RE=^\d{6}\.(SH\|SZ\|BJ)$` 直接滤掉 |
+| 一个 A 对多个 H（多柜台） | `601899.SH 紫金矿业 → 02958.HK(2026-11-13, 每手2000) / 02899.HK(2003-12-23, 每手500)` | **取上市更早的那个柜台**（02899），规则确定、可复现 |
+| 多柜台但缺上市日期 | —— | 🔴 **整组丢弃**：缺日期就无法执行上一条规则，猜一个等于伪造配对 |
+| 一个 H 被多个 A 指向 | —— | 记入 `ambiguous_a_symbols` 并整组丢弃，前端徽标可见 |
+
+名称里的 `(五百)`/`(二千)` 后缀**不是**名称的一部分，是 `TRADE_UNIT`（每手股数）
+被上游拼进了名称列 —— 识别出来后用于多柜台判定，不写进展示名。
+ST / 退市股**刻意保留**（`000488.SZ ST晨鸣` 正是实测溢价最高的一只，+487%；
+`000585.SZ 东电退` 缺 A 收盘价 → 计入 `missing_price_count`）：
+它们是真实存在的 AH 关系，剔除反而会让「最高溢价」失真。
+
+**🔴 价格口径：必须用不复权原始价**
+
+溢价是**两个时点价格的比值**，A 与 H 必须同口径。本地 `kline_daily` /
+`kline_hk_daily` 的 `close` 就是不复权原始价（`pipeline.py:1135/:2097/:2147` 可证），
+直接用；**绝不能**用前复权价 —— A 股分红除权后前复权价会整体下移，
+算出来的溢价会系统性偏高，而且偏多少取决于历史分红，无法察觉。
+取价从最新日K分区往回扫 `AH_PREMIUM_CLOSE_LOOKBACK_PARTITIONS=10` 个分区，
+每标的取首次出现的收盘；A/H 价格日相差超过
+`AH_PREMIUM_MAX_PRICE_LAG_DAYS=5` 天 → 溢价置 null 并计入 `price_lag_count`。
+
+**🔴 质量计数必须可见，null ≠ 0**
+
+两个端点都返回质量计数（`missing_price_count` / `stale_price_count` /
+`price_lag_count` / `ambiguous_a_symbols`；南向端返回 `trading_days`），
+前端在计数 > 0 时渲染成常驻徽标（计数为 0 时不打扰）。
+`premium_pct = null` 与 `0.00%`（A/H 恰好同价）是**两种不同状态**，
+前端一律渲染「—」并在 `title` 里说明属于哪一种原因。
+
+滚动合计同理：`_roll_sum` 在**样本不足**或**窗口内任一天为 null** 时返回 `None`，
+**绝不返回部分和** —— 部分和看起来是个合理的数字，是最危险的一类错。
+深港通 2016-12-05 才开通，此前的 `港股通(深)` 列天然为 null，前端带 `title` 说明。
+
+**窗口与 fail-closed**
+
+`HK_CONNECT_FLOW_DEFAULT_DAYS=90`、`HK_CONNECT_FLOW_MAX_WINDOW_DAYS=1825`
+（常量放在 `app/api/hk.py`，与 PR7 的 `HK_DIVIDEND_*` 同处，**不放服务层** ——
+窗口上限是 HTTP 契约，不是业务口径）。`start > end` → 400 并回显两个日期；
+跨度超限 → 400 并回显实际天数与上限；上游异常 → 502（**不是**空列表）。
+前端 `MAX_WINDOW_DAYS` 与之对齐，非法窗口**不发请求**。
+
+**刻意不做**
+
+- **不做「南向资金」的市场切换器**：它是港股独有的资金面维度，A 股没有对应物。
+  按 §7「不用前端补丁掩盖后端能力差异」，做成独立扩展页而不是在 A 股页面上加开关。
+- **AH 溢价不并进个股详情页**：溢价是**两个标的之间的关系**，不是单只股票的属性；
+  且汇率出处必须与结果同屏，拆到详情页会让豁免条件 3 失效。
+- **不落库、不加调度 job**（理由见开头）。
+- **不顺手修 `test_screener_run_all_progressive` 的既有 flake**（PR4 收尾已登记，
+  CONTRIBUTING §12 禁止夹带）。本轮全量跑撞上过一次，单独跑 11 例全绿。
+
+**验证**
+
+- 后端新增 **217 例**：`test_sina_fx.py` 27 / `test_eastmoney_hsgt.py` 36 /
+  `test_eastmoney_ah_pair.py` 78 / `test_hk_connect_flow.py` 24 /
+  `test_ah_premium.py` 52。三层各自独立验证，不跨层打桩。
+- 前端新增 **32 例**：`hk-connect-flow` 15 / `hk-ah-premium` 17。
+  全量 **1333 passed**（基线 1301 + 32，零回归）；`pnpm build` 通过。
+- 真机（uvicorn + 东财/新浪真实上游）：
+  - `GET /api/hk/connect-flow` → 200，`total=58`；31 个交易日
+    （2026-10-01..11-20），最新 2026-11-20 净买入 **11,811,500,000 元**、
+    累计净流入 **5.5349 万亿**、5 日 **16,497,890,000**、20 日 **14,092,780,000**、
+    恒指 **22410.8（−1.89%）**。窗口倒挂 → 400
+    `"start (2026-11-20) 不能晚于 end (2026-11-01)"`；4341 天 → 400
+    `"窗口跨度 4341 天超过上限 1825 天"`。
+  - 短窗口 fail-closed 实测：3 天窗口 → 5 日/20 日合计均为 `None`（不是部分和）✓；
+    空窗口 → `trading_days=0` 且各汇总项全 `None` ✓。
+  - `GET /api/hk/ah-premium` → 200，`total=212`、`candidate_count=213`、
+    `fx_rate=0.851970181`、`fx_as_of=2026-11-21`、`fx_source=sina_hq_fx`、
+    `missing=1`、`stale=0`、`lag=0`、`ambiguous=[]`。
+  - 口径交叉核对：`601398.SH 工商银行 A=7.28 / 01398.HK H=6.790` →
+    `7.28 ÷ (6.79 × 0.851970181) − 1 = +25.85%`，与响应逐位一致
+    （是百分数 `25.85` 而非小数 `0.2585`，证明「不再 ×100」的契约在传输层成立）。
+  - 消歧实测：`02607.HK → 601607.SH 上海医药`；
+    `601899.SH 紫金矿业 → 02899.HK`（取上市更早的柜台，非 02958.HK）。
 
 ## 15. 风险
 

@@ -29,7 +29,9 @@ from app.plugins.eastmoney.hk_financials import HK_DATE_TYPE_ANNUAL
 from app.plugins.sina import hk_index as sina_hk_index
 from app.plugins.sina.client import SinaError
 from app.services import (
+    ah_premium,
     financial_sync_hk,
+    hk_connect_flow,
     hk_dividend_calendar,
     index_const,
     index_sync_hk,
@@ -978,4 +980,161 @@ def get_hk_dividends(
         "source": "eastmoney_datacenter",
         "unparsed_count": int(sum(1 for it in items if not it["parsed"])),
         "missing_close_count": int(sum(1 for it in items if it["raw_close"] is None)),
+    }
+
+
+#: 南向资金流默认窗口 (自然日)。90 天 ≈ 60 个交易日, 够画一张趋势图, 且上游只需
+#: 1 页 (60×3=180 行 < 500)。
+HK_CONNECT_FLOW_DEFAULT_DAYS = 90
+
+#: 窗口跨度上限 (自然日)。硬闸: 上游 3 行/交易日, 5 年 ≈ 3650 行 = 8 页 ≈ 2s。
+#: 再宽就会让一次 HTTP 请求拖到数秒并占满令牌桶 —— 而全史累计已由
+#: ``accum_net_inflow`` 免费给出 (上游逐日维护), 无需前端自己拉长窗口去加总。
+HK_CONNECT_FLOW_MAX_WINDOW_DAYS = 1825
+
+
+@router.get("/connect-flow")
+def get_hk_connect_flow(
+    start: Annotated[date | None, Query(description="交易日起 (含); 缺省=今天-90天")] = None,
+    end: Annotated[date | None, Query(description="交易日止 (含); 缺省=今天")] = None,
+) -> dict:
+    """港股通 (**南向**) 每日资金流: 净买入 / 买入 / 卖出 / 成交额 / 沪深分通道。
+
+    一行 = 一个交易日。金额一律为**元** (人民币), 由
+    :mod:`app.plugins.eastmoney.hsgt` 在边界把上游「百万元」换算完成, 前端**不得**
+    再乘除任何倍数 (CONTRIBUTING §3.1)。``net_buy`` 是净买入: 买入为正、卖出为负,
+    上游满足 ``buy − sell == net_buy`` 与 ``buy + sell == turnover``。
+
+    口径要点:
+
+    - ``accum_net_inflow`` 是**历史累计净流入** (自 2014-11-17 开通起), 由上游逐日
+      维护、取最新一行即得。🔴 上游列名叫 ``ACCUM_DEAL_AMT`` (累计成交额) 是**错的**,
+      证据见插件 docstring; 本字段已按真实语义改名。
+    - ``net_buy_5d`` / ``net_buy_20d`` 是**窗口内**最近 5 / 20 个交易日的合计。
+      🔴 窗口内不足该天数、或其中任一日缺数时为 **null 而不是部分和** —— 3 天的和
+      冒充「近 5 日」在卡片上看不出来 (§4)。
+    - ``currency`` 恒为 ``CNY``, 但这是**推断**而非上游声明 (报表无币种列), 三条
+      依据记录在插件 docstring 里。如实透传, 便于日后纠正 (§13)。
+    - 🔴 **不提供持股市值**: 上游 ``HOLD_MARKET_CAP`` 口径无法定性 (两种解释相差
+      整整 2 倍) 且无独立数据源可验证, 见 ``HSGT_EXCLUDED_COLUMNS``。宁缺勿错。
+    - 2015-11-13 之前 ``ggt_sz_*`` 为 **null** (深港通 2016-12-05 才开通), 不是 0。
+
+    上游失败抛 502 而**不**降级成空列表: 「拉不到」和「这段时间没有资金流」是两种
+    状态, 合并成一种就是把故障伪装成正常 (§4 fail closed)。窗口内确实没有交易日
+    (整段假期) 时返回 ``total=0`` + 全 null 汇总, 这是合法答案。
+    """
+    today = date.today()
+    start_date = start or (today - timedelta(days=HK_CONNECT_FLOW_DEFAULT_DAYS))
+    end_date = end or today
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400, detail=f"start ({start_date}) 不能晚于 end ({end_date})"
+        )
+    span = (end_date - start_date).days
+    if span > HK_CONNECT_FLOW_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"窗口跨度 {span} 天超过上限 {HK_CONNECT_FLOW_MAX_WINDOW_DAYS} 天",
+        )
+
+    try:
+        result = hk_connect_flow.hk_connect_flow(start=start_date, end=end_date)
+    except EastmoneyError as e:
+        # 上游报表失败 (报表名/列名/过滤格式变更、限流、熔断)。不降级成空表。
+        logger.warning("南向资金流拉取失败: %s", e)
+        raise HTTPException(status_code=502, detail=f"港股通资金流数据源不可用: {e}") from e
+
+    items = result.items.to_dicts()
+    for it in items:  # date 类型不能直接 JSON 序列化
+        for k, v in it.items():
+            if isinstance(v, date):
+                it[k] = v.isoformat()
+
+    return {
+        "items": items,
+        "total": len(items),
+        "start": start_date.isoformat(),
+        "end": end_date.isoformat(),
+        "market": Market.HK.value,
+        "currency": result.currency,
+        "source": result.source,
+        "trading_days": result.trading_days,
+        "latest_trade_date": (
+            result.latest_trade_date.isoformat() if result.latest_trade_date else None
+        ),
+        "latest_net_buy": result.latest_net_buy,
+        "accum_net_inflow": result.accum_net_inflow,
+        "net_buy_5d": result.net_buy_5d,
+        "net_buy_20d": result.net_buy_20d,
+        "index_close": result.index_close,
+        "index_change_pct": result.index_change_pct,
+    }
+
+
+@router.get("/ah-premium")
+def get_hk_ah_premium(request: Request) -> dict:
+    """全市场 **AH 溢价**: 每只 A+H 两地上市公司一行, A 股相对 H 股贵多少。
+
+    ``premium_pct`` 是**百分比数值** (``78.0`` 表示 A 股比 H 股贵 ``78.0%``),
+    **正值 = A 股贵 (溢价), 负值 = H 股贵 (折价)**。前端不得再乘 100
+    (CONTRIBUTING §3.1)。按 ``premium_pct`` 降序, null 在最后。
+
+    🔴 **汇率换算是本端点唯一被允许的例外**, 正当性靠四个条件换来 (详见
+    :mod:`app.services.ah_premium` 的 docstring): 汇率有明确来源、带日期、在响应里
+    显式可见、取不到就 502。响应因此**必须**带 ``fx_rate`` / ``fx_as_of`` /
+    ``fx_source`` 三个字段, 前端**必须**把它们显示出来 —— 1% 的汇率误差会线性平移
+    **每一只**标的的溢价 1%, 而在页面上完全看不出来。项目其余各处一律禁止换算
+    (「换算即伪造」), 不要把这个端点当成先例。
+
+    🔴 两侧价格都取**不复权原始收盘价** (基础分区表, 非 enriched)。A 股分红远多于
+    H 股, 用前复权价会把有分红史的标的系统性算错, 且误差偏向一个方向。
+
+    四个如实暴露的数据质量字段, 前端**必须**展示而不是藏起来 (§4):
+
+    - ``missing_price_count``: A 或 H 无本地收盘价的对数 (未同步 / 已退市 / 长期
+      停牌)。这些行**仍在 ``items`` 里**, 只是 ``premium_pct`` 为 null。
+    - ``stale_price_count``: A/H 收盘价日期差超过 5 天而置空的对数。
+    - ``price_lag_count``: 两侧日期不同但在阈值内、**仍计算了溢价**的对数。A/H
+      交易日历不同 (港股复活节/圣诞休市), 这是常态而非异常; 逐行的
+      ``a_price_date`` / ``h_price_date`` 让「按哪天的价算的」可见。
+    - ``ambiguous_a_symbols``: 无法消歧而丢弃的 A 股代码 (多柜台上市日并列等)。
+      宁可少一对也不误配 —— 误配的溢价数字看着完全正常, 没人会发现 (§13)。
+
+    ⚠️ ``premium_pct`` 为 null 时前端必须显示「—」, **不可显示 0** —— 0 会被读成
+    「A 与 H 等价」, 而真相是「算不出来」。
+
+    上游失败抛 502 而**不**降级: 配对拉不到 (``EastmoneyError``) 与汇率拉不到
+    (``SinaError``) 都不得兜底, 尤其**绝不用 1.0 当汇率** —— 那会让每一只标的的
+    溢价都错约 17%, 而页面上看不出来 (§4 fail closed)。
+    """
+    repo = request.app.state.repo
+    try:
+        result = ah_premium.ah_premium(repo)
+    except EastmoneyError as e:
+        logger.warning("AH 配对拉取失败: %s", e)
+        raise HTTPException(status_code=502, detail=f"AH 配对数据源不可用: {e}") from e
+    except SinaError as e:
+        # 🔴 汇率失败必须 502, 不得用 1.0 兜底 (见 docstring)。
+        logger.warning("港币汇率拉取失败, AH 溢价拒绝降级: %s", e)
+        raise HTTPException(status_code=502, detail=f"港币汇率数据源不可用: {e}") from e
+
+    items = result.items.to_dicts()
+    for it in items:  # date 类型不能直接 JSON 序列化
+        for k, v in it.items():
+            if isinstance(v, date):
+                it[k] = v.isoformat()
+
+    return {
+        "items": items,
+        "total": len(items),
+        "currency": result.currency,
+        "source": "eastmoney_datacenter_f10_orginfo+local_kline",
+        "fx_rate": result.fx_rate,
+        "fx_as_of": result.fx_as_of.isoformat(),
+        "fx_source": result.fx_source,
+        "candidate_count": result.candidate_count,
+        "missing_price_count": result.missing_price_count,
+        "stale_price_count": result.stale_price_count,
+        "price_lag_count": result.price_lag_count,
+        "ambiguous_a_symbols": list(result.ambiguous_a_symbols),
     }

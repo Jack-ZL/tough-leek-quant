@@ -475,6 +475,136 @@ export interface HkDividendCalendarResponse {
 	missing_close_count: number
 }
 
+/**
+ * `GET /api/hk/connect-flow` 的一行 —— 某个交易日的港股通(**南向**)资金流。
+ *
+ * 🔴 单位契约(CONTRIBUTING §3.1): 所有金额字段的单位都是**元**(人民币), 后端已在
+ * 数据源边界把上游的「百万元」换算完成。前端**不得**再乘除任何倍数, 只负责按
+ * 亿/万亿做**展示级**缩写。
+ *
+ * 🔴 null 与 0 是两种不同状态(§4 fail closed):
+ * - `ggt_sz_*` 在 2016-12-05(深港通开通)之前为 **null**, 不是 0。
+ * - 上游某天缺 `006` 合计行时 `net_buy`/`turnover` 为 **null** —— 后端刻意**不用**
+ *   沪+深分通道相加兜底, 因为「合计缺失」本身就是需要暴露的异常。
+ * - `index_close` 缺恒指行时回落到沪港通行, 仍可能为 null。
+ */
+export interface HkConnectFlowRow {
+	/** 交易日(ISO `YYYY-MM-DD`)。升序排列, 前端画图无需反转。 */
+	trade_date: string
+	/** 净买入(元)。买入为正、卖出为负; 上游满足 `buy − sell == net_buy`。 */
+	net_buy: number | null
+	buy: number | null
+	sell: number | null
+	/** 成交额(元) = `buy + sell`。 */
+	turnover: number | null
+	/** 历史累计净流入(元), 自 2014-11-17 开通起, 上游逐日维护。 */
+	accum_net_inflow: number | null
+	/** 港股通(沪)分通道净买入(元) */
+	ggt_sh_net_buy: number | null
+	/** 港股通(深)分通道净买入(元); 2016-12-05 前为 null */
+	ggt_sz_net_buy: number | null
+	ggt_sh_turnover: number | null
+	ggt_sz_turnover: number | null
+	/** 恒生指数收盘(点)。资金流与指数同图对照用。 */
+	index_close: number | null
+	/** 恒指当日涨跌幅, **百分比数值**(`-1.89` 表示 `-1.89%`), 不得再乘 100。 */
+	index_change_pct: number | null
+}
+
+/**
+ * `GET /api/hk/connect-flow` 响应。
+ *
+ * 🔴 `net_buy_5d` / `net_buy_20d` 为 **null 表示「算不出来」**, 不是 0:
+ * 窗口内不足 5/20 个交易日, 或其中任一日缺数时后端拒绝给部分和 —— 3 天的合计
+ * 冒充「近 5 日净买入」在卡片上完全看不出来(§4)。前端必须渲染「—」。
+ *
+ * 🔴 响应里**没有**持股市值字段: 上游 `HOLD_MARKET_CAP` 口径无法定性(两种解释
+ * 相差整整 2 倍)且无独立数据源可验证, 后端已在数据源层排除。宁缺勿错, 不要试图
+ * 从别处补一个进来。
+ */
+export interface HkConnectFlowResponse {
+	items: HkConnectFlowRow[]
+	total: number
+	start: string
+	end: string
+	/** 恒为 `HK`(市场归属), 与 `currency` 是两回事 */
+	market: string
+	/** 恒为 `CNY`。⚠️ 这是**推断**而非上游声明(报表无币种列), 依据见后端插件。 */
+	currency: string
+	source: string
+	trading_days: number
+	latest_trade_date: string | null
+	latest_net_buy: number | null
+	accum_net_inflow: number | null
+	net_buy_5d: number | null
+	net_buy_20d: number | null
+	index_close: number | null
+	index_change_pct: number | null
+}
+
+/**
+ * `GET /api/hk/ah-premium` 的一行 —— 一对 A+H 两地上市股票的比价。
+ *
+ * 🔴 单位契约: `premium_pct` 是**百分比数值**(`78.0` 表示 A 股比 H 股贵 `78.0%`),
+ * **正值 = A 股贵(溢价), 负值 = H 股贵(折价)**。前端不得再乘 100(§3.1)。
+ *
+ * 🔴 `a_close` / `h_close` 都是**不复权原始收盘价**。A 股分红远多于 H 股, 用前复权
+ * 价会把有分红史的标的系统性算错, 且误差偏向同一个方向。
+ *
+ * 🔴 `premium_pct === null` 时必须渲染「—」, **绝不可渲染 0** —— 0 会被读成
+ * 「A 与 H 等价」, 而真相是「算不出来」(缺价或价格日期错位过大)。
+ */
+export interface HkAhPremiumRow {
+	a_symbol: string
+	a_name: string | null
+	h_symbol: string
+	h_name: string | null
+	/** A 股不复权收盘价(元) */
+	a_close: number | null
+	/** A 股价格所属交易日。与 `h_price_date` 不同是常态(两地交易日历不同)。 */
+	a_price_date: string | null
+	/** H 股不复权收盘价(港币) */
+	h_close: number | null
+	h_price_date: string | null
+	/** `(a_close / (h_close × fx_rate) − 1) × 100`; 算不出来时为 null */
+	premium_pct: number | null
+}
+
+/**
+ * `GET /api/hk/ah-premium` 响应。
+ *
+ * 🔴🔴 `fx_rate` / `fx_as_of` / `fx_source` **必须在 UI 上可见**。本端点是全项目
+ * 唯一被允许做汇率换算的地方(其余各处一律「换算即伪造」), 正当性靠四个条件换来:
+ * 汇率有明确来源、带日期、在响应与界面上显式可见、取不到就 502。1% 的汇率误差会
+ * 线性平移**每一只**标的的溢价 1%, 而在页面上完全看不出来 —— 藏起汇率等于把这条
+ * 豁免条件的第四根支柱拆掉。
+ *
+ * 四个数据质量字段同样**必须展示而不是藏起来**(§4): 它们数的是「仍在 `items` 里、
+ * 但某一列不可信」的行数, 藏起来就等于把已知缺陷伪装成完整数据。
+ */
+export interface HkAhPremiumResponse {
+	items: HkAhPremiumRow[]
+	total: number
+	/** 恒为 `CNY`: 溢价是换算到同一币种后的比值 */
+	currency: string
+	source: string
+	/** 港币→人民币汇率(1 港币 = `fx_rate` 人民币) */
+	fx_rate: number
+	/** 汇率取值日期(ISO)。汇率是时点值, 不带日期的汇率没有意义。 */
+	fx_as_of: string
+	fx_source: string
+	/** 上游给出的 AH 配对候选数(≥ `total`: 差额是无法消歧而丢弃的) */
+	candidate_count: number
+	/** A 或 H 无本地收盘价的对数(未同步/已退市/长期停牌)。行仍在 `items` 里。 */
+	missing_price_count: number
+	/** 两侧价格日期差 > 5 天因而置空溢价的对数 */
+	stale_price_count: number
+	/** 两侧日期不同但在阈值内、**仍计算了溢价**的对数(港股独有假期造成的常态) */
+	price_lag_count: number
+	/** 无法消歧而丢弃的 A 股代码(多柜台上市日并列等)。宁可少一对也不误配。 */
+	ambiguous_a_symbols: string[]
+}
+
 /** AI 财务分析历史报告 */
 export interface AiFinancialReport {
 	id: string
@@ -4604,6 +4734,28 @@ export const api = {
 		const qs = q.toString()
 		return request<HkDividendCalendarResponse>(`/api/hk/dividends${qs ? `?${qs}` : ''}`)
 	},
+	/**
+	 * 港股通(**南向**)每日资金流。
+	 *
+	 * 🔴 数据**不落库**, 每次 miss 都打一次上游报表 ⇒ 消费方必须给足 staleTime。
+	 * 窗口缺省为「今天−90 天 ~ 今天」; 后端硬闸跨度 ≤ 1825 天(超出返回 400),
+	 * 因为上游 3 行/交易日, 再宽会让一次请求拖到数秒并占满令牌桶。
+	 */
+	hkConnectFlow: (opts?: {start?: string; end?: string}) => {
+		const q = new URLSearchParams()
+		if (opts?.start) q.set('start', opts.start)
+		if (opts?.end) q.set('end', opts.end)
+		const qs = q.toString()
+		return request<HkConnectFlowResponse>(`/api/hk/connect-flow${qs ? `?${qs}` : ''}`)
+	},
+	/**
+	 * 全市场 **AH 溢价**(A 股相对 H 股贵多少)。
+	 *
+	 * 🔴 无参数: 后端一次算全市场 200+ 对, 分页/排序/筛选都在前端做。
+	 * 🔴 每次 miss 都打两个上游(东财配对表 + 新浪汇率)并扫本地日K分区 ⇒
+	 * staleTime 必须给足, 否则切个 tab 就重算一遍。
+	 */
+	hkAhPremium: () => request<HkAhPremiumResponse>('/api/hk/ah-premium'),
 	/**
 	 * 港股数据画像(维表/日K/enriched/指数/复权因子/财务 的行数·日期·覆盖 + 存储占用)。
 	 *
