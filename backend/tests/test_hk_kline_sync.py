@@ -323,6 +323,153 @@ def test_progress_callback_fires_per_symbol(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 攒批落库 (HK_DAILY_WRITE_BATCH_SIZE)
+#
+# 🔴 这一组存在的理由: ``_write_daily_partition`` 是「按 date 分区, 每分区读整个
+# 文件 → concat → unique → sort → 原子替换」。逐标的调用时读改写次数 =
+# 标的数 × 交易日数 (2838 × ~100 ≈ 28 万次), 且每次重读的分区已装着全市场标的行
+# —— 写放大与标的数**相乘**, 实测 25 分钟一轮, 瓶颈在磁盘不在网络。
+# 攒批把同一分区的读改写压到每批一次。下面钉住三件事: 结果不变、次数真的降了、
+# 失败时不挽救尾批。
+# ---------------------------------------------------------------------------
+
+def _read_hk_daily(data_dir) -> pl.DataFrame:
+    """读回全部港股日K分区并按 (symbol, date) 排序 —— 跨批大小比对用。"""
+    files = sorted((data_dir / "kline_hk_daily").rglob("*.parquet"))
+    if not files:
+        return pl.DataFrame()
+    return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed").sort(
+        ["symbol", "date"]
+    )
+
+
+#: 5 只标的 × 2 个交易日, 每只都拿到同一份样本行 (symbol 列由 ``_normalize_daily``
+#: 按标的填, 所以帧之间并不相同, 足以暴露串批/漏批)。
+_BATCH_SYMS = ["00700.HK", "09988.HK", "01810.HK", "02318.HK", "03690.HK"]
+_BATCH_TABLE = {s.split(".")[0]: [KLINE_00700_PREV, KLINE_00700] for s in _BATCH_SYMS}
+
+
+def test_batched_write_matches_per_symbol_write(tmp_path):
+    """🔴 攒批只改落库**粒度**, 不改落库**结果**。
+
+    ``batch_size=1`` 就是换源前的逐标的写入。两种批大小跑同一份数据, 读回的分区
+    必须逐帧相同 —— 否则「性能优化」悄悄改了数据, 那比慢危险得多。
+    """
+    results = {}
+    for tag, bs in (("one", 1), ("batched", 200)):
+        d = tmp_path / tag
+        d.mkdir()
+        _seed_universe(d, _BATCH_SYMS)
+        repo = KlineRepository(DataStore(d))
+        n = sync_hk.sync_hk_daily(
+            repo, client=_FakeClient(_BATCH_TABLE), incremental=False, batch_size=bs
+        )
+        results[tag] = (n, _read_hk_daily(d))
+
+    assert results["one"][0] == results["batched"][0] == len(_BATCH_SYMS) * 2
+    assert not results["one"][1].is_empty(), "对照组自己就没写出数据, 断言无意义"
+    assert results["one"][1].equals(results["batched"][1]), "攒批改变了落库结果"
+
+
+def test_batching_reduces_append_calls_and_flushes_tail(tmp_path):
+    """性能契约: 落库次数 = ceil(有数据标的数 / batch_size), 而不是标的数。
+
+    同时钉住**尾批**: 5 只 / 批 2 ⇒ 行数必须是 ``[2, 2, 1]``。漏掉尾批会静默丢掉
+    最后一段标的的整段历史, 而且 ``written`` 返回值也跟着少 —— 这种缺失在
+    「同步成功」的日志里完全看不出来。
+    """
+    def _run(sub: str, bs: int) -> tuple[int, list[int]]:
+        d = tmp_path / sub
+        d.mkdir()
+        _seed_universe(d, _BATCH_SYMS)
+        repo = KlineRepository(DataStore(d))
+        heights: list[int] = []
+        real = repo.append_hk_daily
+
+        def _spy(df, _real=real, _heights=heights):
+            _heights.append(df.height)
+            _real(df)
+
+        repo.append_hk_daily = _spy
+        n = sync_hk.sync_hk_daily(
+            repo, client=_FakeClient(_BATCH_TABLE), incremental=False, batch_size=bs
+        )
+        return n, heights
+
+    n1, h1 = _run("bs1", 1)
+    n2, h2 = _run("bs2", 2)
+    nbig, hbig = _run("bsbig", 200)
+
+    assert (len(h1), len(h2), len(hbig)) == (5, 3, 1), "落库次数没随批大小下降"
+    assert h1 == [2, 2, 2, 2, 2], "batch_size=1 即换源前的逐标的写入"
+    assert h2 == [4, 4, 2], "尾批 (第 5 只) 必须落库, 且批内行数要攒对"
+    assert hbig == [10], "批大于标的数时应一次落完"
+    assert n1 == n2 == nbig == 10, "written 返回值不该受批大小影响"
+
+
+def test_progress_still_fires_per_symbol_when_batched(tmp_path):
+    """进度回调**不**跟着攒批: 否则 2838 只 / 批 200 = 15 个台阶, 前端像卡死。"""
+    _seed_universe(tmp_path, _BATCH_SYMS[:3])
+    repo = KlineRepository(DataStore(tmp_path))
+    table = {s.split(".")[0]: [KLINE_00700] for s in _BATCH_SYMS[:3]}
+    seen: list[tuple[int, int]] = []
+    sync_hk.sync_hk_daily(
+        repo, client=_FakeClient(table), incremental=False, batch_size=2,
+        on_progress=lambda d, t: seen.append((d, t)),
+    )
+    assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_batch_size_below_one_is_rejected(tmp_path, bad):
+    """``batch_size < 1`` 会让「攒够就 flush」永不触发 ⇒ 整轮数据堆在内存里。
+
+    显式 ``ValueError`` 而不是悄悄纠正成 1: 传这种值一定是调用方算错了, 静默纠正
+    会把 bug 藏到下一次数据量变大时才炸 (CONTRIBUTING §4 fail closed)。
+    """
+    _seed_universe(tmp_path, ["00700.HK"])
+    repo = KlineRepository(DataStore(tmp_path))
+    client = _FakeClient({"00700": [KLINE_00700]})
+    with pytest.raises(ValueError, match="batch_size"):
+        sync_hk.sync_hk_daily(repo, client=client, incremental=False, batch_size=bad)
+    assert client.calls == [], "参数校验必须在触网之前完成, 不该白拉一轮数据再报错"
+    assert not list((tmp_path / "kline_hk_daily").rglob("*.parquet")), "拒绝前不该落任何数据"
+
+
+def test_write_failure_propagates_without_salvaging_tail(tmp_path, monkeypatch):
+    """落库失败原样抛出, 且**不**在失败后补写残余批次 (§12: 失败后继续执行)。
+
+    已提交的批次也**不**回滚: merge-upsert 幂等, 重跑一轮即可补齐; 在这里做回滚
+    反而要删已落盘的分区文件, 风险远大于收益。
+    """
+    _seed_universe(tmp_path, _BATCH_SYMS)
+    repo = KlineRepository(DataStore(tmp_path))
+    real = repo.append_hk_daily
+    attempts: list[int] = []
+
+    def _flaky(df):
+        attempts.append(df.height)
+        if len(attempts) == 2:
+            raise OSError("disk full")
+        real(df)
+
+    monkeypatch.setattr(repo, "append_hk_daily", _flaky)
+    with pytest.raises(OSError, match="disk full"):
+        sync_hk.sync_hk_daily(
+            # 🔴 显式传 ``symbols``: 走 ``hk_daily_universe`` 的话返回的是**排序后**
+            # 的清单 (``_BATCH_SYMS`` 的书写顺序会被重排), "前两只落盘" 的断言就会
+            # 变成对排序规则的隐式依赖。这里要钉的是失败语义, 不是排序。
+            repo, symbols=_BATCH_SYMS, client=_FakeClient(_BATCH_TABLE),
+            incremental=False, batch_size=2,
+        )
+
+    # 5 只 / 批 2 ⇒ 批次行数 [4, 4, 2]。第 2 批就炸 ⇒ 尾批 (第 5 只) 不该被尝试。
+    assert attempts == [4, 4]
+    got = _read_hk_daily(tmp_path)
+    assert sorted(got["symbol"].unique().to_list()) == ["00700.HK", "09988.HK"]
+
+
+# ---------------------------------------------------------------------------
 # enriched 生成
 #
 # PR2a 的最后一个功能缺口: append_hk_enriched / kline_hk_enriched 视图 / _DIRNAMES

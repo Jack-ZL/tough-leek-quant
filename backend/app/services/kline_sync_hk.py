@@ -143,6 +143,21 @@ def latest_hk_daily_date(repo) -> date | None:
     return d if isinstance(d, date) else date.fromisoformat(str(d))
 
 
+#: 日K 攒批落库的标的批大小 (默认值, 可被 ``sync_hk_daily(batch_size=)`` 覆盖)。
+#:
+#: 🔴 这是**性能契约**, 不是随手可调的旋钮。``_write_daily_partition`` 按 ``date``
+#: 分区, 每个分区做一次「读整个分区文件 → concat → unique → sort → 原子替换」。
+#: 逐标的调用时, 分区读改写次数 = 标的数 × 交易日数, 而且每次都要重读一个**已经
+#: 装着全市场标的行**的分区文件 —— 写放大与标的数是**相乘**关系。实测口径:
+#: 2838 标的 × ~100 交易日 ≈ 28 万次读改写, 单次同步 ~25 分钟 (0.53 s/标的),
+#: 瓶颈在磁盘而不在网络。攒批后同一分区在一批内只被读改写一次, 次数降为 1/N。
+#:
+#: 与 :data:`HK_ENRICHED_BATCH_SIZE` **刻意分开定义**: enriched 批受峰值内存约束
+#: (批内要同时驻留完整原始历史 + 全套指标宽表), 日K 批只驻留本次拉取窗口的窄表
+#: (7 列), 内存压力小一个量级, 所以两者取值互不牵连, 不要"顺手统一"。
+HK_DAILY_WRITE_BATCH_SIZE = 200
+
+
 def sync_hk_daily(
     repo,
     *,
@@ -153,6 +168,7 @@ def sync_hk_daily(
     incremental: bool = True,
     client: TencentClient | None = None,
     on_progress=None,
+    batch_size: int | None = None,
 ) -> int:
     """同步港股日K → ``kline_hk_daily/``。返回写入的行数。
 
@@ -160,7 +176,29 @@ def sync_hk_daily(
     无历史则全量回填。港股无 T+1 限制但日K口径与 A 股一致 (按交易日分区)。
 
     ``on_progress(done, total)`` 供前端进度条使用, 每标的回调一次。
+
+    ``batch_size`` 控制**攒多少只标的再落一次库**, 默认
+    :data:`HK_DAILY_WRITE_BATCH_SIZE`。攒批只改变落库的**粒度**, 不改变落库的
+    **结果**: ``_write_daily_partition`` 是 merge-upsert (``unique(subset=
+    ["symbol","date"], keep="last")`` + 按 ``["symbol","date"]`` 排序), 同一批内
+    一次写入与逐只写入产出逐字节相同的分区文件 —— 由
+    ``test_batched_write_matches_per_symbol_write`` 钉死。``batch_size=1`` 即退化
+    为换源前的逐标的写入, 便于对照。
+
+    ⚠️ 进度回调**不跟着攒批**: 仍每标的触发一次, 否则前端进度条会退化成
+    ``标的数 / batch_size`` 个台阶 (2838 只 / 200 = 15 格), 看起来像卡死。
     """
+    flush_every = batch_size if batch_size is not None else HK_DAILY_WRITE_BATCH_SIZE
+    if flush_every < 1:
+        # 0 或负数会让「攒够就 flush」永不触发, 整轮数据堆在内存里到最后才落一次库
+        # (2838 标的 × 全历史)。显式拒绝而不是悄悄纠正成 1 —— 传这种值一定是调用方
+        # 算错了, 静默纠正会把 bug 藏到下一次数据量变大时才炸 (CONTRIBUTING §4)。
+        #
+        # 🔴 校验放在**函数最前面**, 早于建 client / 读维表 / 触网: 一来参数错就不该
+        # 白拉一轮数据, 二来 ``own_client`` 分支里 ``TencentClient()`` 建好之后才抛错
+        # 会漏掉 close (此时还没进 try/finally)。
+        raise ValueError(f"batch_size 必须 >= 1, 收到 {flush_every}")
+
     data_dir = repo.store.data_dir
     universe = list(symbols) if symbols is not None else hk_daily_universe(
         data_dir, include_cny_counter=include_cny_counter
@@ -186,13 +224,41 @@ def sync_hk_daily(
     written = 0
     done = 0
     total = len(universe)
+    pending: list[pl.DataFrame] = []
+    pending_rows = 0
+
+    def _flush() -> None:
+        """把攒着的标的帧一次性落库; 空批直接返回 (不触发无谓的分区扫描)。"""
+        nonlocal written, pending_rows
+        if not pending:
+            return
+        # diagonal_relaxed: 与下游 ``_optimistic_upsert_partition._merge`` 同款,
+        # 列集不一致时补 null 而不是抛错。当前腾讯 HK 解析器对所有标的产出同一套
+        # 7 列 (``_normalize_daily`` 已把 date/OHLC/volume 显式 cast 成
+        # Date/Float64, 不会出现 Null dtype), 实际走等 schema 快路径; 用 relaxed
+        # 是为了将来换源多出/少掉 ``amount`` 列时不必回来改这里。
+        batch = pending[0] if len(pending) == 1 else pl.concat(pending, how="diagonal_relaxed")
+        repo.append_hk_daily(batch)
+        written += pending_rows
+        pending.clear()
+        pending_rows = 0
+
     try:
         for df in iter_hk_daily_frames(client, universe, beg=beg, end=end):
-            repo.append_hk_daily(df)
-            written += df.height
+            pending.append(df)
+            pending_rows += df.height
             done += 1
             if on_progress is not None:
                 on_progress(done, total)
+            if len(pending) >= flush_every:
+                _flush()
+        # 🔴 尾批必须在 try 内 flush, 不能挪进 finally: universe 通常不是
+        # batch_size 的整数倍, 尾批恰恰是最后一段数据; 而 finally 里抛出的异常会
+        # **覆盖**原始异常, 把「写失败」伪装成另一个错, 排查时看不到真因。
+        #
+        # 写失败时**不**补 flush 残余批次: 那等于在失败后继续执行 (§12 禁止), 且
+        # merge-upsert 幂等, 重跑一轮就能补齐, 不需要在这里冒险挽救。
+        _flush()
     finally:
         if own_client:
             client.close()
@@ -734,6 +800,7 @@ __all__ = [
     "HK_ADJ_COVERAGE_RELPATH",
     "HK_ADJ_COVERAGE_VERSION",
     "HK_ADJ_FACTOR_RELPATH",
+    "HK_DAILY_WRITE_BATCH_SIZE",
     "HK_ENRICHED_BATCH_SIZE",
     "HK_KLINE_BEG_DEFAULT",
     "HkAdjCoverage",
