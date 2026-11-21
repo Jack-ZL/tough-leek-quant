@@ -24,11 +24,13 @@ from pydantic import BaseModel
 
 from app.api.pipeline import _submit_job
 from app.market import Market, rules_for
+from app.plugins.eastmoney.client import EastmoneyError
 from app.plugins.eastmoney.hk_financials import HK_DATE_TYPE_ANNUAL
 from app.plugins.sina import hk_index as sina_hk_index
 from app.plugins.sina.client import SinaError
 from app.services import (
     financial_sync_hk,
+    hk_dividend_calendar,
     index_const,
     index_sync_hk,
     instrument_sync_hk,
@@ -890,3 +892,90 @@ def sync_hk_financial_statement(
         raise HTTPException(status_code=400, detail=str(e)) from e
     rows = financial_sync_hk.sync_hk_statement(data_dir, symbol, table=table)
     return {"symbol": symbol, "table": table, "status": "ok" if rows else "empty", "rows": rows}
+
+
+# ── 分红日历 ──────────────────────────────────────────────────────
+# 与上面的同步端点不同, 这一块**不写任何存储**: 上游报表支持按除净日窗口取全市场
+# (实测 13 个月 1592 行 / 8 页), 落库只会多出「同步没跑 → 日历过期」这一类失败
+# 模式, 而分红方案本身会被公司修订, 实时读反而更准。理由与口径详见
+# :mod:`app.services.hk_dividend_calendar` 的模块 docstring。
+
+#: 缺省向前看的自然日数。港股分红高度集中在年报季 (5~9 月), 60 天足以覆盖
+#: 「接下来两个月谁除净」这个主要用途; 要看更远的由调用方显式给 ``end``。
+HK_DIVIDEND_DEFAULT_FORWARD_DAYS = 60
+
+#: 窗口跨度上限 (自然日)。硬闸: 上游按 200 行/页翻页, 一年约 1500 行 = 8 页,
+#: 400 天约 27 页 —— 再宽就会让一次 HTTP 请求拖到几十秒并占满令牌桶。
+HK_DIVIDEND_MAX_WINDOW_DAYS = 400
+
+
+@router.get("/dividends")
+def get_hk_dividends(
+    request: Request,
+    start: Annotated[date | None, Query(description="除净日起 (含); 缺省=今天")] = None,
+    end: Annotated[
+        date | None,
+        Query(description=f"除净日止 (含); 缺省=今天+{HK_DIVIDEND_DEFAULT_FORWARD_DAYS}天"),
+    ] = None,
+) -> dict:
+    """港股**全市场**分红日历: 除净日落在 ``[start, end]`` 的派息/送转事件。
+
+    一行 = 一个分配方案 (同一标的同一除净日可能有两条, 例如现金 + 送股分开宣派)。
+    金额一律折算为**港币/每股**; ``dividend_yield_pct`` 是**百分比数值**
+    (``5.0`` 表示 ``5.0%``), 分母为最新**不复权**收盘价, 且是单次派息的收益率
+    而非 TTM —— 三个口径都由 :mod:`app.services.hk_dividend_calendar` 负责,
+    前端不得再乘 100 (CONTRIBUTING §3.1)。
+
+    三个如实暴露的数据质量字段, 前端**必须**展示而不是藏起来 (§4):
+
+    - ``unparsed_count``: 源数据未给港币金额的方案数 (外币未折算 / 分派股份 /
+      权证)。这些行**仍在 ``items`` 里**, 只是 ``dividend_hkd`` 为 null 且带
+      ``plan`` 原文 —— 除净日是事实, 不能因为金额缺失就把整条公司行动藏掉。
+    - ``missing_close_count``: 最近若干个日K分区里取不到收盘价的标的数, 其
+      ``dividend_yield_pct`` 为 null (未同步 / 长期停牌), **不是** 0。
+    - ``price_date`` (逐行): 该行收盘价对应的交易日, 让「按哪天的价算的」可见。
+
+    上游失败抛 502 而**不**降级成空列表: 「拉不到」和「这段时间没人除净」是两种
+    状态, 合并成一种就是把故障伪装成正常 (§4 fail closed)。
+    """
+    today = date.today()
+    start_date = start or today
+    end_date = end or (today + timedelta(days=HK_DIVIDEND_DEFAULT_FORWARD_DAYS))
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400, detail=f"start ({start_date}) 不能晚于 end ({end_date})"
+        )
+    span = (end_date - start_date).days
+    if span > HK_DIVIDEND_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"窗口跨度 {span} 天超过上限 {HK_DIVIDEND_MAX_WINDOW_DAYS} 天",
+        )
+
+    repo = request.app.state.repo
+    try:
+        df = hk_dividend_calendar.hk_dividend_calendar(
+            repo, start=start_date, end=end_date
+        )
+    except EastmoneyError as e:
+        # 上游报表失败 (报表名变更 / 列变更 / 封禁)。不降级成空表。
+        logger.warning("港股分红日历拉取失败: %s", e)
+        raise HTTPException(status_code=502, detail=f"港股分红数据源不可用: {e}") from e
+
+    items = df.to_dicts()
+    for it in items:  # date 类型不能直接 JSON 序列化
+        for k, v in it.items():
+            if isinstance(v, date):
+                it[k] = v.isoformat()
+
+    return {
+        "items": items,
+        "total": len(items),
+        "start": start_date.isoformat(),
+        "end": end_date.isoformat(),
+        "market": Market.HK.value,
+        "currency": "HKD",
+        "source": "eastmoney_datacenter",
+        "unparsed_count": int(sum(1 for it in items if not it["parsed"])),
+        "missing_close_count": int(sum(1 for it in items if it["raw_close"] is None)),
+    }

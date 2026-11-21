@@ -26,8 +26,11 @@
   中文文本 (``'每股派港币5.3元'``), 必须解析。抽样 1159 条事件见 51 种句式骨架,
   :func:`parse_hk_dividend_plan` 覆盖 **96.98%**, 余下 35 条源数据本身无港币
   数值 (外币未折算 / 分派股份 / 权证), 一律 warn+skip 而非编造汇率。
-- ⚠️ **不支持按除净日过滤**: ``(EX_DIVIDEND_DATE>='2024-01-01')`` 返回 0 行,
-  故只能每标的拉全史。单页 200 足够 (腾讯 27 条 / 汇丰 95 条季度派息)。
+- ⚠️ **按除净日过滤只认斜杠格式** (2026-11-21 复测订正): 旧结论「不支持按除净日
+  过滤」源于用单引号 + 横杠的探针 ``(EX_DIVIDEND_DATE>='2024-01-01')``, 该写法
+  今天直接报 ``filter字段中字符串参数格式错误``。改用双引号后, **斜杠**上下界都
+  精确生效, **横杠**则静默给出错答案 —— 详见 :func:`_ex_date_filter_bound`。
+  逐标的取全史仍不需要日期过滤, 单页 200 足够 (腾讯 27 条 / 汇丰 95 条季度派息)。
 - ✅ **交叉验证**: 汇丰 2026-11-05 除净 ``每股派美元0.1元(相当于港币0.784812元)``,
   与独立测得的腾讯等差偏移 ``0.784`` 精确吻合, 且该偏移恰在此日归零。
 
@@ -66,6 +69,16 @@ HK_DIV_PAGE_SIZE = 200
 #: 排序键: 与 akshare 一致, 保证同一除净日的多行顺序稳定。
 HK_DIV_SORT_COLUMNS = "NOTICE_DATE,EX_DIVIDEND_DATE"
 HK_DIV_SORT_TYPES = "-1,-1"
+
+#: 全市场日历的排序键。**刻意带上 ``SECUCODE`` 作次键**: 翻页要求全序稳定, 只按
+#: 除净日排序时同一天的多只标的顺序由服务端决定, 跨页会漂移。实测同一个 13 个月
+#: 窗口 (1592 行 / 8 页) 去重后: 单键 1555 唯一 (37 行跨页重复), 双键 1582 唯一
+#: (10 行重复, 且这 10 行是源数据本身完全同值的行)。
+HK_DIV_CALENDAR_SORT_COLUMNS = "EX_DIVIDEND_DATE,SECUCODE"
+HK_DIV_CALENDAR_SORT_TYPES = "-1,-1"
+
+#: 全市场日历的翻页硬闸。实测 13 个月窗口 1592 行 = 8 页; 20 页 ≈ 3 年余量。
+HK_DIV_CALENDAR_MAX_PAGES = 20
 
 #: 现金分红占前收盘的比例上限。超过即视为解析错误 (典型误判是把汇率当金额),
 #: 剔除该事件而不是让一个错因子污染整条复权链。
@@ -210,8 +223,9 @@ def fetch_hk_dividend_events(
     结果** (该股从未派息), 与请求失败抛 :class:`EastmoneyError` 语义不同, 调用方
     须区分二者 (参见 ``kline_sync.fetch_adj_factor_single`` 的 ``strict`` 约定)。
 
-    ⚠️ 服务端**不支持**按 ``EX_DIVIDEND_DATE`` 过滤, 故无法只拉增量窗口;
-    每标的 1 次请求取全史, 由调用方落库后做本地增量。
+    ⚠️ 本函数**不带**除净日过滤: 逐标的取全史才能重建完整的乘法因子链, 少一段
+    历史就会让此后所有复权价整体偏移。每标的 1 次请求, 由调用方落库后做本地增量。
+    (只想取某个除净日窗口时用 :func:`fetch_hk_dividend_calendar`。)
     """
     secucode = hk_fin_secucode(symbol)
     flt = f'(SECUCODE="{secucode}")(IS_BFP="0")'
@@ -223,6 +237,190 @@ def fetch_hk_dividend_events(
         sort_columns=HK_DIV_SORT_COLUMNS,
         sort_types=HK_DIV_SORT_TYPES,
     )
+
+
+def _ex_date_filter_bound(value: date) -> str:
+    """把除净日格式化成 filter 里能用的串 —— **必须是斜杠** ``YYYY/MM/DD``。
+
+    🔴 这是本报表最容易踩的坑, 且踩了**不报错**, 只给出看起来合理的错答案。
+    2026-11-21 实测矩阵 (``IS_BFP="0"`` 恒定, ``pageSize=200``, 按除净日倒序):
+
+    ==========================  ======  ==========================  ==========
+    filter 里的日期写法          行数    实际返回的除净日范围         判定
+    ==========================  ======  ==========================  ==========
+    无日期过滤                    200    2026/09/25 .. 2027/01/12    (页上限)
+    ``>="2026/11/20"`` 斜杠        80    2026-11-20 .. 2027/01/12    ✅ 正确
+    ``>="2026-11-20"`` 横杠       200    **2026/09/24** .. 2027/01/12  ❌ 下界失效
+    ``<="2026/12/31"`` 斜杠       200    2026/09/24 .. 2026-12-23    ✅ 正确
+    ``<="2026-12-31"`` 横杠       200    2025/10/03 .. **2025-12-30**  ❌ 差一整年
+    斜杠双界                       74    2026-11-20 .. 2026-12-23    ✅ 正确
+    横杠双界                        0    —                           ❌ 全丢
+    ``>="2030/01/01"`` 斜杠         0    —                           ✅ 正确
+    ==========================  ======  ==========================  ==========
+
+    即: 斜杠上下界都按真实日期语义生效; 横杠下界**放宽**到几乎不过滤 (会把窗口外
+    两个月的数据混进日历), 横杠上界**收紧**到差一整年 (2026 的查询返回 2025 的行),
+    横杠双界直接空集。三种错法都不会抛异常。
+
+    ⚠️ 注意**返回值**里的 ``EX_DIVIDEND_DATE`` 反而是横杠格式 (``'2026-11-20'``),
+    与 filter 要求的斜杠不一致 —— 所以「照着返回值的格式写 filter」正好是错的。
+    解析返回值仍走 :func:`_parse_ex_date` (两种分隔符都接受)。
+
+    服务端为何如此未做推断 (无文档, 不猜); 本函数只固化**实测可用**的那一种写法。
+    """
+    return value.strftime("%Y/%m/%d")
+
+
+def fetch_hk_dividend_calendar(
+    client: EastmoneyClient,
+    *,
+    start: date,
+    end: date,
+    page_size: int = HK_DIV_PAGE_SIZE,
+    max_pages: int = HK_DIV_CALENDAR_MAX_PAGES,
+) -> list[dict]:
+    """拉**全市场**除净日落在 ``[start, end]`` 的分红事件 (原始 dict 行, 未解析)。
+
+    与 :func:`fetch_hk_dividend_events` 同一张报表, 但**不带 ``SECUCODE``** ——
+    一次翻页请求即可覆盖全市场, 不必逐标的打 2800 次。实测 13 个月窗口 1592 行
+    / 8 页。这是分红日历能做成「零同步、零落库、按需实时」的前提。
+
+    ``IS_BFP="0"`` 仍然必须带 (剔除「未派发或宣派股息」占位行)。日期上下界一律
+    经 :func:`_ex_date_filter_bound` 转成斜杠格式, 原因见该函数的实测矩阵。
+
+    🔴 **调用方仍须在本地按解析后的日期复核一遍窗口**: 上表的过滤语义是实测得出
+    的, 但服务端行为无契约保证; 本地复核成本是一次 ``filter``, 换来的是「上游改了
+    语义也不会把窗口外的事件塞进日历」。
+
+    返回行**可能含跨页重复** (双键排序后实测 1592 行里 10 行完全同值), 由调用方
+    去重。空窗口返回 ``[]``, 与请求失败抛 :class:`EastmoneyError` 语义不同。
+    """
+    flt = (
+        f'(IS_BFP="0")'
+        f'(EX_DIVIDEND_DATE>="{_ex_date_filter_bound(start)}")'
+        f'(EX_DIVIDEND_DATE<="{_ex_date_filter_bound(end)}")'
+    )
+    return client.datacenter_report_all(
+        RPT_HK_DIVIDEND,
+        flt,
+        page_size=page_size,
+        max_pages=max_pages,
+        sort_columns=HK_DIV_CALENDAR_SORT_COLUMNS,
+        sort_types=HK_DIV_CALENDAR_SORT_TYPES,
+    )
+
+
+class HkDividendEvent(NamedTuple):
+    """一条**已解析**的港股分红事件 (日历用, 金额统一港币/每股)。
+
+    与 :class:`HkDividendPlan` 的分工: 后者只是 ``PLAN_EXPLAIN`` 文本里的两个数,
+    前者是「一行日历」—— 带标的、三个日期、报告期与原始方案文本。
+    """
+
+    symbol: str
+    """内部 symbol 规范形 (``00700.HK``), 已由 :func:`hk_fin_secucode` 校验。"""
+
+    ex_date: date
+    """除净日。日历的主排序键, **恒非空** (空除净日的行已在解析阶段丢弃)。"""
+
+    pay_date: date | None
+    """派息日 (``DIVIDEND_DATE``)。源数据可空。"""
+
+    notice_date: date | None
+    """公告日 (``NOTICE_DATE``)。源数据带 `` 00:00:00`` 时间尾巴, 已截断。"""
+
+    fiscal_year: str | None
+    """所属年度 (``YEAR``), 源数据是字符串 (``'2026'``), 原样透传不转 int。"""
+
+    report_type: str | None
+    """分配类型。实测取值: 年度分配 / 中期分配 / 二季度分配 / 三季度分配 / 特别分配。"""
+
+    plan: str | None
+    """``PLAN_EXPLAIN`` 原文。**即使解析失败也保留** —— 除净日本身是事实, 不能因为
+    金额没折算成港币就把整条公司行动藏掉。"""
+
+    dividend_hkd: float | None
+    """每股现金分红 (港币)。**解析不出时为 ``None`` 而不是 ``0.0``** —— 0 会被下游
+    读成「确认不派现金」, 而真相是「源数据没给港币值」(外币未折算 / 分派股份 /
+    权证), 两者必须可区分 (CONTRIBUTING §4 fail closed)。"""
+
+    bonus_ratio: float | None
+    """每股送转比例 (每持 1 股获送 N 股)。语义同 ``dividend_hkd``: 未知即 ``None``。"""
+
+    parsed: bool
+    """``PLAN_EXPLAIN`` 是否成功解析出数值。``False`` 时上面两个字段必为 ``None``。"""
+
+
+def parse_hk_dividend_rows(
+    rows: Iterable[Mapping],
+    *,
+    start: date,
+    end: date,
+) -> list[HkDividendEvent]:
+    """:func:`fetch_hk_dividend_calendar` 的原始行 → 解析后的事件列表。
+
+    把**所有上游格式怪癖**关在本函数里 (斜杠/横杠日期、时间尾巴、跨页重复、
+    畸形代码), 让服务层只处理业务 (join 名称/收盘价、算股息率、排序)。
+
+    做四件事:
+
+    1. **窗口复核**: 服务端过滤语义是实测得出的、无契约保证, 这里按解析后的真实
+       日期再夹一遍 ``[start, end]``。成本一次比较, 换来「上游改语义也不会把窗口
+       外的事件塞进日历」。
+    2. **去重**: 翻页在双键排序下实测仍有 1592 行里 10 行完全同值, 按
+       ``(symbol, ex_date, notice_date, plan)`` 去重。
+    3. **丢弃无除净日的行**: ``IS_BFP="0"`` 下实测仍有少量 ``EX_DIVIDEND_DATE``
+       为 null 的行 (倒序时排在最前)。日历以除净日为轴, 无除净日就无从排列。
+    4. **解析金额**: 复用 :func:`parse_hk_dividend_plan`。解析失败**保留该行**并把
+       金额置 ``None`` (见 :attr:`HkDividendEvent.dividend_hkd`)。
+
+    ⚠️ 单行畸形 (非法代码 / 日期无法解析) 一律 warn + 跳过, 不抛。这与同步链路
+    「失败即中止」的纪律不同, 是**只读展示**路径的刻意选择: 一条坏行不该让整个
+    日历 500, 且这里不写任何存储, 跳过不会留下不一致状态。
+    """
+    seen: set[tuple] = set()
+    out: list[HkDividendEvent] = []
+    for row in rows:
+        ex = _parse_ex_date(row.get("EX_DIVIDEND_DATE"))
+        if ex is None or ex < start or ex > end:
+            continue
+
+        raw_symbol = row.get("SECUCODE")
+        try:
+            symbol = hk_fin_secucode(raw_symbol) if raw_symbol else ""
+        except ValueError:
+            logger.warning("港股分红日历: SECUCODE 非法, 跳过该行: %r", raw_symbol)
+            continue
+        if not symbol:
+            continue
+
+        plan = row.get("PLAN_EXPLAIN")
+        notice = _parse_ex_date(row.get("NOTICE_DATE"))
+        key = (symbol, ex, notice, str(plan or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        parsed_plan = parse_hk_dividend_plan(plan)
+        year = row.get("YEAR")
+        report_type = row.get("REPORT_TYPE")
+        out.append(
+            HkDividendEvent(
+                symbol=symbol,
+                ex_date=ex,
+                pay_date=_parse_ex_date(row.get("DIVIDEND_DATE")),
+                notice_date=notice,
+                fiscal_year=str(year) if year not in (None, "") else None,
+                report_type=str(report_type) if report_type not in (None, "") else None,
+                plan=str(plan).strip() if plan else None,
+                dividend_hkd=parsed_plan.dividend_hkd if parsed_plan else None,
+                bonus_ratio=parsed_plan.bonus_ratio if parsed_plan else None,
+                parsed=parsed_plan is not None,
+            )
+        )
+
+    out.sort(key=lambda e: (e.ex_date, e.symbol))
+    return out
 
 
 def build_hk_adj_factors(

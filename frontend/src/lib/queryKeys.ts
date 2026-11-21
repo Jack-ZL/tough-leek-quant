@@ -29,6 +29,10 @@ export const MINUTE_DATA_QUERY_PREFIXES = new Set([
  */
 export const HK_DATA_QUERY_PREFIXES = new Set([
 	'hk-data-status', 'hk-instruments', 'hk-daily',
+	// 分红日历的股息率分母取自 `kline_hk_daily.close`、名称取自 `instruments_hk`,
+	// 两者都在港股同步链里 ⇒ 同步完必须一起失效, 否则会留着基于旧收盘价的股息率。
+	// 🔴 这里是 `has()` 精确匹配首段, 不是前缀匹配, 故必须逐条列出。
+	'hk-dividends',
 ])
 
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
@@ -208,6 +212,11 @@ export const QK = {
 		['hk-financials', symbol, limit] as const,
 	hkFinancialStatement: (symbol: string, table: string, reportDate?: string) =>
 		['hk-financials', 'statement', symbol, table, reportDate ?? ''] as const,
+
+	// 港股分红日历 (PR7)。窗口两端都影响结果 ⇒ 必须入 key(否则改日期不重新取数)。
+	// 🔴 数据**不落库**, 每次 miss 都打一次上游报表 ⇒ 消费方必须给足 staleTime。
+	hkDividends: (start: string, end: string) =>
+		['hk-dividends', start, end] as const,
 
 	// A 股财务五张表。🔴 前缀 `financials` 与上面的 `hk-financials` 互斥。
 	// 住在 queryKeys 而不是 lib/useFinancials.ts: 市场适配层

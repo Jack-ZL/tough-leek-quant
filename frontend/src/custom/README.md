@@ -21,6 +21,7 @@ frontend/src/custom/<namespace>/Page.tsx
 | `concept-analysis` | 概念分析 |
 | `industry-analysis` | 行业分析 |
 | `financials` | 财务分析 |
+| `hk-dividends` | 港股分红日历 |
 | `monitor` | 监控中心 |
 | `abnormal` | 异动监控 |
 | `lots` | 持仓提醒 |

@@ -409,6 +409,72 @@ export interface HkFinancialStatementResponse {
 	items: Record<string, any>[]
 }
 
+/**
+ * `GET /api/hk/dividends` 的一行 —— 港股分红日历事件(一次公司行动)。
+ *
+ * 🔴 单位契约(CONTRIBUTING §3.1): `dividend_yield_pct` 是**百分比数值**,
+ * `5.0` 表示 `5.0%` 而**不是** `0.05`。前端直接拼 `%` 展示, **不得再乘 100**。
+ * 它是**单次派息**的股息率, 不是 TTM。
+ *
+ * 🔴 null 与 0 是两种不同状态, 不得互相替代(§4 fail closed):
+ * - `dividend_hkd === null` 且 `parsed === false`: 源数据没给港币折算值(外币未
+ *   折算/分拆/权证)。除净日仍是事实 ⇒ **整行保留**, 用 `plan` 原文兜底展示。
+ * - `dividend_hkd === 0` 且 `bonus_ratio > 0`: 确认纯送转、无现金 ⇒ 股息率 `0`
+ *   是正确答案, 与「算不出来」的 null 必须能区分。
+ * - `raw_close === null`: 近若干个日K分区里取不到收盘(未同步/长期停牌/人民币
+ *   柜台不在日K里) ⇒ `dividend_yield_pct` 为 null, 渲染「—」, **绝不**渲染 0。
+ */
+export interface HkDividendEvent {
+	symbol: string
+	/** 维表缺该标的时为 null(行不丢: 代码与除净日本身就是有用信息) */
+	name: string | null
+	industry: string | null
+	/** 除净日(ISO `YYYY-MM-DD`)。日历的排序轴。 */
+	ex_date: string
+	/** 派息日; 源数据可能缺失 */
+	pay_date: string | null
+	/** 公告日 */
+	notice_date: string | null
+	/**  fiscal year, 上游给的是字符串(如 `"2026"`) */
+	fiscal_year: string | null
+	/** 年度分配 / 中期分配 / 二季度分配 / 三季度分配 / 特别分配 */
+	report_type: string | null
+	/** 分红方案原文(如「每股派港币1.0元」)。未解析时这是唯一的金额线索。 */
+	plan: string | null
+	dividend_hkd: number | null
+	/** 送转比例(每 1 股送 N 股); 无送转时为 0 */
+	bonus_ratio: number | null
+	/** 方案文本是否成功解析出金额。false 时 `dividend_hkd` 必为 null。 */
+	parsed: boolean
+	/** 不复权收盘价。🔴 §3.2: enriched 的 OHLC 是**前复权**, 用它做分母会把有
+	 *  分红史的标的股息率系统性算高, 故后端取的是 `kline_hk_daily.close`。 */
+	raw_close: number | null
+	/** 上面那个收盘价所属的交易日(停牌股会回落到更早的分区) */
+	price_date: string | null
+	dividend_yield_pct: number | null
+}
+
+/**
+ * `GET /api/hk/dividends` 响应。
+ *
+ * 两个 count 是**数据质量信号**, 必须在 UI 上可见: 它们数的是「仍在 `items` 里、
+ * 但某一列不可信」的行数, 藏起来就等于把已知缺陷伪装成完整数据。
+ */
+export interface HkDividendCalendarResponse {
+	items: HkDividendEvent[]
+	total: number
+	start: string
+	end: string
+	market: string
+	/** 恒为 `HKD`: 金额与股息率分母都是港币口径 */
+	currency: string
+	source: string
+	/** 方案文本没能解析出金额的行数(外币未折算/分拆/权证) */
+	unparsed_count: number
+	/** 取不到收盘价因而算不出股息率的行数 */
+	missing_close_count: number
+}
+
 /** AI 财务分析历史报告 */
 export interface AiFinancialReport {
 	id: string
@@ -4521,6 +4587,23 @@ export const api = {
 			`/api/hk/financials/statement/sync?symbol=${encodeURIComponent(symbol)}&table=${table}`,
 			{ method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS },
 		),
+	/**
+	 * 港股分红日历(按**除净日**窗口取全市场公司行动)。
+	 *
+	 * 🔴 独立端点, 与 A 股无对应路由: 分红日历是港股独有维度(`docs/hk-market-plan.md`
+	 * PR7), 且数据**不落库** —— 每次实时取上游报表, 故调用方应给足 `staleTime`
+	 * 而不是每次渲染都打一次上游。
+	 *
+	 * 上游失败时后端返回 **502** 而不是空列表: 「拉不到」和「这段时间没人除净」
+	 * 是两种状态, 合并成一种就是把故障伪装成正常(§4)。调用方需区分处理。
+	 */
+	hkDividends: (opts?: { start?: string; end?: string }) => {
+		const q = new URLSearchParams()
+		if (opts?.start) q.set('start', opts.start)
+		if (opts?.end) q.set('end', opts.end)
+		const qs = q.toString()
+		return request<HkDividendCalendarResponse>(`/api/hk/dividends${qs ? `?${qs}` : ''}`)
+	},
 	/**
 	 * 港股数据画像(维表/日K/enriched/指数/复权因子/财务 的行数·日期·覆盖 + 存储占用)。
 	 *
