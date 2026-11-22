@@ -25,6 +25,7 @@ frontend/src/custom/<namespace>/Page.tsx
 | `hk-connect-flow` | 港股通资金流（南向） |
 | `hk-ah-premium` | AH 溢价 |
 | `hk-volatility` | 港股波动率情绪（VHSI） |
+| `hk-hot-rank` | 港股人气榜（东财股吧前 100 名） |
 | `monitor` | 监控中心 |
 | `abnormal` | 异动监控 |
 | `lots` | 持仓提醒 |

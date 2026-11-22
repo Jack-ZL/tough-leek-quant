@@ -203,6 +203,35 @@ class EastmoneyClient:
     def _get_json(self, base: str, path: str, params: dict) -> dict:
         """GET + 限速 + 抖动 + 重试退避 + 熔断。返回解析后的 JSON dict。
 
+        🔴 签名 (三个位置参数) 被 ``tests/test_stock_profile.py`` 等多处直接
+        monkeypatch 替换, 不要改形参名或改成 keyword-only。
+        """
+        return self._request_json("GET", base, path, params=params)
+
+    def _post_json(self, base: str, path: str, json_body: dict) -> dict:
+        """POST(JSON body) + 限速 + 抖动 + 重试退避 + 熔断。
+
+        与 :meth:`_get_json` **共用同一套重试/熔断逻辑**, 只是请求方法不同。
+        东财有一批接口只接受 POST + JSON body (如 ``emappdata`` 的股吧人气榜),
+        没有这个方法就得在插件里另起一个 httpx client, 从而复制一份限速与熔断
+        —— 而**限速/熔断必须按主机共享**才有效: 同一主机两个独立令牌桶等于把
+        配额翻倍, 正是被封禁的成因之一。
+
+        可重试症状与退避节奏同 :meth:`_request_json`。
+        """
+        return self._request_json("POST", base, path, json_body=json_body)
+
+    def _request_json(
+        self,
+        method: str,
+        base: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json_body: dict | None = None,
+    ) -> dict:
+        """限速 + 抖动 + 重试退避 + 熔断的公共实现。返回解析后的 JSON dict。
+
         可重试症状: 传输错误 / HTTP 429、5xx / 空响应体(东财限流的典型表现)。
         退避: 0.5s → 1.5s → 3.5s (指数 + 固定偏移), 重试耗尽抛 EastmoneyError。
         """
@@ -217,7 +246,13 @@ class EastmoneyClient:
             # 随机抖动: 打散请求节奏, 降低被识别为机器流量的概率
             self._sleep(random.uniform(*self._jitter))
             try:
-                resp = self._http.get(url, params=params)
+                # 按方法分派而不是统一走 ``self._http.request(...)``: 现有测试
+                # 用只实现 ``.get()`` 的假 httpx client 打桩 (``_FakeHttp``),
+                # 换成 ``request`` 会要求同步改一批与本功能无关的测试。
+                if method == "POST":
+                    resp = self._http.post(url, params=params, json=json_body)
+                else:
+                    resp = self._http.get(url, params=params)
             except httpx.HTTPError as e:
                 last_err = f"网络请求失败: {e}"
                 breaker.on_failure()

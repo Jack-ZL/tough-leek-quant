@@ -26,6 +26,7 @@ from app.api.pipeline import _submit_job
 from app.market import Market, rules_for
 from app.plugins.eastmoney.client import EastmoneyError
 from app.plugins.eastmoney.hk_financials import HK_DATE_TYPE_ANNUAL
+from app.plugins.eastmoney.hk_hot_rank import HOT_RANK_MAX_PAGE_SIZE
 from app.plugins.sina import hk_index as sina_hk_index
 from app.plugins.sina.client import SinaError
 from app.services import (
@@ -33,6 +34,7 @@ from app.services import (
     financial_sync_hk,
     hk_connect_flow,
     hk_dividend_calendar,
+    hk_hot_rank,
     hk_volatility,
     index_const,
     index_sync_hk,
@@ -1259,4 +1261,125 @@ def get_hk_volatility(
         "sample_end": result.sample_end.isoformat() if result.sample_end else None,
         "insufficient_history": result.insufficient_history,
         "insufficient_reason": result.insufficient_reason,
+    }
+
+
+@router.get("/hot-rank")
+def get_hk_hot_rank(request: Request) -> dict:
+    """港股**人气榜**前 100 名 (东方财富股吧个股人气榜)。
+
+    一行 = 一只标的的当前关注度排名。``rank`` **小 = 靠前** (第 1 名最热门)。
+
+    口径要点:
+
+    - 🔴 **只有前 100 名, 不可翻页、不可调条数**: 上游对 ``pageSize>100`` 或
+      ``pageNo=2`` **静默返回空列表** (实测), 所以本端点刻意不接受分页参数 ——
+      接受了就会有人传 200, 然后看到「港股此刻没有人气数据」这个假结论。
+    - ``market_all_count`` 是**参与排名的全市场标的数** (实测 2811), 即排名的
+      分母。没有分母的排名无法解读: 「第 100 名」在 100 个标的里是垫底, 在
+      2811 个里是前 3.6%。该字段只在单标的端点里, 故服务端用榜首代码额外换了
+      一次; **换失败时为 null 且所有 ``rank_percentile`` 一并 null** (不拿 100
+      当分母凑数), 榜单本身照常返回。
+    - ``rank_percentile`` = ``rank / market_all_count * 100``, 即「前 X%」,
+      越小越热门。分母缺失时为 null。
+    - ``rank_change`` (短周期) 与 ``his_rank_change`` (长周期) 是上游给的**两个
+      不同窗口**的名次变动, 上游未文档化具体天数, 故原样透传、字段名保持中性
+      (不叫「日变动/周变动」以免暗示一个没被证实的口径)。正 = 名次上升。
+    - ``calc_time`` 是**人气榜的上游重算时刻** (实测以 10 分钟为步长), 不是行情
+      时刻, 也**不是交易日** —— 实测非交易日 (周日) 仍有值, 不可当「最新交易日」用。
+    - ``names_synced=false`` 表示本地维表 ``instruments_hk`` 还没同步, 此时
+      ``items[].name`` 全为 null 而**榜单本身有效**。前端应如实说明「维表未同步,
+      名称暂缺」, 不要渲染成一片空白让人以为没数据。
+
+    🔴 **本端点不返回最新价/涨跌幅**, 这是刻意的: 价格属于**行情**维度, 已由
+    看盘/自选/详情走 ``quote_service`` (带缓存与新鲜度判定) 提供; 这里若直连快照
+    补价, 同一只股票就会在本应用里出现**两个价格口径**, 用户无法判断哪个对 (§4)。
+    要看价格点进详情页。同理也**不返回** ``quote_delay_minutes`` —— 那是行情延时
+    标注, 而人气榜不是行情, 挂上去会暗示一个不存在的口径 (§13)。
+
+    上游失败抛 502 而**不**降级成空列表: 「拉不到」和「此刻没有榜单」是两种状态,
+    合并成一种就是把故障伪装成正常 (§4 fail closed)。
+    """
+    try:
+        result = hk_hot_rank.hk_hot_rank(
+            data_dir=request.app.state.repo.store.data_dir
+        )
+    except EastmoneyError as e:
+        logger.warning("港股人气榜拉取失败: %s", e)
+        raise HTTPException(status_code=502, detail=f"港股人气榜数据源不可用: {e}") from e
+
+    return {
+        "items": result.items.to_dicts(),
+        "total": result.count,
+        "market": Market.HK.value,
+        "market_all_count": result.market_all_count,
+        "calc_time": result.calc_time,
+        "names_synced": result.names_synced,
+        "source": result.source,
+        # 上游硬上限, 显式回传给前端做「榜单只有前 N 名」的说明文案
+        "max_count": HOT_RANK_MAX_PAGE_SIZE,
+    }
+
+
+@router.get("/hot-rank/detail")
+def get_hk_hot_rank_detail(
+    request: Request,
+    symbol: Annotated[str, Query(description="港股代码, 如 00700.HK")],
+    with_intraday: Annotated[
+        bool, Query(description="是否附带当日 10 分钟粒度排名序列 (多一次上游请求)")
+    ] = True,
+) -> dict:
+    """单只港股的人气排名 + **日频历史** (约 120 个交易日) + 当日盘中序列。
+
+    口径要点:
+
+    - ``found=false`` 表示**上游未收录该标的** (实测 ``99999.HK`` 返回 200 +
+      全 null 字段)。这是合法答案而不是错误, 故返回 200 + 空序列, 前端应说
+      「该标的暂不在人气榜体系内」而不是报错。
+    - 🔴 ``history[].calc_time`` 是**日期** (``2026-07-26``), ``intraday[].calc_time``
+      是**时刻** (``2026-11-22 00:00:00``) —— 两者格式不同且**刻意不统一**:
+      强行解析成同一种类型会逼着日频补一个假的 ``00:00:00``, 而这个假时刻会被
+      前端 tooltip 如实显示出来 (§13 不伪造)。
+    - ``rank`` 小 = 靠前; 两条序列均按 ``calc_time`` **升序**。
+    - 🔴 画排名折线时 y 轴**应当反转** (``inverse: true``): 排名数字变小才是
+      人气上升, 不反转的话「越来越热门」会画成一条向下的线, 与直觉相反。
+    - ``his_rank_change_rank`` 是上游给的另一个名次口径, 语义未文档化, 原样透传
+      供排查, 前端**不应**直接展示 (§13: 不解释自己没弄懂的字段)。
+
+    上游失败抛 502; 代码格式非法抛 400。
+    """
+    from app.market import is_hk_symbol
+
+    if not is_hk_symbol(symbol):
+        raise HTTPException(status_code=400, detail=f"非港股代码格式: {symbol}")
+
+    try:
+        result = hk_hot_rank.hk_hot_rank_detail(
+            symbol=symbol,
+            data_dir=request.app.state.repo.store.data_dir,
+            with_intraday=with_intraday,
+        )
+    except EastmoneyError as e:
+        logger.warning("港股人气榜详情拉取失败 (%s): %s", symbol, e)
+        raise HTTPException(
+            status_code=502, detail=f"港股人气榜数据源不可用: {e}"
+        ) from e
+
+    return {
+        "symbol": result.symbol,
+        "name": result.name,
+        "market": Market.HK.value,
+        "found": result.found,
+        "rank": result.rank,
+        "rank_change": result.rank_change,
+        "his_rank_change": result.his_rank_change,
+        "his_rank_change_rank": result.his_rank_change_rank,
+        "market_all_count": result.market_all_count,
+        "rank_percentile": result.rank_percentile,
+        "calc_time": result.calc_time,
+        "history": result.history.to_dicts(),
+        "intraday": result.intraday.to_dicts(),
+        "history_days": result.history.height,
+        "intraday_points": result.intraday.height,
+        "source": result.source,
     }

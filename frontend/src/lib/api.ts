@@ -712,6 +712,99 @@ export interface HkVolatilityResponse {
 	insufficient_reason: string | null
 }
 
+/** `GET /api/hk/hot-rank` 的榜单行。 */
+export interface HkHotRankItem {
+	/** 🔴 **小 = 靠前**(第 1 名最热门)。与涨跌幅那类"大=好"的字段方向相反。 */
+	rank: number
+	symbol: string
+	/** 上游 5 位代码(不含 `.HK` 后缀), 用于展示 */
+	code: string
+	/** 来自**本地维表** `instruments_hk`。维表未同步或该标的不在维表时为 null。 */
+	name: string | null
+	/** 短周期名次变动。**正 = 名次上升**。上游未文档化具体窗口。 */
+	rank_change: number | null
+	/** 长周期(历史)名次变动。**正 = 名次上升**。与 `rank_change` 是两个不同窗口。 */
+	his_rank_change: number | null
+	/** 「前 X%」= `rank / market_all_count * 100`, 越小越热门。
+	 *  🔴 分母缺失时为 **null**, 后端不会拿榜单条数(100)当分母凑数。 */
+	rank_percentile: number | null
+}
+
+/**
+ * `GET /api/hk/hot-rank` 响应 —— 港股人气榜(东方财富股吧个股人气榜)。
+ *
+ * 🔴🔴 **只有前 100 名, 不可翻页**: 上游对 `pageSize>100` 或 `pageNo=2`
+ * **静默返回空列表**(不报错)。所以本端点刻意不接受分页参数 —— `total` 恒 ≤
+ * `max_count`, 看到 `total < max_count` 才是真的"榜单就这么短"。
+ *
+ * 🔴 **本端点不返回最新价/涨跌幅**, 这是刻意的: 价格属于**行情**维度, 已由
+ * 看盘/自选/详情走 `quoteService`(带缓存与新鲜度判定)提供。这里再给一份就会让
+ * 同一只股票在本应用里出现**两个价格口径**, 用户无法判断哪个对(CONTRIBUTING §4)。
+ * 要看价格请跳转详情页。同理也**没有** `quote_delay_minutes` —— 那是行情延时标注,
+ * 人气榜不是行情, 挂上去会暗示一个不存在的口径。
+ */
+export interface HkHotRankResponse {
+	items: HkHotRankItem[]
+	total: number
+	market: string
+	/** 参与排名的**全市场标的数**(实测 2811), 即排名的分母。
+	 *  🔴 拿不到时为 null —— 没有分母的排名无法解读:「第 100 名」在 100 个标的里
+	 *  是垫底, 在 2811 个里是前 3.6%。此时所有 `rank_percentile` 一并 null。 */
+	market_all_count: number | null
+	/** 上游**人气榜重算时刻**(实测以 10 分钟为步长), 形如 `2026-11-22 13:00:00`。
+	 *  🔴 不是行情时刻, 也**不是交易日** —— 实测非交易日(周日)仍有值,
+	 *  不可当「最新交易日」用。 */
+	calc_time: string | null
+	/** `false` = 本地维表未同步, 此时 `items[].name` 全为 null 而**榜单本身有效**。
+	 *  🔴 必须如实说明「维表未同步, 名称暂缺」, 不要渲染成一片空白让人以为没数据。 */
+	names_synced: boolean
+	source: string
+	/** 上游榜单条数硬上限(100)。用于「榜单只有前 N 名」的说明文案。 */
+	max_count: number
+}
+
+/** 人气排名时间序列一点(日频历史与当日盘中同构)。 */
+export interface HkHotRankPoint {
+	/** 🔴 **两种格式, 刻意不统一**: 日频历史是日期(`2026-07-26`), 当日盘中是时刻
+	 *  (`2026-11-22 00:00:00`)。强行统一会给日频补一个假的 `00:00:00`, 而这个假
+	 *  时刻会被 tooltip 如实显示出来(§13 不伪造)。按所属序列各自的格式展示。 */
+	calc_time: string
+	/** 小 = 靠前。上游缺点时为 null。 */
+	rank: number | null
+}
+
+/**
+ * `GET /api/hk/hot-rank/detail` 响应 —— 单只港股的人气排名与历史。
+ *
+ * 🔴 `found=false` 表示**上游未收录该标的**(实测 `99999.HK` 返回 200 + 全 null
+ * 字段)。这是合法答案而不是错误, 故 HTTP 仍是 200 —— 界面应说「该标的暂不在
+ * 人气榜体系内」, **不得**渲染成加载失败。
+ */
+export interface HkHotRankDetailResponse {
+	symbol: string
+	/** 来自本地维表; 维表未同步或不在维表时为 null */
+	name: string | null
+	market: string
+	found: boolean
+	rank: number | null
+	rank_change: number | null
+	his_rank_change: number | null
+	/** 上游给的另一个名次口径, **语义未文档化**。仅供排查, 界面不应直接展示
+	 *  (§13: 不解释自己没弄懂的字段)。 */
+	his_rank_change_rank: number | null
+	market_all_count: number | null
+	rank_percentile: number | null
+	calc_time: string | null
+	/** 日频历史(实测约 120 个交易日), 按 `calc_time` **升序** */
+	history: HkHotRankPoint[]
+	/** 当日 10 分钟粒度(实测约 79 点), 按 `calc_time` **升序**。
+	 *  请求时 `with_intraday=false` 则为空数组。 */
+	intraday: HkHotRankPoint[]
+	history_days: number
+	intraday_points: number
+	source: string
+}
+
 /** AI 财务分析历史报告 */
 export interface AiFinancialReport {
 	id: string
@@ -4874,6 +4967,29 @@ export const api = {
 	hkVolatility: (seriesDays?: number) => {
 		const qs = seriesDays ? `?series_days=${seriesDays}` : ''
 		return request<HkVolatilityResponse>(`/api/hk/volatility${qs}`)
+	},
+	/**
+	 * 港股**人气榜**(东方财富股吧个股人气榜): 前 100 名 + 全市场分母 + 分位。
+	 *
+	 * 🔴 每次 miss 都打上游(`emappdata.eastmoney.com`, 与行情/数据中心是不同主机,
+	 * 各自独立限流), 且上游 10 分钟才重算一次 ⇒ staleTime 给足, 别切个 tab 就重拉。
+	 * 🔴 **不接受分页参数**: 上游对 `pageSize>100` / `pageNo=2` 静默返回空, 后端
+	 * 刻意不暴露该参数(见 `HkHotRankResponse` 的说明)。
+	 * 🔴 上游失败 → **502**, 不会降级成 200 + 空列表(空榜单会被读成"没人关注")。
+	 */
+	hkHotRank: () => request<HkHotRankResponse>('/api/hk/hot-rank'),
+	/**
+	 * 单只港股的人气排名详情: 当前名次 + 日频历史(约 120 交易日) + 当日 10 分钟序列。
+	 *
+	 * 🔴 榜外标的返回 **200 + `found=false`**(合法答案, 不是错误), 界面要说
+	 * 「该标的暂不在人气榜体系内」而不是渲染成加载失败。
+	 * 🔴 代码格式非法(如 `700.HK` 缺前导零)→ **400**, 后端此时不打任何上游。
+	 * @param withIntraday 传 `false` 可省掉当日盘中那次上游请求(只要日频历史时更快)
+	 */
+	hkHotRankDetail: (symbol: string, withIntraday = true) => {
+		const qs = new URLSearchParams({ symbol })
+		if (!withIntraday) qs.set('with_intraday', 'false')
+		return request<HkHotRankDetailResponse>(`/api/hk/hot-rank/detail?${qs.toString()}`)
 	},
 	/**
 	 * 港股数据画像(维表/日K/enriched/指数/复权因子/财务 的行数·日期·覆盖 + 存储占用)。

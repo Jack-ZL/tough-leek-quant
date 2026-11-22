@@ -579,8 +579,8 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | # | 功能 | 数据源 |
 |---|---|---|
 | 8 | **VHSI 恒指波幅** | ✅ **已落地**（PR9，见 §14）。**不用 akshare 的 `index_hk_spot_sina` 快照**：走腾讯港股指数日K（`kline_hk_index_daily`，symbol `VHSI`）落库后本地计算，与其余 26 个港股指数同一条同步链。**港股版 VIX，A 股没有**（iVIX 已停发）→ **替代 A 股的情绪周期维度** |
-| 9 | 人气榜 | `stock_hk_hot_rank_em` / `_latest_em` / `_detail_em` / `_detail_realtime_em`（东财股吧港股人气，前 100 名） |
-| 10 | 分红日历 | `stock_hk_dividend_payout_em` |
+| 9 | 人气榜 | ✅ **已落地**（PR10，见 §14）。**不引入 akshare**：逆向 `stock_hk_hot_rank_em` 源码后直连东财 `emappdata.eastmoney.com` 的 4 个 `stockrank/*` 接口（与 `push2`／`datacenter-web` 不同主机，独立限流）。🔴 上游 `pageSize` 硬上限 100 且**超限静默返回空**，故端点刻意不接受分页参数；名称取自本地 `instruments_hk` 维表；**不提供价格**（避免与 `quote_service` 形成两个口径） |
+| 10 | 分红日历 | ✅ **已落地**（PR7，见 §14）。东财 datacenter 分红报表，落 `hk_dividends/` |
 
 ### 概念板块
 
@@ -741,7 +741,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **PR4** | **AI 能力** | enriched 通用指标子集（A 股专属列恒 null）；**`hk_market_guardrail`**；`ai_data_quality.py:209,219` 加 market 维；个股分析 + **多空辩论**共用页面；企微 / 钉钉机器人入口 |
 | **PR5** | **财务概况** | 三大报表时序 + 36 列指标；**报告货币折算/标注**；共用 A 股同页面同入口；`stock_profile`/`financial_analyzer` 港股口径适配 |
 | **PR6** | **港股板块 tab** | 恒生行业四件套（热力图 / 估值温度计 / 轮动 / L2 下钻），**全市场口径**，走 ext_data 通道，**行业排名按 market 分开** |
-| **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历。**进度 4/5**：分红日历 ✅（PR7）· 南向 ✅ + AH 溢价 ✅（PR8）· VHSI ✅（PR9）· 人气榜 ⬜（待做，最后一项） |
+| **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历。✅ **进度 5/5 —— 港股独有维度全部落地**：分红日历 ✅（PR7，`57da7110`）· 南向 ✅ + AH 溢价 ✅（PR8，`4659de04`）· VHSI ✅（PR9，`88082b26`）· 人气榜 ✅（PR10，见下文「PR10 完成情况」） |
 
 ### PR1 完成情况（地基）
 
@@ -2270,6 +2270,177 @@ VHSI 是全市场单一序列，不属于任何一只股票。
 是否把 VHSI 也喂进 AI 复盘 / market-recap 提示词链（A 股喂的是
 `market_recap._load_regime_row`）。**本 PR 不做**（§1.2 保持简单）：
 PR9 是一个只读分析页，接入提示词链会牵动护栏与 token 预算，应单独一个 PR 评估。
+
+### PR10 完成情况（港股独有维度）—— 东财股吧人气榜
+
+**范围**：港股人气榜（东方财富股吧个股人气榜，前 100 名）——A 股「人气/热度」在港股的
+**对应维度**。后端 `app/plugins/eastmoney/hk_hot_rank.py` + `app/services/hk_hot_rank.py`
++ `GET /api/hk/hot-rank`、`GET /api/hk/hot-rank/detail`；前端 `src/custom/hk-hot-rank/`
+（扩展页 `/hk-hot-rank`）。**不落库，纯上游读**（同 `hk_connect_flow` / `ah_premium`）。
+
+至此 §10 第三梯队第 9 项落地，**港股独有维度 5/5 全部完成**。
+
+#### 为什么是逆向 akshare 而不是引入 akshare
+
+本仓**刻意不装 akshare**（见 `app/plugins/eastmoney/hk_financials.py` 头注：依赖重、
+版本漂移会静默改口径）。所以方案里写的 `stock_hk_hot_rank_em` 只是一个**待逆向的线索**，
+不是依赖。做法：用 GitHub git-tree API 定位到 akshare 的真实路径
+`akshare/stock/board/stock_hk_hot_rank_em.py`（`/search/code` 需鉴权，404 猜路径不可靠），
+读完 146 行源码提取出 4 个端点，再逐个**实盘验证**响应形状。
+
+上游主机 `https://emappdata.eastmoney.com`，与 `push2`（本机 IP 被封）和
+`datacenter-web`（分红/南向）都不同 ⇒ 在 `EastmoneyClient` 里获得**独立**的令牌桶与熔断器。
+固定 payload：`{"appId": "appId01", "globalId": "786e4c21-…", "marketType": "000003"}`
+（`000003` = 港股）。
+
+| 路径 | 额外入参 | 实测 `data` 形状 |
+|---|---|---|
+| `/stockrank/getAllCurrHkUsList` | `pageNo=1, pageSize=100` | `[{"sc":"HK\|00700","rk":1,"rc":0,"hisRc":0}, …]` |
+| `/stockrank/getCurrentHkUsLatest` | `srcSecurityCode="HK\|00700"` | dict，含 `marketAllCount:2811`、`calcTime`、`rank`、`rankChange`、`hisRankChange`、`hisRankChange_rank` |
+| `/stockrank/getHisHkUsList` | `srcSecurityCode` | **120** 行日频 `[{"calcTime":"2026-07-26","rank":1}, …]` |
+| `/stockrank/getCurrentHkUsList` | `srcSecurityCode` | **78~79** 行 10 分钟粒度 `[{"calcTime":"2026-11-22 00:00:00","rank":1}, …]` |
+
+#### 🔴 六条实测陷阱（每一条都会静默产出错数据）
+
+1. **`pageSize` 硬上限 100，超限是静默的**。实测 `pageSize=100` → 100 行；
+   `200` → **`[]`**；`500` → **`[]`**；`pageNo=2` → **`[]`**。不报错、不给 message。
+   ⇒ `HOT_RANK_MAX_PAGE_SIZE = 100` 是常量，且**取数函数刻意不暴露分页参数**。
+   两道测试钉住：一条断言实际发出的字节，一条断言
+   `inspect.signature(fetch_hk_hot_rank_list) == {"client"}`。
+   前端也必须写明「不可翻页」，否则后人会来加一个翻页按钮，然后拿到空榜单。
+2. **未收录标的返回 200 + `code=0` + 全 `null` 字段**（实测 `HK|99999`）。
+   ⇒ 判空只能靠 `rank is None`，**绝不能**靠 HTTP 状态或信封 `code`。
+   API 侧对应 **200 + `found=false`**（合法答案，不是 404 也不是 502）。
+3. **`marketAllCount`（2811）只在单标的端点上有**，列表端点没有。
+   没有分母的排名无法解读：「第 100 名」在 100 个标的里是垫底，在 2811 个里是前 3.6%。
+   ⇒ `fetch_hk_hot_rank_market_size()` 用**榜首**标的去问（它是全市场字段，问谁都一样；
+   选榜首是因为它必然存在）。**它失败是非致命的** → 返回 `(None, None)`，绝不抛错。
+4. **`rc` 与 `hisRc` 是两个不同窗口，且都有信息量**（实测 100 行里分别有 14 / 90 行非零）。
+   上游**没有文档化**具体窗口 ⇒ 原样透传并用**中性名**（`rank_change` / `his_rank_change`），
+   刻意**不**改名为「日变动/周变动」——那会是替上游编一个它没说过的口径（§13）。
+   正数 = 名次上升（数字变小）。
+5. **`calcTime` 是人气榜重算时刻，不是行情时刻，也不是交易日**。
+   实测**周日**（2026-11-22）同样有值，且以 10 分钟为步长推进
+   （观测到 12:50 → 13:00 → 13:04 → 13:08）。**绝不可**当「最新交易日」用。
+6. **`history` 用日期格式、`intraday` 用时刻格式** ⇒ **刻意保留原始字符串，不解析**。
+   统一成 `datetime` 会给日频行补一个假的 `00:00:00`，而前端 tooltip 会**如实**把那个
+   假时刻显示出来（§13 不伪造）。ISO 串按字符串排序本身就是对的。
+   前端只在**轴标签**上裁剪显示（日频取 `MM-DD`、盘中取 `HH:mm`），tooltip 必须给原始值。
+
+#### 🔴 为什么本页不提供价格与涨跌幅
+
+两个理由，缺一不可：
+
+1. akshare 那条价格路径走 `push2.eastmoney.com/api/qt/ulist.np/get`，而 **`push2` 在本机
+   集群 IP 被封**，接进来必然永远失败。
+2. 即便改走腾讯源（`app/plugins/tencent/hk_spot.py::fetch_hk_spot`）能拿到，也会造成
+   **同一只股票两个价格口径**：看盘/自选/详情走 `quote_service`（带缓存与新鲜度判定），
+   而这里直连 `fetch_hk_spot` 会绕过它。用户在本应用两处看到不同价格却无从判断哪个对（§4）。
+
+⇒ 名称改从**本地 `instruments_hk` 维表**左连取得（零上游请求，且是本项目唯一的规范名称源），
+价格则通过宿主的 `openStockPreview` 把用户送到个股详情——价格仍由 `quoteService` 单一来源提供。
+
+同理**也没有** `quote_delay_minutes`：那是**行情**延时标注，挂在非行情端点上会暗示一个
+不存在的口径（§13）。本页的新鲜度由 `calc_time` 如实传达。
+
+顺带避开一个坑：`fetch_hk_spot` 的 `change_pct` 是**小数**（`pct/100.0`），与 VHSI 的
+**百分数**口径相反——不返回价格就根本不会踩到。
+
+#### 🔴 `hk_symbol` 的补零不对称（一条失败测试挖出来的）
+
+`app/plugins/eastmoney/hk.py::hk_symbol("700")` 会做 `zfill(5)` → `"00700.HK"`。
+所以**入站** `"HK|700"` 被接受并补齐，而**出站** `hot_rank_code("700.HK")` 拒绝它
+（严格 5 位）。这个不对称是**正确且刻意**的：
+
+- **入站宽松**：上游是「它指的是哪只股票」的权威，`700` 与 `00700` 是同一只港股。
+- **出站严格**：我们必须发出规范的 5 位代码。发 `HK|700` 有可能让上游**静默**解析成
+  另一只证券——**错数据比没数据更糟**。
+
+我最初的测试错误地假设了入站也严格（`assert` 跳过 `HK|700`），实际拿到 `[1,2,3,5,…]`。
+**是测试的假设错了，不是代码错了**。修法：改用真正非法的行（`HK|ABCDE` 非数字、
+`00700` 缺分隔符），并**新增** `test_list_zero_pads_short_upstream_codes` 把这个不对称钉住。
+
+#### 🔴 `EastmoneyClient` 的 POST 改造与一个坑
+
+人气榜是 POST 接口，而 `EastmoneyClient` 原先只有 GET。**必须走 client 而不能在插件里
+自建 httpx**：限流与熔断是**按主机共享**的，插件私建一个 client 就等于给同一主机开了
+第二个令牌桶，实际配额翻倍——这正是被封 IP 的典型成因。
+
+改造方式：抽出 `_request_json(method, base, path, *, params=None, json_body=None)` 承载
+共用的重试/熔断/令牌桶循环，`_get_json` 变成**签名完全一致的包装**。
+🔴 签名必须一致，因为 `tests/test_stock_profile.py`（340/369/404/428/437 行）直接
+monkeypatch `c._get_json = lambda base, path, params: …`，
+`tests/test_eastmoney_provider.py`（598~627 行）也直接调它。
+
+**坑**：我最初在 `_request_json` 里写 `self._http.request(method, url, …)`，
+结果**炸了 6 个测试**——测试注入的 `_FakeHttp`（`test_eastmoney_provider.py:586-588`）
+**只实现了 `.get()`**。修法是**按 method 分支**而不是去改那批测试：
+
+```python
+if method == "POST":
+    resp = self._http.post(url, params=params, json=json_body)
+else:
+    resp = self._http.get(url, params=params)
+```
+
+理由已就地注释：改用 `.request()` 会迫使本 PR 去动一批与本功能无关的测试（§12）。
+
+#### 为什么不落库
+
+与 `hk_connect_flow` / `ah_premium` 同一个取舍，但理由更强：
+
+- 榜单**每 10 分钟重算**，落库的副本几乎永远是陈的，而「关注度」恰恰是**最时效敏感**的维度。
+- 那 120 天日频历史是上游维护的**滚动窗口**，本地副本会随窗口滑动而与上游分叉。
+
+🔴 **但 `hk-hot-rank` 必须加进 `HK_DATA_QUERY_PREFIXES`**——这一点与 `hk-connect-flow`
+**相反**（后者刻意不在表里，因为它不读任何本地数据）。人气榜的**名称**左连本地
+`instruments_hk` 维表，所以维表同步完必须失效它，否则新上市标的会一直显示 null 名称。
+判断标准是「**有没有读本地数据**」，不是「是不是港股端点」。这条不对称由
+`Page.test.tsx` 的一条断言钉住（同时断言 `hk-connect-flow` **不在**表里），
+服务层 docstring 里也写了「别照抄」的警告。
+
+#### 实测数值（2026-11-22，供后续对照）
+
+前 5 名：`1 00700.HK 腾讯控股（0.0356%）`、`2 09988.HK 阿里巴巴-W`、`3 01810.HK 小米集团-W`、
+`4 02513.HK 智谱`、`5 01024.HK 快手-W`。第 100 名 `02525.HK 禾赛-W`
+（`his_rank_change=-11`、`rank_percentile=3.5575`）。`market_all_count=2811`。
+`00700.HK` 详情：`rank=1`、`his_rank_change_rank=1397`（稍后 1394）、
+`history=120` 点、`intraday=79` 点。
+
+#### 🔴 前端：名次图 y 轴必须反转
+
+名次是「**小 = 好**」，与价格/成交额那类「大 = 好」的序列方向**相反**。
+不反转的话「人气持续升温」会画成一条**一路向下**的线，而下降线在所有人的直觉里都等于
+「变差」——图会**系统性地传达反的结论**。故 `RankChart` 的 yAxis 恒带 `inverse: true`，
+并由测试断言**每一张**名次图都反转（不允许漏一张）。
+
+名次变动的配色也**刻意不用** `text-bull`/`text-bear`：本项目红绿是**涨跌**语义（红涨绿跌），
+用它表达人气升降会被读成价格方向，而本页根本不提供价格、那个推断无从验证。
+改用 箭头 + 中性/强调色（与 PR9 波动率档位不用涨跌色同理）。
+
+#### 六道测试回归闸
+
+1. `pageSize==100` / `pageNo==1` 钉在**实际发出的 payload** 上，外加一条签名测试禁止分页参数。
+2. 未收录 = 200 + `code=0` + 全 null ⇒ 只能靠 `rank is None` 判空。
+3. `market_all_count` 拿不到 ⇒ **所有** `rank_percentile` 为 null；**绝不**拿榜单条数（100）当分母。
+4. 上游失败 ⇒ 502，**不是** 200 + 空列表（空榜单会被读成「全市场无人关注」）。
+5. `history.calc_time` 是日期、`intraday.calc_time` 是时刻——刻意不统一。
+6. 代码格式非法 ⇒ **一个上游请求都不发**（`assert c.calls == []`）。
+
+夹具（`LIST_ROWS` / `LATEST_00700` / `LATEST_UNLISTED` / `HISTORY_ROWS` / `INTRADAY_ROWS`）
+是 2026-11-22 实盘探测的**逐字拷贝**，所以上游改字段名会让测试**红**，
+而不是在生产里静默产出一列 null。
+
+后端 54 条（`tests/test_hk_hot_rank.py`）、前端 22 条（`src/custom/hk-hot-rank/Page.test.tsx`）。
+
+#### 刻意留到后续
+
+- `frontend/src/lib/board-market-support.ts:183` 的空态文案里有一句
+  「akshare 港股侧仅提供人气榜」，用来解释**概念板块**为何无源。本 PR 落地后这句话
+  依然**事实正确**（它讲的是板块覆盖，不是我们有没有人气榜），且既有测试断言该文案
+  含「人气榜」⇒ **本 PR 不改它**（§12 不夹带无关改动）。若要加一句「人气榜见 /hk-hot-rank」
+  的指引，应连同那条测试一起单独改。
+- 是否把人气榜喂进 AI 复盘提示词链，同 PR9 的理由，单独评估。
 
 ## 15. 风险
 

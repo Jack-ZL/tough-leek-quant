@@ -39,7 +39,11 @@ export const HK_DATA_QUERY_PREFIXES = new Set([
 	// 🔴 波动率情绪(`hk-volatility`)**必须在本集合里**: 它读的是本地
 	// `kline_hk_index_daily`(VHSI + HSI 日K), 同步完不失效就会留着按旧样本
 	// 标定的分位阈值 —— 而阈值一变, 档位可能整个换档, 界面上却看不出差别。
-	'hk-dividends', 'hk-ah-premium', 'hk-volatility',
+	// 🔴 人气榜(`hk-hot-rank`)**必须在本集合里**: 榜单本身来自上游, 但**名称**
+	// 左连本地 `instruments_hk` 维表 —— 维表同步完不失效, 新上市标的会一直显示
+	// null 名称。⚠️ 别照抄上面那条 `hk-connect-flow`(它不读任何本地数据)。
+	// 判断标准是「有没有读本地数据」, 不是「是不是港股端点」。
+	'hk-dividends', 'hk-ah-premium', 'hk-volatility', 'hk-hot-rank',
 ])
 
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
@@ -245,6 +249,18 @@ export const QK = {
 	// 🔴 纯本地读, 不打上游 ⇒ 不需要像分红/南向那样为"省上游请求"给足 staleTime,
 	// 但仍建议给: 一次响应带 250 个绘图点, 切 tab 就重取没必要。
 	hkVolatility: (seriesDays: number) => ['hk-volatility', seriesDays] as const,
+
+	// 港股人气榜。无查询参数(上游硬上限前 100 名, 后端刻意不暴露分页) ⇒ 静态 key。
+	// 🔴 前缀 `hk-hot-rank` **在** `HK_DATA_QUERY_PREFIXES` 里: 榜单本身来自上游,
+	// 但**名称**左连本地 `instruments_hk` 维表 —— 维表同步完必须失效, 否则新上市
+	// 标的会一直显示成 null 名称。
+	// ⚠️ 别照抄 `hk-connect-flow`(那条刻意**不**在表里, 因为它不读任何本地数据)。
+	// 判断标准是「有没有读本地数据」, 不是「是不是港股端点」。
+	hkHotRank: ['hk-hot-rank'] as const,
+	// 单标的人气详情。`symbol` 与 `withIntraday`(是否带当日盘中序列)都影响结果 ⇒ 入 key。
+	// 🔴 前缀同为 `hk-hot-rank`, 故与列表一起被维表同步失效(名称同源)。
+	hkHotRankDetail: (symbol: string, withIntraday: boolean) =>
+		['hk-hot-rank', 'detail', symbol, withIntraday] as const,
 
 	// A 股财务五张表。🔴 前缀 `financials` 与上面的 `hk-financials` 互斥。
 	// 住在 queryKeys 而不是 lib/useFinancials.ts: 市场适配层
