@@ -35,6 +35,7 @@ from app.services import (
     hk_connect_flow,
     hk_dividend_calendar,
     hk_hot_rank,
+    hk_sector_valuation,
     hk_volatility,
     index_const,
     index_sync_hk,
@@ -983,6 +984,106 @@ def get_hk_dividends(
         "source": "eastmoney_datacenter",
         "unparsed_count": int(sum(1 for it in items if not it["parsed"])),
         "missing_close_count": int(sum(1 for it in items if it["raw_close"] is None)),
+    }
+
+
+# ── 行业估值温度计 ────────────────────────────────────────────────
+# 方案 §10「恒生行业四件套」的第 2 件, 与分红日历同源 (同一张上游报表 + 同一个
+# 解析器), 但口径不同: 日历是**逐事件的单次派息**收益率, 温度计是**逐标的的 TTM**
+# 再按恒生行业聚合。两者刻意不合并成一个端点 —— 一个是「接下来谁除净」的时间轴,
+# 一个是「哪个行业是价值洼地」的横截面, 合并会让任一方为了迁就另一方而改口径。
+
+#: 缺省回看窗口 (自然日) = 标准 TTM。短于一年会让「一年一派」的公司整体落空,
+#: 覆盖率假性偏低。
+HK_SECTOR_VALUATION_DEFAULT_DAYS = hk_sector_valuation.HK_SECTOR_VALUATION_DEFAULT_DAYS
+
+#: 窗口上限沿用分红日历的硬闸 (同一张上游报表、同样 200 行/页翻页)。
+HK_SECTOR_VALUATION_MAX_DAYS = HK_DIVIDEND_MAX_WINDOW_DAYS
+
+#: 🔴 PE **刻意不提供**, 且这件事必须下发给前端明示, 而不是让前端留一个空列。
+#: 三条独立原因见 :mod:`app.services.hk_sector_valuation` 模块 docstring 的
+#: 「为什么没有 PE」一节; 简版: clist 的 ``f9`` 走的是对本机 IP 级封禁的 push2
+#: 集群, 而财务宽表的 ``pe_ttm`` 是**同步时点快照被复制到每一行报告期**且
+#: **不带 as-of 日期** (实测 00700.HK 七个不同 report_date 上全等于 12.393295),
+#: 无法判断新旧 —— 摆进「温度计」就是 §4 禁止的冒充。
+HK_SECTOR_VALUATION_PE_UNAVAILABLE = (
+    "港股全市场 PE 无可用源: 东财 clist 的市盈率字段走 push2 集群(本机 IP 级封禁), "
+    "财务宽表的 pe_ttm 是同步时点快照且不带 as-of 日期, 无法判断新旧。"
+    "本表因此只提供股息率与派息覆盖率, 不以过期估值冒充当前 PE。"
+)
+
+
+@router.get("/sector-valuation")
+def get_hk_sector_valuation(
+    request: Request,
+    days: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=HK_SECTOR_VALUATION_MAX_DAYS,
+            description=f"回看自然日数 (TTM 窗口); 缺省 {HK_SECTOR_VALUATION_DEFAULT_DAYS}",
+        ),
+    ] = None,
+    end: Annotated[date | None, Query(description="窗口末日 (含); 缺省=今天")] = None,
+) -> dict:
+    """港股**恒生行业估值温度计**: 按行业聚合的 TTM 股息率与派息覆盖率。
+
+    一行 = 一个恒生行业, 按 ``median_yield_pct`` **降序** (方案 §10:「按股息率
+    降序」用于价值洼地识别; 「港股是红利市场, 这个比涨幅排名更有用」)。
+
+    🔴 **三个统计量只在派息者上算**, ``coverage_pct`` 必须与之并列展示:
+    实测全市场派息覆盖率仅 36.8%, 若按全体成分统计 (不派息计 0), 31 个行业里有
+    15 个以上的中位数恰好是 ``0.0``, 排序后第一屏全是并列的零, 温度计分不出高低。
+    只看中位数会把「8 家里 3 家派、派得很高」和「200 家里 180 家派」当成同一件事
+    —— 两个数一起看才成立。
+
+    ⚠️ ``avg_yield_pct`` 受仙股一次性派息严重扭曲 (实测专业零售 均值 23.6% vs
+    中位数 8.1%), **中位数才是排序键**, 前端不得把均值当头条数字。
+
+    单位: 所有 ``*_pct`` 都是**百分比数值** (``5.0`` = ``5.0%``), 分母为最新
+    **不复权**收盘价, 换算已在服务层一次做完, 前端不得再乘 100 (§3.1)。
+
+    如实暴露的口径字段 (§4):
+
+    - ``pe_available: false`` + ``pe_unavailable_reason``: PE 缺源, 明示而非留空列。
+    - ``member_total`` / ``priced_total`` / ``payer_total`` / ``excluded_total`` /
+      ``unclassified_count``: 让「全市场口径」可被审计。方案 §10 特别警告过
+      QuantMind 早期误用 141 只港股通子集而返工, 故把分母如实交出。
+      ``Σ member_count + unclassified_count == member_total`` 恒成立。
+    - ``excluded_count`` (逐行): 有行业但算不出股息率的成分数 (无收盘价 / 派息
+      金额未能解析)。这些标的**不进任何统计**, 也**绝不当成 0%** —— 把「派了但
+      读不出多少」说成「没派」是看不出来的伪造 (§13)。
+
+    上游失败抛 502 而**不**降级成空表: 「拉不到」和「这段时间没人派息」是两种状态。
+    """
+    window_days = days or HK_SECTOR_VALUATION_DEFAULT_DAYS
+    repo = request.app.state.repo
+    try:
+        result = hk_sector_valuation.hk_sector_valuation(repo, days=window_days, end=end)
+    except EastmoneyError as e:
+        # 上游报表失败 (报表名变更 / 列变更 / 封禁)。不降级成空表。
+        logger.warning("港股行业估值温度计拉取失败: %s", e)
+        raise HTTPException(status_code=502, detail=f"港股分红数据源不可用: {e}") from e
+
+    items = result.industries.to_dicts()
+    meta = result.meta
+    return {
+        "items": items,
+        "total": len(items),
+        "market": Market.HK.value,
+        "currency": "HKD",
+        "source": "eastmoney_datacenter",
+        "days": int(meta["days"]),
+        "window_start": meta["window_start"].isoformat(),
+        "window_end": meta["window_end"].isoformat(),
+        "event_count": int(meta["event_count"]),
+        "member_total": int(meta["member_total"]),
+        "priced_total": int(meta["priced_total"]),
+        "payer_total": int(meta["payer_total"]),
+        "excluded_total": int(meta["excluded_total"]),
+        "unclassified_count": int(meta["unclassified_count"]),
+        "pe_available": False,
+        "pe_unavailable_reason": HK_SECTOR_VALUATION_PE_UNAVAILABLE,
     }
 
 

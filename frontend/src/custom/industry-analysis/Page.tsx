@@ -4,6 +4,7 @@ import { AnimatePresence } from 'framer-motion'
 import {
 	Activity,
 	Crown,
+	Gauge,
 	Layers3,
 	RefreshCw,
 	Repeat,
@@ -23,12 +24,13 @@ import {
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { toNavItems, type NavItem } from '@/lib/listNav'
 import { RpsRotationDialog } from '@/components/RpsRotationDialog'
+import { SectorValuationDialog } from '@/components/SectorValuationDialog'
 import { api, type MarketSnapshotRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
-import { boardDimensionSource, boardNoSourceCopy } from '@/lib/board-market-support'
+import { boardDimensionSource, boardNoSourceCopy, sectorValuationThermometer } from '@/lib/board-market-support'
 import { marketContent } from '@/lib/marketContent'
 import { useMarket } from '@/lib/marketStore'
 import { groupsFromSnapshotField, resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
@@ -325,6 +327,9 @@ export function IndustryAnalysis() {
 		setPreviewNavList(navList ?? [])
 	}, [])
 	const [showRps, setShowRps] = useState(false)
+	// 行业估值温度计 (PR6)。是否渲染入口按市场取表, 组件里不写 `market === 'HK'`。
+	const [showValuation, setShowValuation] = useState(false)
+	const valuationReady = sectorValuationThermometer(market)
 
 	const configsQuery = useQuery({ queryKey: QK.extData, queryFn: api.extDataList, enabled: useExtData })
 	const availableConfigs = configsQuery.data?.items ?? []
@@ -513,6 +518,24 @@ export function IndustryAnalysis() {
 								<Repeat className="h-3.5 w-3.5" />涨幅RPS轮动分析
 							</button>
 						)}
+						{/* 行业估值温度计 (PR6 · 方案 §10 恒生行业四件套第 2 件)。
+						    🔴 判据是 `valuationReady`(取自 lib/board-market-support.ts 的
+						    SECTOR_VALUATION_THERMOMETER 表)而**不是** `boardReady`: 温度计建在
+						    分红数据上, 与本页的板块快照通道无关 —— 即便快照拉不到, 温度计依然
+						    有真数据可看。用表而不是 `market === 'HK'`, 新增市场时编译报错逼人
+						    显式回答(§8 规则 2)。
+						    ⚠️ 表内 PE 恒缺源, 由对话框按后端下发的 `pe_available` 明示, 不在这里
+						    藏一个空列。 */}
+						{valuationReady && (
+							<button
+								onClick={() => setShowValuation(true)}
+								className="inline-flex items-center gap-1 rounded-btn border border-emerald-400/40 bg-emerald-400/15 px-2.5 py-1.5 text-[11px] text-emerald-400 font-medium transition-colors hover:bg-emerald-400/25 hover:border-emerald-400/60"
+								title="按行业看 TTM 股息率与派息覆盖率"
+								data-testid="open-sector-valuation"
+							>
+								<Gauge className="h-3.5 w-3.5" />估值温度计
+							</button>
+						)}
 						<button
 							onClick={() => {
 								if (useExtData) rowsQuery.refetch();
@@ -630,6 +653,9 @@ export function IndustryAnalysis() {
 				/>
 			)}
 			{showRps && <RpsRotationDialog onClose={() => setShowRps(false)} kind="industry" market={market} />}
+			{showValuation && (
+				<SectorValuationDialog onClose={() => setShowValuation(false)} market={market} />
+			)}
 		</>
 	)
 }

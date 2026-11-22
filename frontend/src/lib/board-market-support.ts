@@ -148,6 +148,33 @@ export function rotationSupport(market: Market): RotationSupport {
 	return ROTATION_SUPPORT[market]
 }
 
+/**
+ * 「行业估值温度计」入口在各市场是否渲染 (方案 §10 恒生行业四件套第 2 件)。
+ *
+ * 🔴 只有港股为 `true`, 且这**不是**「A 股无源」的意思 —— 两者结论不同, 别混:
+ * - 港股: 温度计建在**分红**上 (TTM 股息率 + 派息覆盖率), 源是东财
+ *   `RPT_HKF10_MAIN_DIVBASIC` 全市场按除净日窗口取, 已在 PR7 打通。方案特别注明
+ *   「港股是红利市场, 这个比涨幅排名更有用」, 所以它是港股专属维度。
+ * - A 股: 行业估值走的是另一套源 (申万/同花顺行业 × 中证/东财板块估值), 与港股
+ *   分红口径**不可共用一张表**; 目前尚未接入, 故不渲染入口。
+ *
+ * ⚠️ A 股态**刻意不给「尚未接入」提示**: 用户没在找一个他不曾见过的功能, 挂一句
+ * 免责声明只是噪音。这与 `BOARD_NO_SOURCE_COPY` 的分工不同 —— 那边是用户**看得见
+ * 一整页空掉**、必须解释; 这边只是一个按钮不出现。
+ *
+ * 用表而不是 `market === 'HK'`: 新增市场时 `Record<Market, …>` 会**编译报错**,
+ * 逼作者显式回答, 而不是静默落进 else (同文件头注 / 方案 §8 规则 2)。
+ */
+export const SECTOR_VALUATION_THERMOMETER: Record<Market, boolean> = {
+	CN: false,
+	HK: true,
+}
+
+/** 取某市场是否渲染行业估值温度计入口。 */
+export function sectorValuationThermometer(market: Market): boolean {
+	return SECTOR_VALUATION_THERMOMETER[market]
+}
+
 /** 取某板块页在某市场的空态文案; 有源时返回 null。 */
 export function boardNoSourceCopy(kind: BoardKind, market: Market): BoardNoSourceCopy | null {
 	// 有源就不给空态文案 —— 以维度源表为准, 避免文案表忘了同步时整页被误判成无源。

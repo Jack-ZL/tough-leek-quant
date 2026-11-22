@@ -43,7 +43,10 @@ export const HK_DATA_QUERY_PREFIXES = new Set([
 	// 左连本地 `instruments_hk` 维表 —— 维表同步完不失效, 新上市标的会一直显示
 	// null 名称。⚠️ 别照抄上面那条 `hk-connect-flow`(它不读任何本地数据)。
 	// 判断标准是「有没有读本地数据」, 不是「是不是港股端点」。
-	'hk-dividends', 'hk-ah-premium', 'hk-volatility', 'hk-hot-rank',
+	// 🔴 行业估值温度计(`hk-sector-valuation`)**必须在本集合里**: 它同时读
+	// `kline_hk_daily.close`(股息率分母)与 `instruments_hk`(行业归属 + 成分全集),
+	// 两者都在港股同步链里 ⇒ 同步完不失效就会留着基于旧收盘价/旧行业归属的温度计。
+	'hk-dividends', 'hk-sector-valuation', 'hk-ah-premium', 'hk-volatility', 'hk-hot-rank',
 ])
 
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
@@ -228,6 +231,14 @@ export const QK = {
 	// 🔴 数据**不落库**, 每次 miss 都打一次上游报表 ⇒ 消费方必须给足 staleTime。
 	hkDividends: (start: string, end: string) =>
 		['hk-dividends', start, end] as const,
+
+	// 港股行业估值温度计 (PR6)。窗口长度与末日都影响结果 ⇒ 必须入 key。
+	// 🔴 数据**不落库**, 每次 miss 都打一次上游报表(一年窗口约 8 页) ⇒ 消费方
+	// 必须给足 staleTime。
+	// 🔴 前缀 `hk-sector-valuation` **在** `HK_DATA_QUERY_PREFIXES` 里: 股息率分母
+	// 取自 `kline_hk_daily.close`、行业归属与成分全集取自 `instruments_hk`。
+	hkSectorValuation: (days: number, end: string) =>
+		['hk-sector-valuation', days, end] as const,
 
 	// 港股通(南向)资金流。窗口两端都影响结果 ⇒ 必须入 key。
 	// 🔴 不落库、不读本地数据, 每次 miss 都打一次上游报表 ⇒ 消费方必须给足 staleTime。

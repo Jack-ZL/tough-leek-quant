@@ -476,6 +476,92 @@ export interface HkDividendCalendarResponse {
 }
 
 /**
+ * `GET /api/hk/sector-valuation` 的一行 —— 一个**恒生行业**的 TTM 股息率画像。
+ *
+ * 🔴 单位契约(CONTRIBUTING §3.1): 所有 `*_pct` 都是**百分比数值**(`5.0` 表示
+ * `5.0%`, 不是 `0.05`), 换算已在服务层一次做完。前端**不得**再乘 100, 也禁止
+ * 「小于 1 就乘 100」的启发式 —— 故这里不能用 `lib/format.ts` 的 `fmtPct`
+ * (它会 ×100 并加 `+` 号, 是给小数涨跌幅用的)。
+ *
+ * 🔴 三个统计量**只在派息者上算**(见 `median_yield_pct`), `null` 与 `0` 是两种状态:
+ * `null` = 该行业窗口内无人派息(算不出中位数), 不是「中位数为零」。
+ */
+export interface HkSectorValuationRow {
+	industry: string
+	/** 维表里该行业的成分数(港币柜台, 含无行情的) */
+	member_count: number
+	/** 能算出股息率的成分数 = 统计分母, 也是 `coverage_pct` 的分母 */
+	priced_count: number
+	/** 窗口内确有现金派息的成分数 */
+	payer_count: number
+	/**
+	 * 有行业但**算不出**股息率的成分数(无收盘价 / 派息金额未能解析)。
+	 * 🔴 这些标的**不进任何统计**, 也**绝不当成 0%** —— 把「派了但读不出多少」
+	 * 说成「没派」是看不出来的伪造(§13)。UI 必须让它可见。
+	 */
+	excluded_count: number
+	/** 派息覆盖率(%) = `payer_count / priced_count × 100`; `priced_count=0` 时为 null */
+	coverage_pct: number | null
+	/**
+	 * **派息者**股息率中位数(%) —— 本表的主指标与默认排序键。
+	 *
+	 * 🔴 为什么不是全体成分: 实测全市场派息覆盖率仅 36.8%, 若把不派息的计成 0,
+	 * 31 个行业里 15 个以上的中位数恰好是 `0.0`, 排序后第一屏全是并列的零 ——
+	 * 一张分不出高低的温度计。故中位数只答「愿意派息的公司有多大方」, 而
+	 * `coverage_pct` 答「有多少公司真的派息」, **两个数必须一起看**。
+	 */
+	median_yield_pct: number | null
+	/**
+	 * 派息者股息率均值(%)。
+	 * ⚠️ 受仙股一次性派息严重扭曲(实测专业零售 均值 23.6% vs 中位数 8.1%),
+	 * 只作参考, **不得**当头条数字展示。
+	 */
+	avg_yield_pct: number | null
+	/** 派息者股息率最大值(%) */
+	max_yield_pct: number | null
+	/** 龙头派息者(该行业股息率最高的标的); 无派息者时为 null */
+	top_symbol: string | null
+	top_name: string | null
+	top_yield_pct: number | null
+}
+
+/**
+ * `GET /api/hk/sector-valuation` 响应。
+ *
+ * 🔴 `pe_available` 恒为 `false` 且带 `pe_unavailable_reason`: 方案 §10 要求
+ * 「PE 中位数」, 但港股全市场 PE **无可用源**(clist 的 f9 走对本机 IP 级封禁的
+ * push2; 财务宽表 `pe_ttm` 是同步时点快照被复制到每一行报告期且不带 as-of 日期)。
+ * 后端把缺源如实下发, 前端**明示**而不是留一个空列 —— 空列会被读成「这个行业
+ * PE 为空」, 而真相是「我们没有源」(§4 宁可明说没有)。
+ *
+ * 全市场口径的五个计数让「是不是全市场」**可被审计**: 方案 §10 警告过 QuantMind
+ * 早期误用 141 只港股通子集而返工。恒等式
+ * `Σ items[].member_count + unclassified_count === member_total`。
+ */
+export interface HkSectorValuationResponse {
+	items: HkSectorValuationRow[]
+	total: number
+	market: string
+	/** 恒为 `HKD`: 派息额与股息率分母都是港币口径 */
+	currency: string
+	source: string
+	/** TTM 回看自然日数 */
+	days: number
+	window_start: string
+	window_end: string
+	/** 窗口内全市场分红事件数 */
+	event_count: number
+	member_total: number
+	priced_total: number
+	payer_total: number
+	excluded_total: number
+	/** 行业为空因而**不归进任何行业**的成分数(不造「未知」假行业) */
+	unclassified_count: number
+	pe_available: boolean
+	pe_unavailable_reason: string
+}
+
+/**
  * `GET /api/hk/connect-flow` 的一行 —— 某个交易日的港股通(**南向**)资金流。
  *
  * 🔴 单位契约(CONTRIBUTING §3.1): 所有金额字段的单位都是**元**(人民币), 后端已在
@@ -4939,6 +5025,23 @@ export const api = {
 		if (opts?.end) q.set('end', opts.end)
 		const qs = q.toString()
 		return request<HkDividendCalendarResponse>(`/api/hk/dividends${qs ? `?${qs}` : ''}`)
+	},
+	/**
+	 * 港股**恒生行业估值温度计**(TTM 股息率 × 派息覆盖率, 按中位数降序)。
+	 *
+	 * 🔴 独立端点, 与分红日历同源但口径不同: 日历是**逐事件的单次派息**收益率
+	 * (时间轴: 接下来谁除净), 温度计是**逐标的 TTM 再按行业聚合**(横截面: 哪个
+	 * 行业是价值洼地)。合并成一个端点会让任一方为迁就另一方而改口径。
+	 *
+	 * ⚠️ 数据**不落库**, 每次 miss 都打一次上游报表(一年窗口约 8 页) ⇒ 消费方
+	 * 必须给足 `staleTime`。上游失败后端返回 **502** 而不是空表(§4)。
+	 */
+	hkSectorValuation: (opts?: { days?: number; end?: string }) => {
+		const q = new URLSearchParams()
+		if (opts?.days != null) q.set('days', String(opts.days))
+		if (opts?.end) q.set('end', opts.end)
+		const qs = q.toString()
+		return request<HkSectorValuationResponse>(`/api/hk/sector-valuation${qs ? `?${qs}` : ''}`)
 	},
 	/**
 	 * 港股通(**南向**)每日资金流。

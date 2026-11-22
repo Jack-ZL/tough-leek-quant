@@ -4,9 +4,11 @@ import {
   BOARD_DIMENSION_SOURCE,
   BOARD_NO_SOURCE_COPY,
   ROTATION_SUPPORT,
+  SECTOR_VALUATION_THERMOMETER,
   boardDimensionSource,
   boardNoSourceCopy,
   rotationSupport,
+  sectorValuationThermometer,
   type BoardKind,
 } from './board-market-support'
 
@@ -293,5 +295,27 @@ describe('港股: 无层级、无 AI 分析, 空态指向港股同步而不是�
 
   it('空态文案给出真实入口 (数据 → 港股数据)', () => {
     expect(hk.emptyHint('行业')).toContain('数据 → 港股数据')
+  })
+})
+
+describe('🔴 行业估值温度计入口 (PR6)', () => {
+  it('表声明的市场集合恰好等于 MARKETS (漏一个市场必须编译报错)', () => {
+    expect(Object.keys(SECTOR_VALUATION_THERMOMETER).sort()).toEqual([...MARKETS].sort())
+  })
+
+  it('港股开放: 温度计建在分红上, 是港股专属维度 (方案 §10 四件套第 2 件)', () => {
+    expect(sectorValuationThermometer('HK')).toBe(true)
+  })
+
+  it('A 股关闭: 行业估值是另一套源, 与港股分红口径不可共用一张表', () => {
+    expect(sectorValuationThermometer('CN')).toBe(false)
+  })
+
+  it('🔴 每个市场都必须是**显式的布尔**, 不允许 undefined 静默落进 falsy 分支', () => {
+    // `Record<Market, boolean>` 已经保证了类型; 这里钉运行时, 防止有人用
+    // `as` 或索引签名绕过 —— 那样新增市场会静默变成「不渲染」而不是编译报错。
+    for (const m of MARKETS) {
+      expect(typeof SECTOR_VALUATION_THERMOMETER[m]).toBe('boolean')
+    }
   })
 })

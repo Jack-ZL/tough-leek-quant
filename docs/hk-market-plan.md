@@ -555,16 +555,18 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 | # | 功能 | QuantMind 对应 | 内容 |
 |---|---|---|---|
-| 1 | 恒生行业热力图 | `quanthk_feed.py:313` | 行业平均涨幅 / 成交额 / 领涨龙头（**全市场口径**） |
-| 2 | **行业估值温度计** | `:804` + `HkSectorValuationPanel.tsx` | 恒生行业 × **PE 中位数 / 平均股息率 / 成分覆盖**，按股息率降序（组件头注释：「行业估值温度计 —— 恒生行业 × PE 中位数 / 平均股息率（**价值洼地识别**）」）。**港股是红利市场，这个比涨幅排名更有用** |
-| 3 | 恒生行业轮动 | `:1266` | 1/5/20 日平均涨幅 + 今日成交额，识别强弱板块切换 |
-| 4 | 行业 L2 下钻 | `hk_heatmap_drill.py:1` | 点行业看成分股（「**A 股 /heatmap/drill 模式平移**」） |
+| 1 | 恒生行业热力图 | `quanthk_feed.py:313` | ✅ **已落地**（`20abf184`，见 §14 PR6）。行业平均涨幅 / 成交额 / 领涨龙头（**全市场口径**） |
+| 2 | **行业估值温度计** | `:804` + `HkSectorValuationPanel.tsx` | ✅ **已落地**（PR6，见 §14）。恒生行业 × **TTM 股息率中位数 / 派息覆盖率 / 成分覆盖**，按中位数降序。🔴 **PE 刻意不做**（无可用源，三条独立理由见 §14 PR6），后端下发 `pe_available: false` + 理由，前端**明示**而不是留空列。**港股是红利市场，这个比涨幅排名更有用** |
+| 3 | 恒生行业轮动 | `:1266` | ✅ **已落地**（`20abf184`，见 §14 PR6）。1/5/20 日平均涨幅 + 今日成交额，识别强弱板块切换（`rps_rotation._rotation_hk`） |
+| 4 | 行业 L2 下钻 | `hk_heatmap_drill.py:1` | ✅ **已落地**（`20abf184`，见 §14 PR6）。点行业看成分股（「**A 股 /heatmap/drill 模式平移**」）。⚠️ 东财 `INDUSTRY_TYPE` 的**四级层级**仍刻意不落库（`hk_profile.py:44`），多级下钻留待单独评估 |
 
 ⚠️ **必须全市场口径**：QuantMind 早期用 141 只港股通子集，后来返工改全市场。测试断言可抄：`assert len(sectors) >= 15, f"恒生行业数 {len(sectors)} 异常偏少"`（`test_quanthk_market_analysis.py:91-94`，注释「恒生行业热力图（**全市场行业覆盖，非 141 只子集**）」）。
 
 ⚠️ **行业排名必须按 market 分开算**：港股行业分类体系（恒生 HSICS）≠ A 股（申万 / 东财），**混在一个维度里排名会产出无意义结果**。
 
 ✅ **复用 TSP 现有 ext_data 通道**：TSP 的概念/行业成分**不是内置硬编码**，而是走 ext_data（`rps_rotation.py:97-140` `_load_concept_map_df(repo, kind)`：`ExtConfigStore` + `_dimension_field(config, kind)`，`kind ∈ {"concept","industry"}`，600s 缓存）。港股行业映射落一张 ext_data 表，即可复用 **RPS轮动 / 板块监控（`sector_monitor.py:271 _industry_paths`）/ 主线识别（`market_mainline.py`）/ 板块轮动（`sector_rotation.py:428`）** 全链路。
+
+> 🔴 **实施时的刻意偏离（PR6）**：港股行业**没有**走 ext_data 表，而是走**快照通道** —— 恒生行业随 `instruments_hk.industry` 落库，经 `/api/screener/market-snapshot?market=HK` 的 `industry` 列下发。理由：ext_data 需要用户**手动配一张表**才能用，而行业归属本来就是维表的一列，走快照**零配置**且与热力图/轮动/下钻同源。前端用 `lib/board-market-support.ts` 的 `BOARD_DIMENSION_SOURCE` 表把「哪个市场走哪条通道」变成**数据**（CN=`ext-data`，HK=`snapshot-field:industry`），页面里不写 `market === 'HK'`。ext_data 通道对港股**仍然可用**，将来若接入更细的行业分类，配一张表即可，无需改代码。
 
 ### 第二梯队：港股独有维度
 
@@ -740,7 +742,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **PR3** | **只读看盘 + 指数** | `index_const.py` 改 per-market（+ CONTRIBUTING 同步）；**43 指数白名单过滤**；前端共享层 + `marketContent.ts`；K线 / 自选 / 详情；**15 分钟延时标注**；空态契约文案 |
 | **PR4** | **AI 能力** | enriched 通用指标子集（A 股专属列恒 null）；**`hk_market_guardrail`**；`ai_data_quality.py:209,219` 加 market 维；个股分析 + **多空辩论**共用页面；企微 / 钉钉机器人入口 |
 | **PR5** | **财务概况** | 三大报表时序 + 36 列指标；**报告货币折算/标注**；共用 A 股同页面同入口；`stock_profile`/`financial_analyzer` 港股口径适配。✅ **已完成**：主体在 `af1d5249`（市场适配层 + AI 财务分析按市场分派，15 files / 2538 insertions，含 `financial_analyzer` 适配）；`stock_profile` 港股闸门本次补齐（`state=market_unsupported`，见下文「PR5 完成情况」）。⚠️ 港股资料源本身未接入，个股分析页搜索也仍不传 `market`（闸门今天 UI 不可达），两项都记在「刻意留到后续」 |
-| **PR6** | **港股板块 tab** | 恒生行业四件套（热力图 / 估值温度计 / 轮动 / L2 下钻），**全市场口径**，走 ext_data 通道，**行业排名按 market 分开** |
+| **PR6** | **港股板块 tab** | 恒生行业四件套（热力图 / 估值温度计 / 轮动 / L2 下钻），**全市场口径**，**行业排名按 market 分开**。✅ **已完成 4/4**：热力图 ✅ + 轮动 ✅ + L2 下钻 ✅（`20abf184`）· 估值温度计 ✅（本次，见下文「PR6 完成情况」）。🔴 两处刻意偏离：行业走**快照通道**而非 ext_data（零配置，见 §10）；温度计**不含 PE**（无可用源，明示而非留空列） |
 | **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历。✅ **进度 5/5 —— 港股独有维度全部落地**：分红日历 ✅（PR7，`57da7110`）· 南向 ✅ + AH 溢价 ✅（PR8，`4659de04`）· VHSI ✅（PR9，`88082b26`）· 人气榜 ✅（PR10，见下文「PR10 完成情况」） |
 
 ### PR1 完成情况（地基）
@@ -2642,6 +2644,194 @@ warning 横幅（`unavailable` / `stale` 均为假）与页脚（`fetched_at` �
 - 港股资料源本身（港交所披露易 / 东财 f10 港股股东结构）**未评估**。真接入时
   `_MARKET_SUPPORT[Market.HK]` 翻 `True` 即可，闸门与前端分支都不用动 —— 这正是
   用表而不是用字面量分支的回报。
+
+### PR6 完成情况（港股板块 tab）—— 恒生行业估值温度计，四件套收官
+
+**状态：已完成。** 后端 **7911 passed / 8 skipped / 1 xfailed**（基线 7880 + 新增 31），
+前端 **1405 passed / 151 files**（基线 1383/150 + 新增 22 测试 / 1 文件），
+`npx tsc --noEmit` 干净，`ruff check` 全绿。存量 A 股测试**一行未改**即全绿。
+
+#### 先说范围：四件套里只有第 2 件是真缺口
+
+开工前做了一次盘点，结论是 §10 第一梯队的 4 项里 **3 项早已在 `20abf184` 落地**：
+
+| # | 功能 | 盘点结论 |
+|---|---|---|
+| 1 | 恒生行业热力图 | ✅ 已有（`industry-analysis` 页走快照通道读 `instruments_hk.industry`） |
+| 3 | 恒生行业轮动 | ✅ 已有（`rps_rotation._rotation_hk` + `RpsRotationDialog market={market}`） |
+| 4 | 行业 L2 下钻 | ✅ 已有（`selectedKey` → 成分股表 → `StockPreviewDialog`，正是 §10 写的「A 股 `/heatmap/drill` 模式平移」） |
+| 2 | **行业估值温度计** | ❌ **唯一真缺口 ⇒ 本 PR 全部内容** |
+
+⚠️ 第 4 项有一处**刻意不做**：东财 `RPT_HKF10_INFO_ORGPROFILE` 的 `INDUSTRY_TYPE`
+带**四级层级**（如 `通讯服务-媒体与娱乐-互动媒体与服务-互动媒体与服务`），
+`hk_profile.py:44` 明确写了「层级留给 PR6 的『L2 下钻』单独评估 —— 它可能让
+`ROTATION_SUPPORT.HK.industryLevels` 从 `false` 升为 `true`，但那是**前端契约变更**，
+不该夹带在一次换源里」。本次维持该判断：§10 对 #4 的原文要求是「点行业看成分股」，
+已满足；多级下钻是**增强**而非缺口，留待单独评估。
+
+#### 🔴 决策一：中位数只在**派息者**上算，覆盖率与之并列
+
+方案原文要「平均股息率」。实测（2026-11-22，全市场）后发现**全体成分口径会退化**：
+
+- 港币柜台成分 **2838** 只，有收盘价 **2694**，窗口内确有派息 **988** ⇒ 覆盖率 **36.8%**
+- 若把不派息的计成 `0`，**31 个行业里 15 个以上的中位数恰好是 `0.0`**
+  （地产建造 / 其他金融 / 家庭电器及用品 / 农业产品 / 资讯科技器材 / 工业工程 /
+  纺织及服饰 / 支援服务 / 消费者主要零售商 / 建筑 …全部并列 0.0）
+- 一张第一屏全是并列零的表**分不出高低**，就不是温度计了
+
+故主指标改为**派息者中位数**，实测分布 **0.93%（半导体）→ 8.32%（消费者主要零售商）**，
+可排序、可解读。同时把 `coverage_pct` 作为**并列的一等列**——§10 把「成分覆盖」
+单列出来，正是为了消歧：
+
+> 🔴 两个数必须一起看。只看中位数，会把「8 家里 3 家派、派得很高」和
+> 「200 家里 180 家派」当成同一件事。中位数答「愿意派息的公司有多大方」，
+> 覆盖率答「有多少公司真的派息」。
+
+页脚把这句话**写给用户**，不是写在注释里就算了。
+
+#### 🔴 决策二：均值保留但标注「参考」，**不参与默认排序**
+
+实测 `专业零售`：**均值 23.63% vs 中位数 8.10%**。原因是仙股一次性派息：
+
+| 代码 | 收盘价 | TTM 派息 | 股息率 |
+|---|---|---|---|
+| `03389.HK` 亨得利 | **0.075** | 0.266 | **354.67%** |
+| `02559.HK` | — | — | 130.5% |
+| `02136.HK` | — | — | 88.4% |
+| `00556.HK` | — | — | 81.5% |
+
+一只 7 分钱的股票就能把整个行业的均值拉飞。方案要「平均股息率」，所以**留着**，
+但表头标「(参考)」、默认排序键是中位数、并且用 `top_symbol` / `top_yield_pct`
+**把那个离群值暴露出来**而不是藏起来。
+
+#### 🔴 决策三：PE **刻意不做**，且明示而非留空列
+
+方案 §10 第 2 项原文含「PE 中位数」。三条**独立**理由，任一条都足以否掉：
+
+1. **东财 clist 的 `f9`（市盈率动）走 push2 集群，本机 IP 级封禁。**
+   `hk_profile.py:1-60` 记录了完整证据：DNS / TCP / TLS1.3 全部握手成功、证书有效、
+   ALPN 协商完成，然后服务端**不给 HTTP 响应直接关闭**；换浏览器 UA + Referer 无效。
+   封禁是**按集群**的，`datacenter-web` 与 `qt.gtimg.cn` 不受影响 —— 所以维表主路径
+   早已改走「datacenter ORGPROFILE + 腾讯 qt 快照」，clist 只是封禁解除后的**回退**。
+   建在一条当前不通的链路上 = 建在沙子上。
+2. **`main_indicator.pe_ttm` 不是时间序列。** 实测 `00700.HK`：`pe_ttm` 在
+   **7 个不同 `report_date`**（2024年报 / 2025一季报 / 2025中报 / 2025三季报 /
+   2025年报 / 2026一季报 / 2026中报）上**都等于 `12.393295`**，`total_market_cap`
+   也都是 `3.3897e12`；只有最近同步的 2026三季报 不同（`11.435873` / `3.1279e12`）。
+   ⇒ 它是**同步时点的快照被复制到每一行报告期**，不是各期的历史估值。
+3. **该表不记录这个快照的 as-of 日期**，所以新旧**无从判断**。
+
+把 as-of 未知的估值放进「温度计」，正是 CONTRIBUTING §4 禁止的事。处理方式与
+「港股无概念板块数据源」同一范式：
+
+- 后端下发 `pe_available: false` + `pe_unavailable_reason`（理由文本是**数据源侧知识**，
+  由后端持有，前端不自己编一份，否则将来接上 PE 会有两处说法不一致）
+- 前端渲染成一条**中性色**说明（不是 warning 黄 —— 这不是故障，是一个稳定的事实）
+- 🔴 **绝不留一个空 PE 列**：空列会被读成「这个行业 PE 为空」，而真相是「我们没有源」，
+  两种说法在 §4 下完全不同
+- 将来接上 PE **不需要改前端契约**：`pe_available` 翻 `true` 即可
+
+#### 🔴 决策四：行业走**快照通道**，不是 §10 建议的 ext_data
+
+§10 建议「港股行业映射落一张 ext_data 表」。实施时改走快照通道
+（`instruments_hk.industry` → `/api/screener/market-snapshot?market=HK` 的 `industry` 列）：
+
+- ext_data 需要用户**手动配一张表**才能用；行业归属本来就是维表的一列，走快照**零配置**
+- 与热力图 / 轮动 / 下钻**同源**，不会出现「同一个行业两种口径」（§4）
+- 前端用 `BOARD_DIMENSION_SOURCE` 表把「哪个市场走哪条通道」变成**数据**
+  （CN=`ext-data`，HK=`snapshot-field:industry`），页面里不写 `market === 'HK'`
+- ext_data 通道对港股**仍然可用**，将来接入更细分类只需配表，无需改代码
+
+#### 其余口径（每条都有实测或语义依据）
+
+- **只计港币柜台**（`is_cny_counter != True`）。双柜台公司在维表里是**两行**，
+  不过滤会占两个席位并把派息重复计一次。实测 2862 行里 **24 行**是人民币柜台。
+- **行业为空不归进「未知」**。那会造出一个**按成分数排名靠前**的假行业
+  （前端热力图测试早已钉住同一条规则）。实测 **7** 只（债券残留），单独计入
+  `unclassified_count`。
+- **分母用不复权收盘价**（`kline_hk_daily`）。用前复权价会把有分红史的标的
+  **系统性算高**（§3.2）。
+- **分子按除净日归属**，不是公告日 —— 价格在那天除净，持有到那天才有资格拿。
+  中期 + 末期都自然落进窗口 ⇒ 标准 TTM。
+- 🔴 **`null` 与 `0` 是两种状态**（§13）：
+  ```python
+  has_price = raw_close.is_not_null() & raw_close.is_finite() & (raw_close > 0)
+  pl.when(has_price.not_()).then(None)                # 未同步 / 长期停牌
+    .when(pl.col("unparsed_events") > 0).then(None)   # 派了但金额读不出 → 不是 0
+    .when(pl.col("event_count") == 0).then(0.0)       # 确无派息 → 查证过的事实
+    .otherwise(ttm_dividend_hkd / raw_close * 100.0)
+  ```
+  🔴 `pl.col("dividend_hkd").sum()` 在全 null 分组上返回 **`0.0` 而不是 null**
+  （polars 语义）。不额外带一个 `unparsed_events` 计数，「派了但读不出多少」
+  就会**静默变成 0% 股息率** —— 一次看不出来的伪造。**部分**无法解析的标的
+  **整只排除**（只加可解析的那部分会得到一个「看着合理但偏低」的 TTM，
+  比 null 更危险）。
+- **收盘价对全体成分取，不只对派息者取** —— 否则覆盖率的分母塌缩成派息者，
+  `coverage_pct` 恒等于 100%。
+- `coverage_pct` 在 `priced_count == 0` 时是 **null**，不是 0%。
+- **可审计恒等式**：`Σ items[].member_count + unclassified_count == member_total`。
+  实测 `2831 + 7 = 2838` ✅。这条存在是因为 §10 警告过 QuantMind 早期误用
+  141 只港股通子集而返工 —— 「是不是全市场」必须能被肉眼验证。
+- **上游失败传播 `EastmoneyError`（→ API 502），绝不降级成空表**。
+  空表会把「拉不到」伪装成「没人派息」（§4）。
+- **复用 `hk_dividend_calendar._latest_hk_closes`（私有函数）而不是抄一份**：
+  重复实现「港股最新收盘价」会产生两个会漂移的版本 = §4「同一个数字两种口径」。
+  反过来，`_read_hk_members` **刻意不复用** `_read_hk_instrument_names` ——
+  后者是给 left join 用的名称查找表，**不能**过滤柜台（日历要如实展示每一条事件）；
+  前者是行业成分全集，**必须**过滤。合并会让两个用途中的一个拿到错误分母。
+- **不与 `/dividends` 合并端点**：同源同解析器，但口径不同 —— 日历是**逐事件的
+  单次派息**时间轴（「接下来谁除净」），温度计是**逐标的 TTM 再按行业聚合**的
+  横截面（「哪个行业是价值洼地」）。合并会迫使任一方为迁就另一方而改口径。
+
+#### 落地文件
+
+**后端**
+- `backend/app/services/hk_sector_valuation.py`（新增）—— `hk_sector_valuation()` /
+  `HkSectorValuation` / `HK_SECTOR_VALUATION_COLS`（12 列）/ `_read_hk_members` /
+  `_per_symbol_ttm`。模块头注完整记录了上述四条决策与实测数字。
+- `backend/app/api/hk.py` —— `GET /api/hk/sector-valuation?days=&end=`，
+  `days ∈ [1, 400]`（超出 **422**），`EastmoneyError` → **502**，空窗口 → **200**
+  且行业行仍在（`payer_count: 0`）。
+- `backend/tests/test_hk_sector_valuation.py`（新增，**31 测试**）—— 契约/排序 2 ·
+  🔴 核心口径 3 · TTM 4 · 🔴 fail-closed 5 · 成分口径 6 · 缺数据与失败 5 · API 6。
+  其中 `test_endpoint_declares_pe_unavailable` 断言 `pe_available is False`、
+  理由含「无可用源」、且**响应体与 items 里不存在任何 `pe` 命名的键**。
+
+**前端**
+- `frontend/src/lib/board-market-support.ts` —— `SECTOR_VALUATION_THERMOMETER:
+  Record<Market, boolean>`（HK `true` / CN `false`）+ `sectorValuationThermometer()`。
+  🔴 CN 为 `false` **不是**「A 股无源」的意思：A 股行业估值走另一套源
+  （申万/同花顺行业 × 中证/东财板块估值），与港股分红口径**不可共用一张表**，
+  目前尚未接入。⚠️ A 股态**刻意不给「尚未接入」提示** —— 用户没在找一个他不曾
+  见过的功能，挂免责声明只是噪音（与 `BOARD_NO_SOURCE_COPY` 分工不同：那边是
+  用户**看得见一整页空掉**、必须解释）。
+- `frontend/src/components/SectorValuationDialog.tsx`（新增）—— 表格 + 全市场计数条 +
+  PE 缺源说明 + 三句口径说明。本地 `fmtPctValue` 而**不是** `lib/format.ts` 的
+  `fmtPct`（后者会 ×100 并加 `+` 号，是给小数涨跌幅用的；§3.1 换算只在数据源边界做一次）。
+  `cmpNullLast` 保证点升序时 null 仍排最后。
+- `frontend/src/lib/api.ts` —— `HkSectorValuationRow` / `HkSectorValuationResponse` /
+  `api.hkSectorValuation()`。
+- `frontend/src/lib/queryKeys.ts` —— `QK.hkSectorValuation(days, end)`；
+  🔴 前缀 `hk-sector-valuation` **加入** `HK_DATA_QUERY_PREFIXES`（它同时读
+  `kline_hk_daily.close` 与 `instruments_hk`，同步完不失效就会留着基于旧收盘价/
+  旧行业归属的温度计）。判断标准是「有没有读本地数据」，不是「是不是港股端点」。
+- `frontend/src/custom/industry-analysis/Page.tsx` —— 工具栏入口（RPS 按钮旁）。
+  🔴 判据是 `valuationReady`（取自支持表）而**不是** `boardReady`：温度计建在分红上，
+  与本页的板块快照通道**无关** —— 即便快照拉不到、整页进空态，温度计依然有真数据可看。
+  用表而不是 `market === 'HK'`，新增市场时 `Record<Market, …>` 会**编译报错**逼人
+  显式回答（§8 规则 2）。
+- 测试：`components/SectorValuationDialog.test.tsx`（新增 15）·
+  `custom/industry-analysis/market.test.tsx`（+3）· `lib/board-market-support.test.ts`（+4）。
+
+#### 刻意留到后续
+
+- **`INDUSTRY_TYPE` 四级层级下钻**（见上文 #4）：会改 `ROTATION_SUPPORT.HK.industryLevels`
+  这个**前端契约**，单独评估。
+- ⚠️ **发现一处存量缺陷，未修**（§12 不夹带）：分红解析器在 1625 行窗口里有 **3 行**
+  记「港股分红除净日无法解析, 跳过」，其 `PLAN_EXPLAIN` 是**多行**格式
+  （`'现金：2026-08-10\n送股：2026-08-10'`，另两例为 `现金：2026-06-17\n送股：2026-06-03`、
+  `现金：2026-06-29\n送股：2026-06-29`）。占比 **0.18%**，属 PR7 / 复权因子链，
+  不属 PR6 —— 记录在此，未触碰。
 
 ## 15. 风险
 

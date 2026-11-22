@@ -25,6 +25,11 @@ vi.mock('@/lib/api', () => ({ api: {
 } }))
 vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: () => null }))
 vi.mock('@/components/RpsRotationDialog', () => ({ RpsRotationDialog: () => null }))
+// 🔴 温度计对话框必须 mock 掉: 它会自己发 `/api/hk/sector-valuation` 请求, 而本文件
+// 钉的是**入口的市场门控**, 不是对话框内部口径 (那些在
+// `components/SectorValuationDialog.test.tsx` 里钉)。不 mock 会让门控测试因为一个
+// 未 stub 的请求而失败, 失败原因与断言目标无关。
+vi.mock('@/components/SectorValuationDialog', () => ({ SectorValuationDialog: () => null }))
 vi.mock('@/components/SectorRotationCard', () => ({ SectorRotationCard: () => null }))
 
 // 一份**真实的 A 股行业数据**: 门控失效时它就会被渲染出来, 断言才抓得住串市场。
@@ -124,6 +129,14 @@ describe('A 股: 既有行为不变 (扩展数据通道)', () => {
     expect(text()).toContain('涨幅RPS轮动分析')
     expect(host.querySelector('[title="配置数据源"]')).not.toBeNull()
   })
+
+  it('🔴 估值温度计入口对 A 股隐藏 (温度计建在港股分红上, A 股行业估值是另一套源)', async () => {
+    await mount()
+    expect(host.querySelector('[data-testid="open-sector-valuation"]')).toBeNull()
+    expect(text()).not.toContain('估值温度计')
+    // ⚠️ 也**不给**「尚未接入」提示: 用户没在找一个他不曾见过的功能, 挂免责声明只是噪音
+    expect(text()).not.toContain('尚未接入')
+  })
 })
 
 describe('港股: 走快照通道读恒生行业', () => {
@@ -175,6 +188,24 @@ describe('港股: 走快照通道读恒生行业', () => {
   it('🔴 数据源配置入口仍然隐藏 (港股行业分类随快照下发, 没有扩展数据表可配)', async () => {
     await mount()
     expect(host.querySelector('[title="配置数据源"]')).toBeNull()
+  })
+
+  it('🔴 估值温度计入口对港股开放 (方案 §10 恒生行业四件套第 2 件)', async () => {
+    await mount()
+    expect(host.querySelector('[data-testid="open-sector-valuation"]')).not.toBeNull()
+    expect(text()).toContain('估值温度计')
+  })
+
+  it('🔴 温度计入口不依赖板块快照是否拉到 (它建在分红数据上, 是另一条链)', async () => {
+    // 快照整列没有行业 → 本页进空态, 但温度计仍有真数据可看, 入口不该跟着消失。
+    // 判据若误用 `boardReady`, 这里就会一起被挡掉。
+    mockSnapshotByMarket({
+      as_of: '2026-11-20',
+      rows: HK_ROWS.map(({ industry: _industry, ...rest }) => rest),
+    })
+    await mount()
+    expect(text()).toContain('港股行情缺少行业分类')
+    expect(host.querySelector('[data-testid="open-sector-valuation"]')).not.toBeNull()
   })
 
   it('切回 A 股后恢复扩展数据通道 (门控可逆)', async () => {
