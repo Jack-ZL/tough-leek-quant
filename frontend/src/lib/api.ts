@@ -4325,7 +4325,13 @@ export type StockProfileRow =
 	| ProfileMoneyFlowRow | ProfileTickTradeRow
 
 export interface StockProfileResponse<T = StockProfileRow> {
-	state: 'ok' | 'source_unavailable'
+	/**
+	 * 🔴 `market_unsupported` 与 `source_unavailable` **刻意分开**:
+	 * 后者是「源暂时挂了, 重试可能好」→ 渲染成可重试的警告;
+	 * 前者是「该市场结构性无源」(港股) → 重试永远不会成功, 渲染成中性常驻说明。
+	 * 混用会让用户对着一个不可能成功的刷新按钮反复点。
+	 */
+	state: 'ok' | 'source_unavailable' | 'market_unsupported'
 	source: string
 	dataset: StockProfileDataset
 	symbol: string

@@ -4,6 +4,10 @@
 照龙虎榜模式做的"非路由数据集": 不进能力集、不参与三层保险(这些是低频资料
 不是行情关键链路), 直连数据源 client, 拉失败降级返回 source_unavailable。
 
+🔴 **本服务是 A 股专属层**: 十类数据集全部 keyed 在 6 位 A 股代码上(详见
+``_MARKET_SUPPORT`` 注释)。港股 symbol 返回 ``state=market_unsupported``,
+**不发请求、不碰缓存、不返回 400** —— 400 会被读成"你代码输错了"。
+
 数据源 (2026-11 实测十类全可用):
   EM datacenter-web (与 push2 独立限速/熔断/封禁池) — 前八类:
   - unlock        限售解禁时间表  RPT_LIFT_STAGE         按 SECURITY_CODE 过滤, FREE_DATE 倒序
@@ -49,6 +53,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from app.market import Market, infer_market
 from app.services.fs_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -97,6 +102,77 @@ DATASET_SOURCE = {
     "money_flow": "sina",
     "tick_trade": "tencent",
 }
+
+# ================================================================
+# 市场支持表 (PR5: 港股财务概况收官项 —— stock_profile 港股口径适配)
+# ================================================================
+
+#: 各市场**有没有**个股资料源。
+#:
+#: 🔴 用表而不是 ``if is_hk_symbol(symbol)`` 字面量分支: 新增 ``Market`` 成员时这里
+#: 会 **KeyError 当场炸**, 逼作者显式回答「这个市场有没有资料源」, 而不是静默落进
+#: else 把 A 股报表当别的市场渲染 (方案 §8 规则 2; CONTRIBUTING §3.5「市场差异是
+#: 数据不是控制流」)。前端同构范式见 ``lib/board-market-support.ts`` 的
+#: ``BOARD_DIMENSION_SOURCE``, 以及 ``components/StockDetailBody.tsx`` 的 BODIES。
+#:
+#: 港股为 False 的依据是**结构性**的, 不是「暂时没接」:
+#:   - 前八类走东财 datacenter 的 **A 股报表名** (``RPT_LIFT_STAGE`` /
+#:     ``RPT_CSDC_LIST``(中登周频) / ``RPTA_WEB_GETHGLIST_NEW`` / ``RPT_HOLDERNUM_DET``
+#:     / ``RPT_F10_EH_HOLDERS`` / ``RPT_MAIN_ORGHOLD`` / ``RPTA_APP_IPOAPPLY``
+#:     / ``RPT_FCI_PERFORMANCEE``), 披露口径本身是 A 股监管规则(限售解禁、中登质押
+#:     登记、季频股东户数)——港股没有这套披露。
+#:   - ``money_flow`` 走新浪 ``MoneyFlow.ssl_qsfx_zjlrqs``、``tick_trade`` 走腾讯
+#:     ``stock.gtimg.cn`` detail 分页, 两者都要 ``_infer_prefix`` 产出的 **sh/sz/bj**
+#:     前缀, 港股代码没有对应前缀。
+#:   - 全服务的 symbol 契约是 ``_SYMBOL_RE`` = **6 位** A 股代码, 港股是 5 位 + ``.HK``,
+#:     连 ``code`` 都提取不出来。
+_MARKET_SUPPORT: dict[Market, bool] = {
+    Market.CN: True,
+    Market.HK: False,
+}
+
+#: ``state`` 的第三个取值。🔴 **刻意不复用** ``source_unavailable``:
+#: 后者的语义是「源暂时挂了, 待会儿重试」, 前端渲染成**可重试的警告**并保留刷新按钮;
+#: 而港股是**结构性无源**, 重试永远不会成功, 复用会让用户反复点刷新。
+STATE_MARKET_UNSUPPORTED = "market_unsupported"
+
+#: 无源说明。🔴 这段文案的存在理由比措辞更重要 ——
+#: **绝不能让港股落到「该标的暂无XX记录」那条空态**: 那句话的意思是「我们查过了,
+#: 确实没有」, 而事实是**我们根本没查也查不了**。把「无源」显示成「无记录」等于
+#: 凭空断言「腾讯没有限售解禁」, 是 CONTRIBUTING §13 禁止的伪造(而且是**否定式**
+#: 伪造, 比编个数字更难被发现 —— 用户无从查证一个不存在的东西)。
+#: 同理也不返回 400: 用户选港股是**合法操作**, 400 会被读成「你代码输错了」,
+#: 而 ``_SYMBOL_RE`` 那句 A 股格式提示对港股用户是完全无效的指引。
+#:
+#: 🔴 文案只讲**用户需要的事实**, 不讲「我们避免了什么」: 反伪造的理由是维护者
+#: 信息, 写在上面这段注释里(同 ``frontend/src/lib/board-market-support.ts`` 头注
+#: 的分工: 「接入改法写在注释里而不是文案里」)。把「不会显示成暂无记录」写进 UI
+#: 反而会让用户去找那条不存在的文案, 也会让前端「断言页面上不出现该字样」的测试
+#: 与后端文案自相矛盾。
+_MARKET_UNSUPPORTED_MESSAGE = (
+    "个股资料的十类数据集(解禁/质押/回购/股东户数/十大股东/基金持仓/新股申购/"
+    "业绩快报/资金流向/逐笔成交)均取自 A 股专属披露口径 —— 东财 datacenter 的 A 股报表、"
+    "新浪 A 股资金流、腾讯 A 股逐笔, symbol 契约也是 6 位 A 股代码, 港股尚未接入。"
+    "本面板不会用 A 股数据冒充港股(CONTRIBUTING §4 fail closed)。"
+)
+
+
+def _market_unsupported(dataset: str, symbol: str) -> dict:
+    """构造「本市场无个股资料源」的响应。**不发任何上游请求, 不读不写缓存。**
+
+    ``source`` 仍填该数据集的**名义**源: 它说明「这类资料通常来自哪」, 是事实陈述;
+    且前端页脚只在 ``fetched_at`` 非空时渲染, 这里不给 ``fetched_at``, 不会被读成
+    「刚从该源取到 0 条」。
+    """
+    return {
+        "state": STATE_MARKET_UNSUPPORTED,
+        "source": DATASET_SOURCE.get(dataset, "eastmoney"),
+        "dataset": dataset,
+        "symbol": symbol,
+        "count": 0,
+        "rows": [],
+        "message": _MARKET_UNSUPPORTED_MESSAGE,
+    }
 
 _SOURCE_LABELS = {"eastmoney": "东方财富", "sina": "新浪财经", "tencent": "腾讯财经"}
 
@@ -484,11 +560,18 @@ def get_profile(
     返回 dict:
       - state=ok: 正常(可能 stale=True 表示用的是过期旧缓存)
       - state=source_unavailable: 拉取失败且无缓存可用(前端降级提示)
+      - state=market_unsupported: 该市场**结构性无源**(港股), 不发请求不碰缓存
     任何异常都不外抛 — 资料是锦上添花, 不能因为它把页面打挂。
     client/tx_client/sina_client 可注入(测试用), 分别对应 EM/腾讯/新浪。
     """
     if dataset not in DATASETS:
         raise ValueError(f"未知个股资料数据集: {dataset}")
+    # 🔴 市场闸门必须在 _SYMBOL_RE **之前**: 港股 symbol(00700.HK)本来就过不了那个
+    # 6 位 A 股正则, 放后面就永远走不到这里, 港股会拿到一句「格式应为 6 位代码」的
+    # A 股格式提示 —— 对港股用户是完全无效的指引(他没输错, 是本服务不支持)。
+    # infer_market 对认不出的 symbol 兜底 CN, 故垃圾输入仍照旧走 _SYMBOL_RE → 400。
+    if not _MARKET_SUPPORT[infer_market(symbol)]:
+        return _market_unsupported(dataset, symbol)
     if not _SYMBOL_RE.match(symbol or ""):
         raise ValueError(f"symbol 格式应为 6 位代码(可带 .SH/.SZ/.BJ 后缀): {symbol}")
     code = _SYMBOL_RE.match(symbol).group(1)

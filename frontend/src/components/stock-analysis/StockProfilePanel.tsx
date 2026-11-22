@@ -6,10 +6,14 @@
  * (资料类 12h / 资金流 30min / 逐笔 60s);
  * 拉取失败后端降级(source_unavailable / stale), 本组件只做提示不打挂页面。
  * 挂在个股分析页看板下方; 未选标的时不渲染(零足迹)。
+ *
+ * 🔴 港股(PR5): 后端对港股 symbol 返回 `state=market_unsupported`(十类源全是 A 股
+ * 专属披露口径)。本组件据此**收起 tab 与刷新按钮**并渲染常驻说明 —— 见下方
+ * `unsupported` 注释, 关键是绝不能落到「该标的暂无XX记录」那条空态。
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Clock, Database, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Clock, Database, Info, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
 	StockProfileDataset, StockProfileResponse,
@@ -202,6 +206,18 @@ export function StockProfilePanel({ symbol }: { symbol: string }) {
 	const rows = (resp?.rows ?? []) as unknown as Record<string, unknown>[]
 	const cols = COLUMNS[dataset]
 	const unavailable = resp?.state === 'source_unavailable'
+	/**
+	 * 🔴 该市场**结构性无源**(港股)。与 `unavailable` 分开处理, 三处不同:
+	 * 1. **收起 tab 栏**: 十个 tab 会给出十份一模一样的说明, 是噪音; 而且点每个 tab
+	 *    都会发一次注定同结果的请求。
+	 * 2. **收起刷新按钮**: `source_unavailable` 是「源暂时挂了」⇒ 刷新有意义;
+	 *    这里是「本服务不支持这个市场」⇒ 刷新永远不会成功, 留着按钮就是骗用户点。
+	 * 3. **不进 `rows.length === 0` 那条空态**: 那条文案是「该标的暂无限售解禁记录」,
+	 *    意思是**查过了确实没有**。而事实是我们根本没查。把「无源」渲染成「无记录」
+	 *    等于凭空断言腾讯没有解禁股 —— 否定式伪造, 比编个数字更难被用户发现。
+	 * 用中性色(不是 warning 黄): 这不是故障, 是一个稳定的事实。
+	 */
+	const unsupported = resp?.state === 'market_unsupported'
 
 	return (
 		<div className="rounded-card border border-border bg-surface overflow-hidden">
@@ -212,31 +228,34 @@ export function StockProfilePanel({ symbol }: { symbol: string }) {
 					个股资料
 					<span className="text-[10px] text-muted font-normal">免费源 · 分级缓存</span>
 				</div>
-				<div className="flex items-center gap-1">
-					{TABS.map(t => (
+				{/* 🔴 无源市场收起整组控件: tab 会给十份相同说明, 刷新按钮注定无效 */}
+				{!unsupported && (
+					<div className="flex items-center gap-1">
+						{TABS.map(t => (
+							<button
+								key={t.key}
+								onClick={() => setDataset(t.key)}
+								className={`px-2 py-1 rounded-btn text-[11px] transition-colors ${
+									dataset === t.key
+										? 'bg-accent/15 text-accent border border-accent/30'
+										: 'text-secondary hover:text-foreground border border-transparent hover:bg-elevated'
+								}`}
+							>
+								{t.label}
+							</button>
+						))}
 						<button
-							key={t.key}
-							onClick={() => setDataset(t.key)}
-							className={`px-2 py-1 rounded-btn text-[11px] transition-colors ${
-								dataset === t.key
-									? 'bg-accent/15 text-accent border border-accent/30'
-									: 'text-secondary hover:text-foreground border border-transparent hover:bg-elevated'
-							}`}
+							onClick={() => refresh.mutate()}
+							disabled={refresh.isPending || isFetching}
+							className="ml-1 p-1.5 rounded-btn text-muted hover:text-accent hover:bg-elevated transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+							title="跳过缓存强制重拉"
 						>
-							{t.label}
+							{refresh.isPending
+								? <Loader2 className="h-3 w-3 animate-spin" />
+								: <RefreshCw className="h-3 w-3" />}
 						</button>
-					))}
-					<button
-						onClick={() => refresh.mutate()}
-						disabled={refresh.isPending || isFetching}
-						className="ml-1 p-1.5 rounded-btn text-muted hover:text-accent hover:bg-elevated transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-						title="跳过缓存强制重拉"
-					>
-						{refresh.isPending
-							? <Loader2 className="h-3 w-3 animate-spin" />
-							: <RefreshCw className="h-3 w-3" />}
-					</button>
-				</div>
+					</div>
+				)}
 			</div>
 
 			{/* 降级提示: 数据源不可用 / 过期缓存 */}
@@ -253,10 +272,21 @@ export function StockProfilePanel({ symbol }: { symbol: string }) {
 				</div>
 			)}
 
-			{/* 主体: 表格 / 加载 / 空态 */}
+			{/* 主体: 表格 / 加载 / 无源市场 / 空态 */}
 			{isLoading ? (
 				<div className="flex items-center justify-center py-10">
 					<Loader2 className="h-4 w-4 animate-spin text-muted" />
+				</div>
+			) : unsupported ? (
+				// 🔴 中性色而非 warning 黄: 这不是故障, 是一个稳定事实, 不该看起来像出错。
+				// 文案由后端下发(与 source_unavailable 的 message 同一套约定), 前端不另写一份
+				// —— 两处各写一遍的话, 将来接入港股资料源时必然只改一处, 另一处继续谎称无源
+				// (同 lib/board-market-support.ts 头注的理由)。
+				<div className="px-4 py-6" data-testid="profile-market-unsupported">
+					<div className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+						<Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-secondary" />
+						<span>{resp?.message || '本市场未接入个股资料'}</span>
+					</div>
 				</div>
 			) : rows.length === 0 ? (
 				<div className="py-8 text-center text-xs text-muted">

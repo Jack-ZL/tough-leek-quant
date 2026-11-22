@@ -739,7 +739,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **PR2** | **数据通路** | **扩现有 `eastmoney`/`sina`/`tencent` 插件直连港股**（`symbol_to_secid` 加 `.HK→116.` 纯增量分支）；列表用 `fs=m:128 t:3`（**不是 `m:116`**，后者混窝轮牛熊证）；**双柜台：两个代码都入库 + `is_cny_counter` 标记，市场级统计只计港币柜台**；独立目录 + `repository.py:83-89` 加 market 参数；**DuckDB 视图 `hk_*` 前缀**；能力矩阵加 market 维（四步全套）；`instruments_hk`（含 **lot_size** / 上市日期 / tick_size / 沪深港通标记 / 恒生行业）；插件隔离测试；**财务类先试直连东财 datacenter，啃不动才引入 `akshare>=1.20.25` 可选 extra**（见 §3.5） |
 | **PR3** | **只读看盘 + 指数** | `index_const.py` 改 per-market（+ CONTRIBUTING 同步）；**43 指数白名单过滤**；前端共享层 + `marketContent.ts`；K线 / 自选 / 详情；**15 分钟延时标注**；空态契约文案 |
 | **PR4** | **AI 能力** | enriched 通用指标子集（A 股专属列恒 null）；**`hk_market_guardrail`**；`ai_data_quality.py:209,219` 加 market 维；个股分析 + **多空辩论**共用页面；企微 / 钉钉机器人入口 |
-| **PR5** | **财务概况** | 三大报表时序 + 36 列指标；**报告货币折算/标注**；共用 A 股同页面同入口；`stock_profile`/`financial_analyzer` 港股口径适配 |
+| **PR5** | **财务概况** | 三大报表时序 + 36 列指标；**报告货币折算/标注**；共用 A 股同页面同入口；`stock_profile`/`financial_analyzer` 港股口径适配。✅ **已完成**：主体在 `af1d5249`（市场适配层 + AI 财务分析按市场分派，15 files / 2538 insertions，含 `financial_analyzer` 适配）；`stock_profile` 港股闸门本次补齐（`state=market_unsupported`，见下文「PR5 完成情况」）。⚠️ 港股资料源本身未接入，个股分析页搜索也仍不传 `market`（闸门今天 UI 不可达），两项都记在「刻意留到后续」 |
 | **PR6** | **港股板块 tab** | 恒生行业四件套（热力图 / 估值温度计 / 轮动 / L2 下钻），**全市场口径**，走 ext_data 通道，**行业排名按 market 分开** |
 | **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历。✅ **进度 5/5 —— 港股独有维度全部落地**：分红日历 ✅（PR7，`57da7110`）· 南向 ✅ + AH 溢价 ✅（PR8，`4659de04`）· VHSI ✅（PR9，`88082b26`）· 人气榜 ✅（PR10，见下文「PR10 完成情况」） |
 
@@ -2441,6 +2441,207 @@ else:
   含「人气榜」⇒ **本 PR 不改它**（§12 不夹带无关改动）。若要加一句「人气榜见 /hk-hot-rank」
   的指引，应连同那条测试一起单独改。
 - 是否把人气榜喂进 AI 复盘提示词链，同 PR9 的理由，单独评估。
+
+### PR5 完成情况（财务概况）—— 主体早已落地，本次补 `stock_profile` 港股口径适配
+
+**状态：已完成。** 本节记录两件事：① PR5 主体在**更早的提交里就已经交付**，是本次
+排查才发现的；② §14 表格里 PR5 那一行点名的两个适配项中，`financial_analyzer` 当时
+已做、**`stock_profile` 漏了**，本次补齐。
+
+#### 🔴 考古结论：PR5 主体 = `af1d5249`
+
+`git log --oneline -- frontend/src/custom/financials/` 只有一条提交：
+
+```
+af1d5249 feat(hk): 财务概况接通港股(市场适配层 + AI 财务分析按市场分派)
+```
+
+15 files / 2538 insertions，覆盖 §14 PR5 行的**除 `stock_profile` 外全部**交付项：
+
+| 交付项 | 落点 |
+|---|---|
+| 三大报表时序 + 指标（宽表 + 两张长表） | `services/financial_sync_hk.py`（592 行，见 §12.1） |
+| **报告货币折算/标注** | `hk_financials_canonical` 投影出 `pricing_currency` / `report_currency` 两个**刻意不同名**的字段；API 响应带 `currency_warning`（§12.1 语义陷阱 a） |
+| 共用 A 股同页面同入口 | `custom/financials/Page.tsx`（+255）、`StockFinancialDetail.tsx`、`StockFinancialSearch.tsx` |
+| 市场适配层 | `lib/financial-market-adapter.ts`（+576 新建）+ `.test.ts`（+511） |
+| `financial_analyzer` 港股口径适配 | `services/financial_analyzer.py`（+246）：`_FINANCIAL_LOADERS: dict[Market, …]` 双市场注册、`_MARKET_NORM_RULE`、`_MARKET_FIN_NOTE`、`_MARKET_EMPTY_HINT`、`_build_system_prompt(market)`（PR4 f3 一并做的） |
+| 市场护栏 | `services/market_guardrail.py` + `test_market_guardrail.py` |
+| 前端 API / 状态 | `api.ts`（+117，`hkFinancialsStatus`/`hkFinancials`/`hkFinancialStatement`/`syncHkFinancials`/`syncHkFinancialStatement`）、`marketStore.ts`、`queryKeys.ts`、`useFinancials.ts` |
+
+**验证既有部分仍然全绿**（不是「假定它没问题」）：
+
+```
+backend  test_financial_analyzer_market.py test_hk_financials.py \
+         test_hk_financial_sync.py test_stock_profile.py   → 254 passed / 0.77s
+frontend financial-market-adapter.test.ts StockFinancialDetail.test.tsx
+                                                     → 82 passed (2 files) / 804ms
+```
+
+> ⭐ 一条方法论：`api.ts` 里那五个 `hk*` 函数带着一段 🔴 注释，解释**为什么港股是
+> 独立端点而不是给 `/api/financials/*` 加 `market` 参数**（A 股四表 vs 港股「宽表 +
+> 两张长表」结构不同，且港股**没有独立现金流量表**，共用一套路由会让「同一个数字
+> 两种口径」——正是 §4 明令禁止的）。排查「PR5 做没做」时，这段注释是最快的路标。
+
+#### 本次补的缺口：`stock_profile` 港股口径适配
+
+**缺陷（改之前实测）**：
+
+```
+GET /api/stock-profile/unlock?symbol=00700.HK
+→ 400 {'detail': 'symbol 格式应为 6 位代码(可带 .SH/.SZ/.BJ 后缀): 00700.HK'}
+```
+
+前端 `StockProfilePanel` **不对 query error 分支**：`data === undefined` ⇒
+`rows.length === 0` 且 `unavailable === false` ⇒ 渲染
+
+> 该标的暂无**限售解禁**记录
+
+这句话的意思是「**我们查过了，确实没有**」。而事实是**我们根本没查、也查不了**。
+凭空断言「腾讯没有限售解禁」是 CONTRIBUTING §13 禁止的伪造，而且是**否定式**伪造 ——
+比编一个假数字更难被发现，因为用户无从查证一个声称不存在的东西。
+
+**为什么港股是结构性无源**（三条独立证据，写进了代码注释）：
+
+1. 前八个数据集用的是 **A 股 datacenter 报表名**：`RPT_LIFT_STAGE`、`RPT_CSDC_LIST`
+   （中登周频）、`RPTA_WEB_GETHGLIST_NEW`、`RPT_HOLDERNUM_DET`、`RPT_F10_EH_HOLDERS`、
+   `RPT_MAIN_ORGHOLD`、`RPTA_APP_IPOAPPLY`、`RPT_FCI_PERFORMANCEE`。而且**披露制度本身**
+   （限售解禁 / 中登质押登记 / 季频股东户数）就是 A 股监管构造，港股没有对应物。
+2. `money_flow`（新浪 `MoneyFlow.ssl_qsfx_zjlrqs`）与 `tick_trade`（腾讯
+   `stock.gtimg.cn` detail）都要过 `_infer_prefix(code)` → **sh/sz/bj**；港股代码没有这种前缀。
+3. 全服务的 symbol 契约是 `_SYMBOL_RE` = **6 位数字**；港股是 5 位 + `.HK`，
+   连 `code` 都抽不出来。
+
+> ⚠️ **当前 UI 不可达，但仍是活洞**：`custom/stock-analysis/Page.tsx` 用的
+> `StockFinancialSearch` **不传 `market`**，后端 `api/kline.py:311 search_instruments`
+> 的 `market` 缺省即 `Market.CN` ⇒ 个股分析页**搜不到港股**，所以这条伪造路径今天
+> 点不出来。但它是 §14 点名的 PR5 交付项，且**一旦那个搜索框接上 HK 就立刻生效**。
+> 按「缺陷在可达之前就修掉」处理，不留给下一个人。
+
+#### 三个刻意的设计选择
+
+**① `dict[Market, bool]` 表，不是 `if is_hk_symbol(...)`**
+
+```python
+_MARKET_SUPPORT: dict[Market, bool] = {Market.CN: True, Market.HK: False}
+```
+
+§3.5「市场差异是**数据**不是控制流」+ §8 规则 2「新市场必须响亮地失败」。
+新增 `Market` 成员 ⇒ **`KeyError`**，而不是静默落进 A 股分支。
+`tests/test_market_architecture_guard.py::test_no_market_literal_branches_in_app`
+本来也禁止 `market == "HK"` 字面量比较。前端同构范式：
+`lib/board-market-support.ts::BOARD_DIMENSION_SOURCE`、`StockDetailBody.tsx::BODIES`。
+
+**② 新 state `market_unsupported`，不复用 `source_unavailable`**
+
+两者语义**相反**，前端渲染也相反：
+
+| state | 含义 | 前端渲染 | 刷新按钮 |
+|---|---|---|---|
+| `source_unavailable` | 源**暂时**挂了 | 黄色 warning 横幅 | **保留**（重试有意义） |
+| `market_unsupported` | **结构性**无源 | 中性灰说明 | **收起**（重试永不成功） |
+
+复用前者会让用户对港股**无限点刷新**。
+
+**③ 200 + 显式 state，不抛错 / 不 400**
+
+选港股是**合法用户操作**。`assert_symbol_market` 会抛 `SymbolMarketMismatchError`
+（`ValueError` 子类）→ 400 → 又回到上面那条伪造渲染路径。前端本来就有 `state`
+驱动的渲染分支，200 既诚实又便宜。
+
+**🔴 闸门位置是 load-bearing 的**：必须放在 `_SYMBOL_RE` 校验**之前**。港股 symbol
+本来就过不了那个 6 位正则，放后面闸门就是**死代码**。
+
+```python
+if dataset not in DATASETS:
+    raise ValueError(...)
+# 🔴 市场闸门必须在 _SYMBOL_RE 之前
+if not _MARKET_SUPPORT[infer_market(symbol)]:
+    return _market_unsupported(dataset, symbol)
+m = _SYMBOL_RE.match(symbol)   # ← 港股到不了这里
+```
+
+`infer_market` 对认不出的输入**兜底 `Market.CN`**，所以垃圾 symbol 仍照旧流到
+`_SYMBOL_RE` → `ValueError` → 400，**真正的格式错误没有被一起吞掉**。
+
+#### 前端渲染
+
+`StockProfilePanel.tsx` 三处改动：
+
+1. `const unsupported = resp?.state === 'market_unsupported'`
+2. **收起整组控件**（`{!unsupported && (…)}`）：十个 tab 会给出十份一模一样的说明，
+   是噪音，而且每点一个都发一次注定同结果的请求；刷新按钮同理。
+3. body 三元链**前置一个分支**，渲染 `data-testid="profile-market-unsupported"`。
+
+**用中性色而不是 `text-warning`** —— 这不是故障，是一个稳定事实，不该看起来像出错。
+warning 横幅（`unavailable` / `stale` 均为假）与页脚（`fetched_at` 缺失）**自动隐藏**，
+无需改动。
+
+> 🔴 **页脚靠 `fetched_at` 缺失来隐藏，是后端契约的一部分**：`_market_unsupported`
+> **刻意不给** `fetched_at`。给了就会渲染「更新于 … · 数据来源: 东方财富」，
+> 被读成「刚从东财取到 0 条」。后端 `test_hk_has_no_fetched_at` 与前端
+> 「有 source 也不渲染页脚」两侧各钉一半。
+
+> 🔴 **文案由后端下发，前端不硬编码**（`{resp?.message || '本市场未接入个股资料'}`
+> 里的兜底只是防御）。两处各写一份的话，将来接入港股资料源时必然只改一处，
+> 另一处继续谎称无源 —— 同 `lib/board-market-support.ts` 头注的分工理由。
+
+#### 一处返工：文案里不能引用「要避免的那句话」
+
+第一版 `_MARKET_UNSUPPORTED_MESSAGE` 结尾写了「…也不会显示成「暂无记录」」。
+写前端测试时立刻自相矛盾：断言 `not.toContain('暂无')` 撞上后端自己的文案。
+
+**改法不是放宽断言，而是改文案** —— 反伪造的理由是**维护者信息**，属于代码注释；
+用户文案只讲**用户需要的事实**。把「我们避免了什么」写进 UI 反而会让用户去找那条
+不存在的文案。这正是 `board-market-support.ts` 记的分工：「接入改法写在注释里而不是文案里」。
+
+同一类错误在测试里又犯了一次：`not.toContain('股东户数')` 撞上文案里对十个数据集的
+**列举**。改成断言 **DOM 结构**（`querySelectorAll('button')` 长度为 0 + 头部只剩
+标题一个子节点），既更强也不耦合文案。
+
+> ⚠️ 顺带记一个选择器坑：不能用 `.justify-between > div:last-child` 判「控件组没了」——
+> 只剩一个子节点时它**既是 first-child 也是 last-child**，会匹配到标题本身，断言恒失败。
+
+#### 测试
+
+后端 `tests/test_stock_profile.py::TestMarketGate` **12 条**（59 → 71 passed）：
+
+| 闸 | 断言 |
+|---|---|
+| 返回契约 | `state == market_unsupported`、`count == 0`、`rows == []`、`message` 非空 |
+| **零请求** | EM / 新浪 / 腾讯三个假 client 的 `.calls` **全为空**（闸门是短路，不是「试一下再降级」） |
+| **零落盘** | `data/stock_profile/` **不存在**（否则将来接入港股源会读到一份「0 条」的假新鲜缓存） |
+| 无 `fetched_at` | 页脚契约（见上） |
+| **十个数据集逐个过闸** | `len(sp.DATASETS) == 10`，漏一个就等于给港股留一条伪造路径 |
+| `force=True` 不绕闸 | force 是「跳过缓存重拉」，不是「跳过市场支持判断」 |
+| 两个 state 不合并 | 同一测试里对比 `source_unavailable`（A 股 + 假异常）与 `market_unsupported` |
+| **表覆盖全部 `Market`** | `set(sp._MARKET_SUPPORT) == set(Market)` ⇒ 新市场在**测试里**炸，不在生产里静默走 A 股分支 |
+| A 股零回归 | `600519.SH` → `ok`、1 次网络调用、缓存文件存在 |
+| 垃圾 symbol 仍抛 | `bad-symbol` → `ValueError`（闸门没吞掉真正的格式错误） |
+| 裸 `00700` 仍抛 | **已知盲区，刻意保留**（同 `assert_symbol_market` 文档记的那个）：无 `.HK` 后缀 ⇒ `infer_market` 认不出 ⇒ 兜底 CN ⇒ 被 `_SYMBOL_RE` 拒。可接受，因为港股 symbol 进内部路径前一律被插件层归一成 `00700.HK` |
+| API 层 200 | `get_stock_profile(...)` 不得翻译成 `HTTPException` |
+
+前端 `src/components/stock-analysis/StockProfilePanel.test.tsx` **9 条**（新建文件）：
+无源渲染后端 message 且**绝不**出现「该标的暂无限售解禁记录」/「暂无」· 收起十个 tab ·
+收起刷新按钮 · 不含 `border-warning`/`text-warning` · 有 `source` 也不渲染页脚 ·
+文案由后端下发（mock 自定义 message）· A 股有数据全量回归 · A 股 0 条空态逐字不变 ·
+**对照组**：`source_unavailable` 时 warning 横幅**且刷新按钮仍在**。
+
+> ⭐ 最后那条对照组是刻意加的：它证明「收起刷新按钮」是**因为无源不可重试**，
+> 不是顺手把按钮删了。源暂时挂掉时，刷新恰恰是用户唯一能做的事。
+
+门禁：`ruff check` 通过（**不跑 `ruff format`**，CONTRIBUTING:287,729）·
+`test_market_architecture_guard.py` + `test_market.py` **135 passed** ·
+`npx tsc --noEmit` 干净（`state` 联合类型加宽未破坏任何消费方）。
+
+#### 刻意留到后续
+
+- **`custom/stock-analysis/Page.tsx` 仍不传 `market`**，所以个股分析页搜不到港股，
+  本节的闸门今天 UI 不可达。把那个搜索框接上 HK 是**独立一项**（要连带
+  `StockAnalysisHost` / `stockAnalysisLevels` / 关键价位端点整条链一起看，
+  PR4 收尾那条「关键价位端点按 market 分派日K读取」是它的前置），不夹带进本 PR（§12）。
+- 港股资料源本身（港交所披露易 / 东财 f10 港股股东结构）**未评估**。真接入时
+  `_MARKET_SUPPORT[Market.HK]` 翻 `True` 即可，闸门与前端分支都不用动 —— 这正是
+  用表而不是用字面量分支的回报。
 
 ## 15. 风险
 

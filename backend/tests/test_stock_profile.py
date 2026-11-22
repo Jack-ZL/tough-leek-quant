@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.market import Market
 from app.plugins.eastmoney.client import EastmoneyClient, EastmoneyError
 from app.services import stock_profile as sp
 
@@ -602,6 +603,125 @@ class TestGetProfile:
                             lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
         r = sp.get_profile(data_dir, "unlock", "600519.SH", client=FakeClient(rows=[_UNLOCK_ROW]))
         assert r["state"] == "ok" and r["count"] == 1
+
+
+# ================================================================
+# PR5: 市场闸门 —— 个股资料是 A 股专属层, 港股 fail closed
+# ================================================================
+
+class TestMarketGate:
+    """🔴 这组测试钉住的是一条**否定式伪造**防线。
+
+    改之前 ``get_profile("00700.HK")`` 抛 ``ValueError`` → API 400 → 前端 ``data``
+    为 ``undefined`` → ``rows.length === 0`` 且 ``unavailable`` 为假 → 渲染
+    「该标的暂无**限售解禁**记录」。那句话的意思是「查过了确实没有」, 而事实是
+    **根本没查也查不了**(十类源全是 A 股专属披露口径)。凭空断言「腾讯没有解禁股」
+    比编一个假数字更难被发现 —— 用户无从查证一个声称不存在的东西 (§13)。
+
+    闸门返回 200 + 显式 state 而不是抛错, 因为**选港股是合法用户操作**,
+    400 会被读成「你代码输错了」, 而 ``_SYMBOL_RE`` 那句 A 股格式提示对港股用户
+    是完全无效的指引。
+    """
+
+    HK = "00700.HK"
+
+    def _all_clients(self):
+        """三个源各一个假 client; 闸门生效时**一个都不该被碰**。"""
+        return FakeClient(), FakeSinaClient(), FakeTxClient()
+
+    def test_hk_returns_market_unsupported(self, data_dir):
+        em, sina, tx = self._all_clients()
+        r = sp.get_profile(data_dir, "unlock", self.HK, client=em, sina_client=sina, tx_client=tx)
+        assert r["state"] == sp.STATE_MARKET_UNSUPPORTED
+        assert r["count"] == 0 and r["rows"] == []
+        assert r["dataset"] == "unlock" and r["symbol"] == self.HK
+        assert r["message"]  # 前端直接渲染它, 不能为空
+
+    def test_hk_sends_zero_requests(self, data_dir):
+        """🔴 闸门是**短路**, 不是「试一下失败再降级」: 一个字节都不该发出去。"""
+        em, sina, tx = self._all_clients()
+        sp.get_profile(data_dir, "unlock", self.HK, client=em, sina_client=sina, tx_client=tx)
+        assert em.calls == [] and sina.calls == [] and tx.calls == []
+
+    def test_hk_writes_no_cache(self, data_dir):
+        """不落盘: 否则将来接入港股源时会读到一份「0 条」的假新鲜缓存。"""
+        em, sina, tx = self._all_clients()
+        sp.get_profile(data_dir, "unlock", self.HK, client=em, sina_client=sina, tx_client=tx)
+        assert not (data_dir / "stock_profile").exists()
+
+    def test_hk_has_no_fetched_at(self, data_dir):
+        """🔴 不给 ``fetched_at``: 前端页脚条件是 ``fetched_at != null``, 给了就会渲染
+        「更新于 … · 数据来源: 东方财富」, 被读成「刚从东财取到 0 条」。"""
+        em, sina, tx = self._all_clients()
+        r = sp.get_profile(data_dir, "unlock", self.HK, client=em, sina_client=sina, tx_client=tx)
+        assert r.get("fetched_at") is None
+
+    def test_gate_covers_every_dataset(self, data_dir):
+        """十个数据集逐个过闸 —— 漏一个就等于给港股留了一条伪造路径。"""
+        assert len(sp.DATASETS) == 10
+        for ds in sp.DATASETS:
+            em, sina, tx = self._all_clients()
+            r = sp.get_profile(data_dir, ds, self.HK, client=em, sina_client=sina, tx_client=tx)
+            assert r["state"] == sp.STATE_MARKET_UNSUPPORTED, ds
+            assert em.calls == [] and sina.calls == [] and tx.calls == [], ds
+
+    def test_force_does_not_bypass_gate(self, data_dir):
+        """``force=True`` 是「跳过缓存重拉」, 不是「跳过市场支持判断」。"""
+        em, sina, tx = self._all_clients()
+        r = sp.get_profile(data_dir, "unlock", self.HK, force=True,
+                           client=em, sina_client=sina, tx_client=tx)
+        assert r["state"] == sp.STATE_MARKET_UNSUPPORTED
+        assert em.calls == []
+
+    def test_unsupported_state_is_not_source_unavailable(self, data_dir):
+        """🔴 两个 state 语义**相反**, 前端渲染也相反, 绝不能合并:
+        ``source_unavailable`` = 源暂时挂了 ⇒ 黄色告警 + **刷新按钮可用**;
+        ``market_unsupported`` = 结构性无源 ⇒ 中性说明 + **收起刷新按钮**。
+        复用前者会让用户对港股无限点刷新。"""
+        assert sp.STATE_MARKET_UNSUPPORTED != "source_unavailable"
+        boom = FakeClient(error=EastmoneyError("接口挂了"))
+        degraded = sp.get_profile(data_dir, "unlock", "600519.SH", client=boom)
+        gated = sp.get_profile(data_dir, "unlock", self.HK, client=FakeClient())
+        assert degraded["state"] == "source_unavailable"
+        assert gated["state"] == sp.STATE_MARKET_UNSUPPORTED
+
+    def test_market_support_table_covers_every_market(self):
+        """🔴 用 ``dict[Market, bool]`` 而不是 ``if is_hk_symbol(...)`` 的全部意义:
+        新增市场成员 ⇒ 这里**测试失败**, 而不是在生产里静默落进 A 股分支。
+        (§8 规则 2「新市场必须响亮地失败」; 同构范式见前端
+        ``lib/board-market-support.ts::BOARD_DIMENSION_SOURCE``。)"""
+        assert set(sp._MARKET_SUPPORT) == set(Market)
+
+    def test_ashare_path_unchanged(self, data_dir):
+        """零回归: A 股照旧走网络 + 落缓存。"""
+        em = FakeClient(rows=[_HOLDER_ROW])
+        r = sp.get_profile(data_dir, "holder_number", "600519.SH", client=em)
+        assert r["state"] == "ok" and r["count"] == 1
+        assert len(em.calls) == 1
+        assert (data_dir / "stock_profile" / "holder_number" / "600519.json").exists()
+
+    def test_garbage_symbol_still_raises(self, data_dir):
+        """``infer_market`` 对认不出的输入兜底 CN ⇒ 垃圾 symbol 仍走 ``_SYMBOL_RE``
+        抛 ``ValueError`` → 400。闸门没有把真正的格式错误一起吞掉。"""
+        with pytest.raises(ValueError, match="6 位"):
+            sp.get_profile(data_dir, "unlock", "bad-symbol", client=FakeClient())
+
+    def test_bare_hk_code_still_raises(self, data_dir):
+        """已知盲区, **刻意保留**: 裸 ``00700`` 没有 ``.HK`` 后缀, ``infer_market``
+        认不出是港股(它同时也不是合法 A 股码), 兜底 CN 后由 ``_SYMBOL_RE`` 拒掉。
+        可接受 —— 港股 symbol 进内部路径前一律被插件层归一成 ``00700.HK``
+        (同 ``app.market.assert_symbol_market`` 文档里记的同一个盲区)。"""
+        with pytest.raises(ValueError, match="6 位"):
+            sp.get_profile(data_dir, "unlock", "00700", client=FakeClient())
+
+    def test_api_returns_200_not_400_for_hk(self, data_dir):
+        """API 层不得把闸门翻译成 HTTPException —— 选港股是合法操作。"""
+        from app.api.stock_profile import get_stock_profile
+
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            repo=SimpleNamespace(store=SimpleNamespace(data_dir=data_dir)))))
+        r = get_stock_profile(request, "unlock", self.HK, False)
+        assert r["state"] == sp.STATE_MARKET_UNSUPPORTED
 
 
 # ================================================================
