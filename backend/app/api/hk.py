@@ -33,6 +33,7 @@ from app.services import (
     financial_sync_hk,
     hk_connect_flow,
     hk_dividend_calendar,
+    hk_volatility,
     index_const,
     index_sync_hk,
     instrument_sync_hk,
@@ -1137,4 +1138,125 @@ def get_hk_ah_premium(request: Request) -> dict:
         "stale_price_count": result.stale_price_count,
         "price_lag_count": result.price_lag_count,
         "ambiguous_a_symbols": list(result.ambiguous_a_symbols),
+    }
+
+
+#: 波动率序列默认返回的交易日数。250 ≈ 一年, 够看清一轮波动率中枢的抬升与回落;
+#: 全量 (本地默认 400, 手动加深后可达 2000) 会让一次响应带上数千个点,
+#: 而图表在 250 点以上已看不出差别。🔴 这个参数**只裁剪 ``series``**,
+#: 不裁剪分位样本 —— 档位必须用全样本标定, 否则「近一年」的 p90 与「八年」的 p90
+#: 是两个不同的尺子, 界面上却长得一样。
+HK_VOLATILITY_DEFAULT_SERIES_DAYS = 250
+
+#: ``series_days`` 上限。硬闸: 腾讯日K 实测 2000 根封顶 (回溯到 2018-10-08),
+#: 故本地不可能超过这个量级; 再大的值只会白白放大响应体。
+HK_VOLATILITY_MAX_SERIES_DAYS = 2000
+
+
+@router.get("/volatility")
+def get_hk_volatility(
+    request: Request,
+    series_days: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            le=HK_VOLATILITY_MAX_SERIES_DAYS,
+            description=f"绘图序列返回的交易日数; 缺省={HK_VOLATILITY_DEFAULT_SERIES_DAYS}。"
+            "只裁剪 series, 不影响档位标定样本",
+        ),
+    ] = None,
+) -> dict:
+    """港股**波动率情绪** (VHSI 恒生波动率指数): 当前档位 + 自身历史分位 + 与恒指背离。
+
+    这是 A 股「情绪周期」(``GET /api/regime/phases``) 在港股的**对应维度**, 不是同一个
+    东西的港股版: A 股那套完全建立在连板梯队上 (首板家数 / N 板宽度 / 晋级率),
+    而港股无涨跌停 (``rules_for(Market.HK).has_price_limit is False``), 连板这个量
+    **结构上不存在**。把 A 股规则套过来不会报错, 只会恒等于兜底档, 属「看起来对但错」。
+    港股市场上口径清晰的全市场情绪计只有 VHSI (A 股的 iVIX 已停发, 故这个维度
+    A 股反而没有)。详见 :mod:`app.services.hk_volatility`。
+
+    🔴 **单位**: ``level`` 是年化隐含波动率的**百分点数** —— ``24.09`` 即 ``24.09%``,
+    **不是**小数, 前端**不得**再 ×100 (会显示成 2409%)。``change_pct_1d`` 是 VHSI
+    自己今天的涨跌幅, 同为百分数 (``13.63`` 即 ``+13.63%``)。
+
+    🔴 **档位是相对标尺**: ``regime`` 由 ``percentile`` (最新点位在**样本内**的分位
+    排名) 落档, 边界见 ``HK_VOLATILITY_BANDS``。按构造样本里恒有约 10% 的日子是
+    「极低波」、约 2% 是「恐慌」—— 它回答「现在比过去紧张还是宽松」, 不回答
+    「绝对波动率高不高」。故 ``percentiles`` (各分位对应的**实际点位**) 与样本三件套
+    (``sample_days`` / ``sample_start`` / ``sample_end``) 一并返回, 让判定可查证。
+    **刻意不用 VIX 的 20/30**: VHSI 分布与 VIX 不同 (八年样本 p50=22.51 / p90=29.54),
+    套美股阈值会把常态日判成偏高。
+
+    🔴 **样本不足时 fail closed**: ``insufficient_history=true`` 且 ``regime`` /
+    ``percentile`` / ``streak_days`` / ``corr_hsi`` 全为 ``null``, 原因在
+    ``insufficient_reason`` 里 (可直接展示)。**绝不**用几十根算一个看起来正常的档位。
+    本地默认同步深度 400 根 (``HK_INDEX_DAILY_COUNT``), 高于 120 根下限;
+    想要更稳的标定可加深: ``POST /api/hk/sync_index_daily {"symbols":["VHSI"],"count":2000}``
+    (实测腾讯 2000 根封顶, 回溯到 2018-10-08)。
+
+    ``corr_hsi`` 是 VHSI 与 HSI **日收益**在近 20 个交易日的相关系数, 正常应显著为负;
+    转正意味着两者齐涨齐跌, 是行情性质变化的信号。样本不足 / 基准缺失 / 任一侧
+    方差为 0 时为 ``null`` —— **不填 0**, 0 会被读成「实测不相关」。
+
+    ``name`` 对 VHSI 恒为 ``null``: 它不在四个核心指数里 (``index_const.HK_CORE_INDEX_NAMES``),
+    而 Sina 插件刻意不登记指数名称 (「名称由响应字段在运行时提供, 抄一份只会与源分叉」)。
+    展示名由前端适配器提供, 不在后端编一个。
+
+    数据全部来自本地 ``kline_hk_index_daily`` (无上游请求), 故**没有 502 分支**:
+    从未同步过时返回 200 + ``insufficient_history=true``, 这是合法的「还没有数据」,
+    不是故障。
+    """
+    repo = request.app.state.repo
+    days = series_days or HK_VOLATILITY_DEFAULT_SERIES_DAYS
+
+    result = hk_volatility.hk_volatility(repo)
+
+    # 🔴 只裁剪绘图序列, 不动档位/分位/均线 —— 那些必须基于全样本 (见常量注释)。
+    series = result.series[-days:] if days < len(result.series) else result.series
+
+    rules = rules_for(Market.HK)
+    return {
+        "symbol": result.symbol,
+        "name": index_const.core_index_names(Market.HK).get(result.symbol),
+        "market": Market.HK.value,
+        # VHSI 是无量纲的波动率点位, 不是价格; 但沿用 HK 指数端点的既有字段形状,
+        # 让前端不必为这一个页面分叉渲染逻辑 (CONTRIBUTING §4)。
+        "currency": "HKD",
+        "quote_delay_minutes": rules.quote_delay_minutes,
+        "source": result.source,
+        "level": result.level,
+        "as_of": result.as_of.isoformat() if result.as_of else None,
+        "change_1d": result.change_1d,
+        "change_pct_1d": result.change_pct_1d,
+        "percentile": result.percentile,
+        "regime": result.regime,
+        "regime_label": result.regime_label,
+        "streak_days": result.streak_days,
+        "moving_averages": result.moving_averages,
+        "percentiles": result.percentiles,
+        # 档位上界点位: 让前端能在图上画出**可查证**的档位分界线, 而不必自己拿
+        # `bands[].upper_percentile` 去 `percentiles` 里查 —— 那是两套刻度, 只有
+        # p10/p90/p98 重合, 查不到时前端只会静默少画一条线。
+        "band_upper_levels": result.band_upper_levels,
+        "period_high": result.period_high,
+        "period_high_date": (
+            result.period_high_date.isoformat() if result.period_high_date else None
+        ),
+        "period_low": result.period_low,
+        "period_low_date": result.period_low_date.isoformat() if result.period_low_date else None,
+        "corr_hsi": result.corr_hsi,
+        "corr_samples": result.corr_samples,
+        "corr_window": hk_volatility.HK_VOLATILITY_CORR_WINDOW,
+        "bands": [
+            {"upper_percentile": upper, "key": key, "label": label}
+            for upper, key, label in hk_volatility.HK_VOLATILITY_BANDS
+        ],
+        "min_sample_days": hk_volatility.HK_VOLATILITY_MIN_SAMPLE_DAYS,
+        "series": series,
+        "series_days": len(series),
+        "sample_days": result.sample_days,
+        "sample_start": result.sample_start.isoformat() if result.sample_start else None,
+        "sample_end": result.sample_end.isoformat() if result.sample_end else None,
+        "insufficient_history": result.insufficient_history,
+        "insufficient_reason": result.insufficient_reason,
     }

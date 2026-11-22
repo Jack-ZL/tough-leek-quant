@@ -24,6 +24,7 @@ frontend/src/custom/<namespace>/Page.tsx
 | `hk-dividends` | 港股分红日历 |
 | `hk-connect-flow` | 港股通资金流（南向） |
 | `hk-ah-premium` | AH 溢价 |
+| `hk-volatility` | 港股波动率情绪（VHSI） |
 | `monitor` | 监控中心 |
 | `abnormal` | 异动监控 |
 | `lots` | 持仓提醒 |

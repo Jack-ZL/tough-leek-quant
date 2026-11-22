@@ -36,7 +36,10 @@ export const HK_DATA_QUERY_PREFIXES = new Set([
 	// 🔴 这里是 `has()` 精确匹配首段, 不是前缀匹配, 故必须逐条列出。
 	// 🔴 南向资金流(`hk-connect-flow`)**刻意不在本集合里**: 它不读任何本地数据,
 	// 纯上游实时报表, 港股同步链与它无关, 加进来只会白刷一次。
-	'hk-dividends', 'hk-ah-premium',
+	// 🔴 波动率情绪(`hk-volatility`)**必须在本集合里**: 它读的是本地
+	// `kline_hk_index_daily`(VHSI + HSI 日K), 同步完不失效就会留着按旧样本
+	// 标定的分位阈值 —— 而阈值一变, 档位可能整个换档, 界面上却看不出差别。
+	'hk-dividends', 'hk-ah-premium', 'hk-volatility',
 ])
 
 /** 扩展数据写入后的结构、序列和列表消费方。日K仅刷新携带扩展列的查询。 */
@@ -234,6 +237,14 @@ export const QK = {
 	// `kline_hk_daily.close`、消歧用的上市日与名称取自 `instruments_hk`, 港股同步完
 	// 必须失效, 否则会留着基于旧收盘价的溢价。
 	hkAhPremium: ['hk-ah-premium'] as const,
+
+	// 港股波动率情绪 (VHSI)。`seriesDays` 影响 `series` 长度 ⇒ 必须入 key。
+	// 🔴 前缀 `hk-volatility` **在** `HK_DATA_QUERY_PREFIXES` 里: 数据取自本地
+	// `kline_hk_index_daily`(VHSI + HSI 日K), 港股指数同步完必须失效 ——
+	// 样本窗口一变, 分位阈值随之重算, 档位可能整个换档。
+	// 🔴 纯本地读, 不打上游 ⇒ 不需要像分红/南向那样为"省上游请求"给足 staleTime,
+	// 但仍建议给: 一次响应带 250 个绘图点, 切 tab 就重取没必要。
+	hkVolatility: (seriesDays: number) => ['hk-volatility', seriesDays] as const,
 
 	// A 股财务五张表。🔴 前缀 `financials` 与上面的 `hk-financials` 互斥。
 	// 住在 queryKeys 而不是 lib/useFinancials.ts: 市场适配层

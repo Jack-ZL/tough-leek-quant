@@ -578,7 +578,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 | # | 功能 | 数据源 |
 |---|---|---|
-| 8 | **VHSI 恒指波幅** | `index_hk_spot_sina`。**港股版 VIX，A 股没有**（iVIX 已停发）→ **替代 A 股的情绪周期维度** |
+| 8 | **VHSI 恒指波幅** | ✅ **已落地**（PR9，见 §14）。**不用 akshare 的 `index_hk_spot_sina` 快照**：走腾讯港股指数日K（`kline_hk_index_daily`，symbol `VHSI`）落库后本地计算，与其余 26 个港股指数同一条同步链。**港股版 VIX，A 股没有**（iVIX 已停发）→ **替代 A 股的情绪周期维度** |
 | 9 | 人气榜 | `stock_hk_hot_rank_em` / `_latest_em` / `_detail_em` / `_detail_realtime_em`（东财股吧港股人气，前 100 名） |
 | 10 | 分红日历 | `stock_hk_dividend_payout_em` |
 
@@ -741,7 +741,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **PR4** | **AI 能力** | enriched 通用指标子集（A 股专属列恒 null）；**`hk_market_guardrail`**；`ai_data_quality.py:209,219` 加 market 维；个股分析 + **多空辩论**共用页面；企微 / 钉钉机器人入口 |
 | **PR5** | **财务概况** | 三大报表时序 + 36 列指标；**报告货币折算/标注**；共用 A 股同页面同入口；`stock_profile`/`financial_analyzer` 港股口径适配 |
 | **PR6** | **港股板块 tab** | 恒生行业四件套（热力图 / 估值温度计 / 轮动 / L2 下钻），**全市场口径**，走 ext_data 通道，**行业排名按 market 分开** |
-| **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历 |
+| **PR7** | **港股独有维度** | 南向 / 港股通 + AH 溢价 + VHSI + 人气榜 + 分红日历。**进度 4/5**：分红日历 ✅（PR7）· 南向 ✅ + AH 溢价 ✅（PR8）· VHSI ✅（PR9）· 人气榜 ⬜（待做，最后一项） |
 
 ### PR1 完成情况（地基）
 
@@ -2112,6 +2112,164 @@ ST / 退市股**刻意保留**（`000488.SZ ST晨鸣` 正是实测溢价最高�
     （是百分数 `25.85` 而非小数 `0.2585`，证明「不再 ×100」的契约在传输层成立）。
   - 消歧实测：`02607.HK → 601607.SH 上海医药`；
     `601899.SH 紫金矿业 → 02899.HK`（取上市更早的柜台，非 02958.HK）。
+
+### PR9 完成情况（港股独有维度）—— VHSI 波动率情绪
+
+**范围**：港股波动率情绪（VHSI 恒生波动率指数）——A 股「情绪周期」在港股的**对应维度**。
+后端 `app/services/hk_volatility.py` + `GET /api/hk/volatility`；前端 `src/custom/hk-volatility/`
+（扩展页 `/hk-volatility`）。**纯本地读，零上游请求**（数据来自已落库的
+`kline_hk_index_daily`），故没有 502 分支。
+
+#### 为什么是「对应维度」而不是「同一指标的港股版」
+
+A 股情绪周期（`market_phase`）**完全建立在连板梯队上**（最高板高度、连板家数、晋级率）。
+港股无涨跌停 ⇒ `rules_for(Market.HK).has_price_limit is False` ⇒ 连板在结构上不存在。
+把 A 股那套规则套到港股会**静默**永远落到兜底档——「看起来对但错」，比报错更危险。
+故港股需要一个语义对等（市场紧张度）但**构造不同**的维度：VHSI 是恒指期权隐含波动率，
+直接刻画恐慌/贪婪，不依赖涨停板制度。
+
+#### 🔴 三条口径约束（改这块前必读）
+
+1. **单位是百分点数，不是小数**。`level=24.09` 即年化隐含波动率 `24.09%`。
+   前端**绝不能再 ×100**（会显示成 2409%）。`change_pct_1d` 同为百分数
+   （`13.63` 即 `+13.63%`），与项目里 `change_pct` 常见的小数口径**相反**（§3.1）。
+2. **档位是相对标尺，不是绝对阈值**。`regime` 由 `percentile`（最新点位在**样本内**
+   的分位排名）落档，按构造样本里恒有约 10% 的日子属「极低波」、约 2% 属「恐慌」。
+   它回答「现在比过去紧张还是宽松」，**不**回答「绝对波动率高不高」。
+   故 `percentiles`（各分位对应的实际点位）、`band_upper_levels`（各档上界点位）
+   与样本三件套（`sample_days` / `sample_start` / `sample_end`）必须同屏可见。
+3. **样本不足 fail closed**。`sample_days < 120` 时 `insufficient_history=true`，
+   `regime` / `percentile` / `streak_days` / `corr_hsi` 全为 `null`，原因在
+   `insufficient_reason`（可直接展示）。**不得**渲染成「常态」或任何默认档。
+   但客观事实照常给出：最新点位、样本内最高/最低及其日期。
+
+#### 为什么不用 VIX 的 20/30 惯例
+
+VIX 的 20/30 是**美股**期权市场的经验刻度。VHSI 的中枢与美股不同（港股含汇率与
+离岸流动性溢价），直接搬过来会系统性误判。故本实现的档位边界是**分位刻度**
+（10/35/70/90/98 分位），阈值点位由 VHSI **自身历史**标定：
+
+```python
+HK_VOLATILITY_BANDS = (
+    (10.0, "ultra_low", "极低波"), (35.0, "low", "低波"), (70.0, "normal", "常态"),
+    (90.0, "elevated", "偏高"), (98.0, "high", "高波"), (None, "panic", "恐慌"),
+)
+```
+
+边界左闭右开（`percentile < upper`），**边界值归入更高一档**——宁可偏紧张不可偏松懈。
+
+#### 🔴 标定样本深度会改变结论（实测证据）
+
+同一个交易日、同一个点位，只因为标定样本长度不同，档位判定就**翻档**：
+
+| 标定样本 | 区间 | percentile | regime | p50 | p90 | p98 | p99 | 样本内最高 | 样本内最低 |
+|---|---|---|---|---|---|---|---|---|---|
+| 400 根 | 2025-04-09 ~ 2026-11-20 | 83.25 | **偏高** `elevated` | 21.33 | 25.60 | 29.22 | 31.59 | 39.77（2025-04-09） | 16.46（2025-12-24） |
+| 2000 根 | 2018-10-08 ~ 2026-11-20 | **64.90** | **常态** `normal` | 22.51 | 29.54 | 37.72 | 40.99 | **64.80（2020-03-16）** | **12.93（2019-12-23）** |
+
+`level` 两行都是 **24.09**（2026-11-20 收盘）。结论翻档的原因很具体：400 根窗口
+**恰好从 2025-04 关税冲击开盘**，那段高波被当成了「常态」，于是今天显得偏高。
+
+2000 根样本的两个极值都落在**历史上正确的地标**上——最高 64.80 是 2020-03-16
+（新冠熔断潮），最低 12.93 是 2019-12-23（年末平静期）——这反过来验证了腾讯
+港股指数数据本身可靠。
+
+**加深历史的命令**（实测 23.1s，`written=4000, failed=[]`）：
+
+```python
+index_sync_hk.sync_hk_index_daily(repo, symbols=['VHSI', 'HSI'], count=2000)
+```
+
+HTTP 等价：`POST /api/hk/sync_index_daily {"symbols":["VHSI"],"count":2000}`。
+
+🔴 `HK_INDEX_DAILY_COUNT = 400` **刻意未改**：抬高它会影响全部 27 个港股指数、
+存储 ×5，超出本 PR 范围（§1.3）。需要深样本的用户按上面命令单独加深 VHSI/HSI 即可。
+
+#### `series_days` 与 `sample_days` 是两件事
+
+`GET /api/hk/volatility?series_days=N` 中 `N` **只裁剪绘图序列 `series`**，
+`regime` / `percentile` / `percentiles` / `band_upper_levels` / `moving_averages` /
+`sample_days` 全部保持全样本标定。实测 `series_days=30` → 响应 `series_days=30`
+而 `sample_days=2000`、`regime` 不变。前端在区间选择器旁明写这条口径，
+免得用户以为切区间会改判定。越界（`<1` 或 `>2000`）→ **422**，不做静默钳制。
+
+#### `band_upper_levels` 为什么单独一个字段
+
+档位边界在 10/35/70/90/98 分位，而 `percentiles` 给的是 10/25/50/75/90/95/98/99
+——**两套刻度，只有 p10/p90/p98 重合**。若让前端拿 `bands[].upper_percentile`
+去 `percentiles` 里查，p35/p70 查不到 ⇒ 图上静默少画两条分界线，而判定照旧，
+没人会发现。故由服务端从**同一个** `quantile` 函数算出 `band_upper_levels`
+（键与 `bands` 同序，末档无上界为 `null`），结构上无法与 `bands` 分叉。
+
+#### 其他实现要点
+
+- **仅用收盘价**（坑 3）：日内高低不参与，与 A 股 enriched 链一致。
+- **相关系数**：VHSI 与 HSI 的**日收益**皮尔逊相关，近 20 个交易日，按日期内连接。
+  取 `CORR_WINDOW + 1` 根（日收益要两根才算得出一根）。样本不足/基准缺失/方差为 0
+  → `None`，🔴 **不是 0**（0 会被读成「实测不相关」）。正常应显著为负，转正意味着
+  齐涨齐跌，是结构性异常。
+- **均线不用短窗口凑**：样本不足 60 根时 `ma60` 为 `None`，不拿 30 根冒充。
+- **分位排名用 `bisect_left`**：严格小于语义（样本最大值得 `(n−1)/n×100` 而非 100）。
+  预排序 + 二分 ⇒ O(log n)；早先用线性扫描在 2000 根上是 O(n²)≈400 万次比较。
+- **`name` 恒为 `null`**：VHSI 不在 `index_const.HK_CORE_INDEX_NAMES`
+  （只有 HSI/HSTECH/HSCEI/HSCCI），`plugins/sina/hk_index.py` 也刻意不注册名称
+  （「抄一份只会与源分叉」）。展示名由前端适配器给出，后端不编。
+- **`quote_delay_minutes` 从 `rules_for(Market.HK)` 读**（=15），不硬编码。
+- **`bands` 随响应下发**，前端图例不复制常量（复制就会与后端分叉）。
+- **无历史档位序列**：全样本分位阈值不是 point-in-time 的，逐日回判会用到
+  「未来」的样本 ⇒ 刻意**不**输出历史 regime 序列，`series` 只含
+  `{date, close, ma20}`。把非 point-in-time 的阈值画成时间序列是误导。
+- **不提供任何交易信号**（§1.2）。
+
+#### 前端
+
+`src/custom/hk-volatility/`（扩展页，删目录即整体卸载）。🔴 刻意**不**做成 A 股
+Regime 页上的市场开关（§7 市场差异是数据不是控制流）：两者是**不同维度**，
+塞进同一页只会逼出一堆 `if (market === …)`。也**不**塞进个股详情页：
+VHSI 是全市场单一序列，不属于任何一只股票。
+
+🔴 档位配色走**风险递进**刻度（灰→蓝→中性→琥珀→红），刻意不用 `text-bull`/`text-bear`：
+本项目红绿是**涨跌**语义（红涨绿跌），沿用会让「恐慌」显示成红色而被读成「涨/好」。
+未知档位键回落到中性样式（§7 展示层允许对未知值兜底）。
+
+`hk-volatility` 前缀**在** `HK_DATA_QUERY_PREFIXES` 里：它读本地
+`kline_hk_index_daily`，港股指数同步完必须失效——样本窗口一变分位阈值随之重算，
+档位可能整个换档，界面上却看不出差别。（对比：`hk-connect-flow` 刻意不在其中，
+因为它是纯上游读。）
+
+#### 验证（实测，非推断）
+
+- 后端 `tests/test_hk_volatility.py` **65 passed**（三层：纯函数 / 服务 / API）。
+- 前端 `src/custom/hk-volatility/Page.test.tsx` **19 passed**（八条口径闸）。
+- 全量：后端 **7814 passed / 8 skipped / 1 xfailed**（基线 7749 → +65）；
+  前端 **1352 passed / 148 files**（基线 1333/147 → +19/+1）；`pnpm build` ✓ 5.31s；
+  `ruff check` 全绿。
+- 真实数据实测（2000 根样本）：`level=24.09`、`as_of=2026-11-20`、
+  `change_1d=+2.89`、`change_pct_1d=+13.632%`、`percentile=64.90`、`regime=normal`、
+  `streak_days=2`、`corr_hsi=-0.0814`（20 对样本）、ma5/ma20/ma60 = 20.93/20.10/19.01，
+  端到端 **0.414s**。
+
+#### 🔴 三个测试脚手架陷阱（已写进 helper docstring）
+
+1. **绝不把分区表的所有行写进同一个分区目录**。DuckDB 的 hive 分区键会**覆盖**
+   文件内同名列：150 行全写进 `kline_hk_index_daily/date=2026-11-20/part.parquet`
+   会让每行的 `date` 都变成目录常量，`ORDER BY date` 退化成任意序，
+   「最新收盘」变成随机一根。症状：`assert 19.5 == 23.9`。
+   必须**按日期一天一个 `date=YYYY-MM-DD/` 分区**，与 `repo.append_daily_asset` 一致。
+2. **绝不用线性斜坡测相关系数的符号**。线性价格斜坡的**收益率序列是单调的**
+   （`step/P` 随 `P` 增大而减小），于是上升斜坡与下降斜坡的收益**都是递减** ⇒
+   相关系数 **+1**。症状：`assert 0.9998797785165444 < 0`，数据看起来明明反向。
+   用 `_from_returns` + `_alternating` 直接指定收益序列。
+3. **档位边界左闭 ⇒ 斜坡尾部会挤进最高档**。n=200 时索引 196 的分位恰好
+   `196/200 = 98.0` → 落 `panic`（因为 `_band_of` 用 `percentile < upper`）。
+   任何基于斜坡的 streak 测试都会多算。改用**平台 + 跳变**
+   （`[20.0]*197 + [99.0]*3`）：平台的分位恒为 0（`bisect_left` 落在首个相等值上）。
+
+#### 刻意留到后续
+
+是否把 VHSI 也喂进 AI 复盘 / market-recap 提示词链（A 股喂的是
+`market_recap._load_regime_row`）。**本 PR 不做**（§1.2 保持简单）：
+PR9 是一个只读分析页，接入提示词链会牵动护栏与 token 预算，应单独一个 PR 评估。
 
 ## 15. 风险
 

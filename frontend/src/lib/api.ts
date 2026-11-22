@@ -605,6 +605,113 @@ export interface HkAhPremiumResponse {
 	ambiguous_a_symbols: string[]
 }
 
+/**
+ * 港股波动率档位边界(后端 `HK_VOLATILITY_BANDS` 的镜像)。
+ *
+ * 🔴 由响应下发而不是前端复制一份常量: 复制就会与后端分叉 —— 后端改了边界,
+ * 前端图例还在按旧边界着色, 而两者看起来都"正常"。
+ * `upper_percentile` 为 `null` 表示无上界(最后一档「恐慌」)。
+ */
+export interface HkVolatilityBand {
+	/** 分位上界(**左闭右开**: `percentile < upper` 落入本档); 末档为 null */
+	upper_percentile: number | null
+	key: string
+	label: string
+}
+
+/** `GET /api/hk/volatility` 的绘图序列点。 */
+export interface HkVolatilityPoint {
+	date: string
+	/** VHSI 收盘点位(年化隐含波动率的**百分点数**) */
+	close: number
+	/** 20 日均线; 前 19 根未成形时为 null(**不是 0**) */
+	ma20: number | null
+}
+
+/**
+ * `GET /api/hk/volatility` 响应 —— 港股波动率情绪(VHSI)。
+ *
+ * 这是 A 股「情绪周期」在港股的**对应维度**, 不是同一指标的港股版: A 股那套建立在
+ * 连板梯队上, 而港股无涨跌停 ⇒ 连板结构上不存在。详见后端 `app/services/hk_volatility.py`。
+ *
+ * 🔴🔴 **单位**: `level` 是年化隐含波动率的**百分点数** —— `24.09` 即 `24.09%`,
+ * **不是**小数, 前端**绝不能再 ×100**(会显示成 2409%)。`change_pct_1d` 同为百分数
+ * (`13.63` 即 `+13.63%`), 与项目里 `change_pct` 常见的小数口径**相反**, 别混用。
+ *
+ * 🔴🔴 **档位是相对标尺**: `regime` 由 `percentile`(最新点位在**样本内**的分位排名)
+ * 落档。按构造样本里恒有约 10% 的日子是「极低波」、约 2% 是「恐慌」—— 它回答
+ * 「现在比过去紧张还是宽松」, **不**回答「绝对波动率高不高」。故 `percentiles`
+ * (各分位对应的实际点位)与样本三件套必须一起展示, 否则判定无法查证。
+ *
+ * 🔴 **样本不足时 fail closed**: `insufficient_history=true` 且 `regime` / `percentile`
+ * / `streak_days` / `corr_hsi` 全为 `null`, 原因在 `insufficient_reason`(可直接展示)。
+ * 此时**不得**渲染成「常态」或任何默认档 —— 那是把"算不出来"伪装成"正常"。
+ */
+export interface HkVolatilityResponse {
+	symbol: string
+	/** 🔴 对 VHSI 恒为 `null`: 它不在四个核心指数里, 后端刻意不编展示名。
+	 *  界面标题由前端适配器提供(见 `hk-volatility/Page.tsx` 的 `TITLE`)。 */
+	name: string | null
+	market: string
+	/** 恒为 `HKD`(沿用 HK 指数端点的字段形状, 但 VHSI 是无量纲波动率点位) */
+	currency: string
+	/** 🔴 来自后端 `rules_for(Market.HK)`, 前端**不得**硬编码 15 */
+	quote_delay_minutes: number
+	source: string
+	/** 最新点位(百分点数)。无数据时为 null。 */
+	level: number | null
+	/** 最新点位所属交易日(ISO)。无数据时为 null。 */
+	as_of: string | null
+	/** 较前一交易日的**点位差**。前收缺失时为 null(**不是 0**)。 */
+	change_1d: number | null
+	/** 较前一交易日的涨跌幅, **百分数**。前收缺失时为 null。 */
+	change_pct_1d: number | null
+	/** 最新点位在样本内的分位排名(0~100)。样本不足时为 null。 */
+	percentile: number | null
+	/** 档位键(见 `bands`)。样本不足时为 null。 */
+	regime: string | null
+	/** 档位中文名。样本不足时为 null。 */
+	regime_label: string | null
+	/** 连续处于当前档位的天数(含当日)。样本不足时为 null。 */
+	streak_days: number | null
+	/** `{ma5, ma20, ma60}`; 样本不足以算某条时该项为 null(**不用短窗口凑**) */
+	moving_averages: Record<string, number | null>
+	/** 分位阈值表 `{p10, p25, p50, p75, p90, p95, p98, p99}` → **VHSI 点位**。
+	 *  样本不足时为空对象。必须展示: 不给出"p90 到底是几点"就无法查证今天的判定。 */
+	percentiles: Record<string, number>
+	/** 各档位的**上界点位**(键为 `bands[].key`), 末档无上界故为 `null`。
+	 *  样本不足时为空对象。
+	 *  🔴 与 `percentiles` 是**两套刻度**: 档位边界在 10/35/70/90/98 分位, 而
+	 *  `percentiles` 给的是 10/25/50/75/90/95/98/99 —— 只有 p10/p90/p98 重合。
+	 *  画档位分界线必须用本字段, 不能拿 `bands[].upper_percentile` 去 `percentiles`
+	 *  里查(查不到时只会静默少画一条线, 判定照旧, 没人发现)。 */
+	band_upper_levels: Record<string, number | null>
+	period_high: number | null
+	period_high_date: string | null
+	period_low: number | null
+	period_low_date: string | null
+	/** VHSI 与 HSI **日收益**在近 `corr_window` 个交易日的相关系数(−1~1)。
+	 *  正常应显著为负; 转正意味着齐涨齐跌。样本不足/基准缺失/方差为 0 时为
+	 *  null —— 🔴 **不是 0**, 0 会被读成「实测不相关」。 */
+	corr_hsi: number | null
+	/** 相关系数实际使用的收益对数(判断这个系数可不可信) */
+	corr_samples: number
+	corr_window: number
+	bands: HkVolatilityBand[]
+	/** 给出档位所需的最小样本交易日数 */
+	min_sample_days: number
+	series: HkVolatilityPoint[]
+	/** `series` 的实际长度(受 `series_days` 裁剪) */
+	series_days: number
+	/** 🔴 标定样本的交易日数 —— 与 `series_days` **无关**: 后者只裁剪绘图序列,
+	 *  档位始终用全样本标定。两者相等只是巧合, 不得互相替代。 */
+	sample_days: number
+	sample_start: string | null
+	sample_end: string | null
+	insufficient_history: boolean
+	insufficient_reason: string | null
+}
+
 /** AI 财务分析历史报告 */
 export interface AiFinancialReport {
 	id: string
@@ -4756,6 +4863,18 @@ export const api = {
 	 * staleTime 必须给足, 否则切个 tab 就重算一遍。
 	 */
 	hkAhPremium: () => request<HkAhPremiumResponse>('/api/hk/ah-premium'),
+	/**
+	 * 港股**波动率情绪**(VHSI 恒生波动率指数): 当前档位 + 自身历史分位 + 与恒指背离。
+	 *
+	 * 🔴 纯本地读(`kline_hk_index_daily`), **不打任何上游**, 故没有 502 分支:
+	 * 从未同步过时返回 200 + `insufficient_history=true`, 那是合法的「还没有数据」。
+	 * 🔴 `seriesDays` **只裁剪绘图序列**, 不影响档位标定样本(后端始终用全样本)。
+	 * 想加深标定样本得去同步(`POST /api/hk/sync_index_daily` 带 `count`), 不是调这个参数。
+	 */
+	hkVolatility: (seriesDays?: number) => {
+		const qs = seriesDays ? `?series_days=${seriesDays}` : ''
+		return request<HkVolatilityResponse>(`/api/hk/volatility${qs}`)
+	},
 	/**
 	 * 港股数据画像(维表/日K/enriched/指数/复权因子/财务 的行数·日期·覆盖 + 存储占用)。
 	 *
