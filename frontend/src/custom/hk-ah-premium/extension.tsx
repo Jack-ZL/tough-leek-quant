@@ -1,8 +1,8 @@
-import {lazy} from 'react'
-import {Scale} from 'lucide-react'
-import type {FrontendExtension} from '@/extensions/types'
+import { lazy } from 'react'
+import { Scale } from 'lucide-react'
+import type { FrontendExtension } from '@/extensions/types'
 
-export const HkAhPremium = lazy(() => import('./Page').then(m => ({default: m.HkAhPremium})))
+export const HkAhPremium = lazy(() => import('./Page').then(m => ({ default: m.HkAhPremium })))
 
 /**
  * AH 溢价 — A 股与 H 股同股价差, 跨市场维度。
@@ -16,10 +16,10 @@ const extension: FrontendExtension = {
 	id: 'official.hk-ah-premium',
 	apiVersion: 1,
 	routes: [
-		{id: 'hk-ah-premium', path: '/hk-ah-premium', component: HkAhPremium},
+		{ id: 'hk-ah-premium', path: '/hk-ah-premium', component: HkAhPremium },
 	],
 	navigation: [
-		{id: 'hk-ah-premium', routeId: 'hk-ah-premium', label: 'AH 溢价', icon: Scale},
+		{ id: 'hk-ah-premium', routeId: 'hk-ah-premium', label: 'AH 溢价', icon: Scale, badge: 'HK' },
 	],
 }
 

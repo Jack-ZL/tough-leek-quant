@@ -16,7 +16,7 @@ export function LicenseComplianceNotice({ compact = false }: { compact?: boolean
     <div className={`flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/5 ${compact ? 'p-3 mt-4' : 'p-3'}`}>
       <ShieldAlert className="h-4 w-4 text-warning shrink-0 mt-px" />
       <div className="min-w-0">
-        <div className="text-xs font-medium text-warning">TSP 工作台分发须知</div>
+        <div className="text-xs font-medium text-warning">TLQ 工作台分发须知</div>
         <p className="mt-1 text-[11px] leading-relaxed text-secondary">
           TSP 工作台采用 {PROJECT_LICENSE_NAME} 许可。分发软件的副本或实质部分时，须保留原始版权声明与许可文本。
         </p>

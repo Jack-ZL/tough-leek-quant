@@ -1,8 +1,8 @@
-import {lazy} from 'react'
-import {Activity} from 'lucide-react'
-import type {FrontendExtension} from '@/extensions/types'
+import { lazy } from 'react'
+import { Activity } from 'lucide-react'
+import type { FrontendExtension } from '@/extensions/types'
 
-export const HkVolatility = lazy(() => import('./Page').then(m => ({default: m.HkVolatility})))
+export const HkVolatility = lazy(() => import('./Page').then(m => ({ default: m.HkVolatility })))
 
 /**
  * 港股波动率情绪 (VHSI) — A 股「情绪周期」在港股的**对应维度**。
@@ -19,10 +19,10 @@ const extension: FrontendExtension = {
 	id: 'official.hk-volatility',
 	apiVersion: 1,
 	routes: [
-		{id: 'hk-volatility', path: '/hk-volatility', component: HkVolatility},
+		{ id: 'hk-volatility', path: '/hk-volatility', component: HkVolatility },
 	],
 	navigation: [
-		{id: 'hk-volatility', routeId: 'hk-volatility', label: '港股波动率', icon: Activity},
+		{ id: 'hk-volatility', routeId: 'hk-volatility', label: '港股波动率', icon: Activity, badge: 'HK' },
 	],
 }
 

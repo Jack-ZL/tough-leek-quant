@@ -1,5 +1,5 @@
 /**
- * 关于面板 — 版权与许可、更新和打赏。
+ * 关于面板 — 版权与许可、更新和致谢。
  */
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -11,20 +11,17 @@ import {
   RefreshCw,
   Sparkles,
   Scale,
-  Heart,
-  Rocket,
-  X
+  HeartHandshake,
+  Rocket
 } from 'lucide-react'
 import { useVersion } from '@/lib/useSharedQueries'
 import { useUpdateCheck } from '@/lib/updateCheck'
-import { Modal } from '@/components/Modal'
 import { OssLicenseDialog, LicenseComplianceNotice, TiveloLicenseNotice } from '@/components/OssLicenseDialog'
 import { PROJECT_LICENSE_NAME, PROJECT_REPO_URL } from '@/data/ossLicenses'
 
 export function SettingsAboutPanel() {
   const { data: versionData } = useVersion()
   const [licenseOpen, setLicenseOpen] = useState(false)
-  const [qrZoom, setQrZoom] = useState<{ src: string; alt: string; caption: string } | null>(null)
 
   // ===== 检查更新 (共享单例 store: 与侧栏左下角 NEW 徽标同源, 手动检查绕过缓存) =====
   const {
@@ -53,7 +50,7 @@ export function SettingsAboutPanel() {
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
             <Scale className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-medium text-foreground">TSP 工作台许可</h3>
+            <h3 className="text-sm font-medium text-foreground">TLQ 工作台许可</h3>
           </div>
           <span className="shrink-0 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
             {PROJECT_LICENSE_NAME}
@@ -193,96 +190,43 @@ export function SettingsAboutPanel() {
         </div>
       </section>
 
-      {/* ===== 打赏 ===== */}
-      <section className="rounded-card border border-accent/25 bg-gradient-to-b from-accent/[0.10] to-transparent p-5">
+      {/* ===== 致谢 ===== */}
+      <section className="rounded-card border border-border bg-surface p-5">
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
-            <Heart className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-medium text-foreground">打赏</h3>
+            <HeartHandshake className="h-4 w-4 text-accent" />
+            <h3 className="text-sm font-medium text-foreground">致谢</h3>
           </div>
           <span className="shrink-0 rounded-full border border-border bg-elevated px-2 py-0.5 text-[10px] text-muted">
-            完全自愿 · 不影响任何功能
+            基于开源项目二次开发
           </span>
         </div>
 
-        <div className="flex items-center justify-between gap-6">
-          {/* 左: 文案与入口 */}
-          <div className="min-w-0 flex-1">
-            <div className="text-sm text-foreground">支持这个项目</div>
-            <div className="mt-0.5 text-[11px] leading-relaxed text-muted">
-              如果 TLQ 对你的交易与研究有帮助, 欢迎请作者喝杯咖啡,
-              扫描右侧微信赞赏码即可支持项目持续维护。
+        <div className="flex items-center justify-between gap-4 py-2">
+          <div className="min-w-0">
+            <div className="text-sm text-foreground">tick-stock-panel 原作者与贡献者</div>
+            <div className="text-[11px] leading-relaxed text-muted">
+              本项目基于开源项目 tick-stock-panel (tsp) 二次开发, 感谢原作者与社区贡献者的开放共享。
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => setQrZoom({
-                  src: '/donate-wechat.jpg',
-                  alt: '微信赞赏码',
-                  caption: '微信扫一扫 · 赞赏支持'
-                })}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                           bg-accent text-white hover:bg-accent/90 transition-colors"
-              >
-                <Heart className="h-3.5 w-3.5" />
-                赞赏支持
-              </button>
-            </div>
-            <p className="mt-3 text-[10px] leading-relaxed text-muted">
-              打赏不会解锁功能。数据源等第三方服务费用由服务提供方确定。
-            </p>
           </div>
-
-          {/* 右: 微信赞赏码 (白底保证二维码可扫) */}
-          <button
-            onClick={() => setQrZoom({
-              src: '/donate-wechat.jpg',
-              alt: '微信赞赏码',
-              caption: '微信扫一扫 · 赞赏支持'
-            })}
-            title="点击放大"
-            className="group shrink-0 rounded-lg border border-border bg-white p-2
-                       hover:border-accent/40 transition-colors"
+          <a
+            href="https://github.com/shy3130/tick-stock-panel"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
+                      bg-elevated text-secondary hover:text-foreground transition-colors"
           >
-            <img
-              src="/donate-wechat.jpg"
-              alt="微信赞赏码"
-              className="h-28 w-28 object-contain"
-            />
-            <div className="mt-1 text-center text-[10px] text-neutral-500 group-hover:text-neutral-700">
-              微信赞赏
-            </div>
-          </button>
+            <ExternalLink className="h-3.5 w-3.5" />
+            原项目仓库
+          </a>
         </div>
+
+        <p className="mt-3 border-t border-border/60 pt-3 text-[10px] leading-relaxed text-muted">
+          项目基于 MIT 协议免费使用; 数据源等第三方服务费用由服务提供方确定。
+        </p>
       </section>
 
       {licenseOpen && <OssLicenseDialog onClose={() => setLicenseOpen(false)} />}
-
-      {/* 收款码大图 — 桌面端无法直接扫码时方便手机扫 */}
-      {qrZoom && (
-        <Modal
-          onClose={() => setQrZoom(null)}
-          ariaLabel={qrZoom.alt}
-          panelClassName="w-auto bg-white rounded-card shadow-xl p-4"
-        >
-          <div className="flex flex-col items-center">
-            <img
-              src={qrZoom.src}
-              alt={qrZoom.alt}
-              className="max-w-[70vw] max-h-[70vh] object-contain"
-            />
-            <div className="mt-2 flex w-full items-center justify-between gap-4">
-              <span className="text-xs text-neutral-600">{qrZoom.caption}</span>
-              <button
-                onClick={() => setQrZoom(null)}
-                className="p-1 rounded hover:bg-neutral-100 transition-colors text-neutral-500"
-                aria-label="关闭"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }

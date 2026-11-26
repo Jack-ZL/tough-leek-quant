@@ -1,8 +1,8 @@
-import {lazy} from 'react'
-import {Flame} from 'lucide-react'
-import type {FrontendExtension} from '@/extensions/types'
+import { lazy } from 'react'
+import { Flame } from 'lucide-react'
+import type { FrontendExtension } from '@/extensions/types'
 
-export const HkHotRank = lazy(() => import('./Page').then(m => ({default: m.HkHotRank})))
+export const HkHotRank = lazy(() => import('./Page').then(m => ({ default: m.HkHotRank })))
 
 /**
  * 港股人气榜 — 东方财富股吧个股人气榜(前 100 名)。
@@ -21,10 +21,10 @@ const extension: FrontendExtension = {
 	id: 'official.hk-hot-rank',
 	apiVersion: 1,
 	routes: [
-		{id: 'hk-hot-rank', path: '/hk-hot-rank', component: HkHotRank},
+		{ id: 'hk-hot-rank', path: '/hk-hot-rank', component: HkHotRank },
 	],
 	navigation: [
-		{id: 'hk-hot-rank', routeId: 'hk-hot-rank', label: '港股人气榜', icon: Flame},
+		{ id: 'hk-hot-rank', routeId: 'hk-hot-rank', label: '港股人气榜', icon: Flame, badge: 'HK' },
 	],
 }
 

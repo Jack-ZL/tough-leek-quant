@@ -1,8 +1,8 @@
-import {lazy} from 'react'
-import {HandCoins} from 'lucide-react'
-import type {FrontendExtension} from '@/extensions/types'
+import { lazy } from 'react'
+import { HandCoins } from 'lucide-react'
+import type { FrontendExtension } from '@/extensions/types'
 
-export const HkDividends = lazy(() => import('./Page').then(m => ({default: m.HkDividends})))
+export const HkDividends = lazy(() => import('./Page').then(m => ({ default: m.HkDividends })))
 
 /**
  * 港股分红日历 (PR7 · 港股独有维度之一)。
@@ -16,10 +16,10 @@ const extension: FrontendExtension = {
 	id: 'official.hk-dividends',
 	apiVersion: 1,
 	routes: [
-		{id: 'hk-dividends', path: '/hk-dividends', component: HkDividends},
+		{ id: 'hk-dividends', path: '/hk-dividends', component: HkDividends },
 	],
 	navigation: [
-		{id: 'hk-dividends', routeId: 'hk-dividends', label: '港股分红', icon: HandCoins},
+		{ id: 'hk-dividends', routeId: 'hk-dividends', label: '港股分红', icon: HandCoins, badge: 'HK' },
 	],
 }
 

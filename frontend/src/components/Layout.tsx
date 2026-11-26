@@ -33,7 +33,7 @@ import { seedHiddenForNewUser } from '@/lib/navOrder'
 import { DEFAULT_MARKET, MARKETS, type Market } from '@/lib/market'
 import { coreIndexes, indexDisplayName, marketContent, type CoreIndex } from '@/lib/marketContent'
 import { indexPageParams, indexSource } from '@/lib/index-market-adapter'
-import { MARKET_SWITCHER_SCOPE_HINT, setMarket, useMarket } from '@/lib/marketStore'
+import { marketSwitcherScopeHint, setMarket, useMarket } from '@/lib/marketStore'
 import { navPageIds, resolveNavLayout, visibleNavLayout, type NavGroup } from '@/lib/navLayout'
 import { getNavigationEntries, type NavigationEntry } from '@/lib/navigation'
 import { NavFolder } from './navigation/NavFolder'
@@ -120,7 +120,11 @@ function MonitorBadge({ active }: { active: boolean }) {
 	const unread = useUnreadAlerts()
 	// 尊重用户设置: 可在菜单设置里关闭数字提示
 	const badgeEnabled = (() => {
-		try { return localStorage.getItem('monitor_badge_enabled') !== '0' } catch { return true }
+		try {
+			return localStorage.getItem('monitor_badge_enabled') !== '0'
+		} catch {
+			return true
+		}
 	})()
 	if (active || unread <= 0 || !badgeEnabled) return null
 	return (
@@ -131,7 +135,11 @@ function MonitorBadge({ active }: { active: boolean }) {
 	)
 }
 
-function SidebarIndexQuotes({ rows, items, market }: { rows: IndexQuote[] | undefined; items: readonly CoreIndex[]; market: Market }) {
+function SidebarIndexQuotes({ rows, items, market }: {
+	rows: IndexQuote[] | undefined;
+	items: readonly CoreIndex[];
+	market: Market
+}) {
 	const { pathname, search } = useLocation()
 	const selected = pathname === '/indices' ? new URLSearchParams(search).get('symbol') || items[0]?.symbol : null
 	if (items.length === 0) return null
@@ -147,14 +155,17 @@ function SidebarIndexQuotes({ rows, items, market }: { rows: IndexQuote[] | unde
 						key={item.symbol}
 						// 🔴 必须带 market: 港股指数点进去若落到缺省 (CN) 指数页, 页面会拿
 						// HSI 去查 A 股指数接口 —— 静默返回空, 比报错难发现 (market.ts 分流铁律)。
-						to={{ pathname: '/indices', search: `?${new URLSearchParams(indexPageParams(market, item.symbol))}` }}
+						to={{
+							pathname: '/indices',
+							search: `?${new URLSearchParams(indexPageParams(market, item.symbol))}`
+						}}
 						aria-current={selected === item.symbol ? 'page' : undefined}
 						className="tsp-sidebar-index"
 						title={`${item.name} ${item.symbol}`}
 					>
 						{/* 🔴 同一预算下港股全名长达 10 字(「恒生香港中资企业指数」≈100px)必然截断,
-						    故此处走 indexDisplayName() 取 shortName; A 股条目没有 shortName,
-						    该调用对 A 股是严格无操作。完整名保留在 title 里。 */}
+						 故此处走 indexDisplayName() 取 shortName; A 股条目没有 shortName,
+						 该调用对 A 股是严格无操作。完整名保留在 title 里。 */}
 						<span className="truncate text-secondary">{indexDisplayName(item)}</span>
 						<span className="truncate text-right font-mono text-[10px] tabular-nums text-foreground">{fmtIndexValue(value)}</span>
 						<span className={cn('truncate text-right font-mono text-[10px] tabular-nums', indexPctClass(pct))}>{fmtIndexPct(pct)}</span>
@@ -183,7 +194,7 @@ function SidebarMarketSwitcher({ railMode }: { railMode: boolean }) {
 						aria-selected={m === market}
 						onClick={() => setMarket(m)}
 						// 图标条放不下说明文案, 退到 tooltip; 展开态直接渲染在下方。
-						title={railMode ? `${marketContent(m).label}｜${MARKET_SWITCHER_SCOPE_HINT}` : undefined}
+						title={railMode ? `${marketContent(m).label}｜${marketSwitcherScopeHint(m)}` : undefined}
 						className={cn(
 							'rounded px-1.5 py-0.5 text-[10px] transition-colors',
 							railMode && 'w-full text-center',
@@ -194,8 +205,8 @@ function SidebarMarketSwitcher({ railMode }: { railMode: boolean }) {
 					</button>
 				))}
 			</div>
-			{!railMode && market !== DEFAULT_MARKET && (
-				<div className="mt-1 text-[9px] leading-snug text-muted">{MARKET_SWITCHER_SCOPE_HINT}</div>
+			{!railMode && (
+				<div className="mt-1 text-[9px] leading-snug text-muted">{marketSwitcherScopeHint(market)}</div>
 			)}
 		</div>
 	)
@@ -219,7 +230,8 @@ function QuickDataEntry({ syncing, justDone }: { syncing: boolean; justDone: boo
 				? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
 				: <HardDriveDownload className="h-3.5 w-3.5 shrink-0" />}
 			<span className="truncate">{syncing ? '同步中' : '数据同步'}</span>
-			{!syncing && justDone && <CheckCircle2 className="tsp-sidebar-success h-3 w-3 shrink-0" aria-label="同步完成" />}
+			{!syncing && justDone &&
+				<CheckCircle2 className="tsp-sidebar-success h-3 w-3 shrink-0" aria-label="同步完成" />}
 		</Link>
 	)
 }
@@ -233,7 +245,11 @@ function capSquareCls(c: { id: string; usable: boolean }) {
 	return c.usable ? 'bg-accent' : c.id === 'daily' ? 'bg-danger' : 'bg-warning/80'
 }
 
-function DataSourceHealthBadge({ matrix, failed, preview }: { matrix: CapabilityMatrix | undefined; failed: boolean; preview: boolean }) {
+function DataSourceHealthBadge({ matrix, failed, preview }: {
+	matrix: CapabilityMatrix | undefined;
+	failed: boolean;
+	preview: boolean
+}) {
 	const caps = matrix?.capabilities ?? []
 	const hasCapabilities = caps.length > 0
 	const usableCount = caps.filter(c => c.usable).length
@@ -241,8 +257,8 @@ function DataSourceHealthBadge({ matrix, failed, preview }: { matrix: Capability
 	// 日K是核心能力 (其他一切派生于它): 挂了用危险色; 一般缺项琥珀; 全可用绿
 	const countCls = !hasCapabilities ? 'tsp-sidebar-note'
 		: down.length === 0 ? 'tsp-sidebar-success'
-		: down.some(c => c.id === 'daily') ? 'tsp-sidebar-rise'
-		: 'tsp-sidebar-warning'
+			: down.some(c => c.id === 'daily') ? 'tsp-sidebar-rise'
+				: 'tsp-sidebar-warning'
 	const count = hasCapabilities ? `${usableCount}/${caps.length}` : failed ? '获取失败' : matrix ? '暂无状态' : '获取中'
 
 	// 预览挂载到缩放层根节点，避开侧栏滚动区的裁剪。
@@ -258,7 +274,10 @@ function DataSourceHealthBadge({ matrix, failed, preview }: { matrix: Capability
 		// rect 是视觉坐标, fixed 定位值是 #root 布局坐标 (缩放层), 需 ÷ scale 换算。
 		if (rect) {
 			const z = getPageScale()
-			setPopPos({ left: Math.min(rect.right / z, window.innerWidth / z - 272), top: (rect.top + rect.height / 2) / z })
+			setPopPos({
+				left: Math.min(rect.right / z, window.innerWidth / z - 272),
+				top: (rect.top + rect.height / 2) / z
+			})
 		}
 	}
 	const closePop = () => {
@@ -297,7 +316,9 @@ function DataSourceHealthBadge({ matrix, failed, preview }: { matrix: Capability
 				onMouseLeave={closePop}
 				onFocus={openPop}
 				onBlur={closePop}
-				onKeyDown={e => { if (e.key === 'Escape') setPopPos(null) }}
+				onKeyDown={e => {
+					if (e.key === 'Escape') setPopPos(null)
+				}}
 				className="tsp-sidebar-status-row"
 			>
 				<DatabaseZap className="tsp-sidebar-note h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -449,7 +470,9 @@ export function Layout() {
 			const value = JSON.parse(localStorage.getItem('tf-nav-groups') || '{}')
 			return value && typeof value === 'object' && !Array.isArray(value)
 				? Object.fromEntries(Object.entries(value).filter((item): item is [string, boolean] => typeof item[1] === 'boolean')) : {}
-		} catch { return {} }
+		} catch {
+			return {}
+		}
 	})
 	const groupEdited = useRef(false)
 	const groupRestored = useRef(false)
@@ -470,7 +493,8 @@ export function Layout() {
 				const restored = Object.fromEntries(Object.entries(value).filter((item): item is [string, boolean] => typeof item[1] === 'boolean'))
 				setGroupOpen(previous => ({ ...restored, ...previous }))
 			}
-		} catch { /* 非法展开偏好不影响页面入口 */ }
+		} catch { /* 非法展开偏好不影响页面入口 */
+		}
 	}, [savedGroupOpen])
 	const isGroupOpen = (group: NavGroup) => groupOpen[group.id] ?? group.id === activeGroupId
 	const toggleGroup = (group: NavGroup) => {
@@ -486,7 +510,9 @@ export function Layout() {
 			if (v === 'expanded' || v === 'rail') return v
 			// 旧版收起偏好仍映射到图标条。
 			return localStorage.getItem('tf-nav-collapsed') === '1' ? 'rail' : 'expanded'
-		} catch { return 'expanded' }
+		} catch {
+			return 'expanded'
+		}
 	})
 	const [drawerOpen, setDrawerOpen] = useState(false)
 	const isDesktop = useIsDesktop()
@@ -496,8 +522,12 @@ export function Layout() {
 	const drawerOpener = useRef<HTMLButtonElement>(null)
 	const drawerCloser = useRef<HTMLButtonElement>(null)
 	// 选中当前页也应关闭抽屉，因此按导航记录而非路径变化收起。
-	useEffect(() => { setDrawerOpen(false) }, [location.key, isDesktop])
-	useEffect(() => { if (!railMode) setRailGroupId(null) }, [railMode])
+	useEffect(() => {
+		setDrawerOpen(false)
+	}, [location.key, isDesktop])
+	useEffect(() => {
+		if (!railMode) setRailGroupId(null)
+	}, [railMode])
 	useEffect(() => {
 		if (!drawerVisible) return
 		drawerCloser.current?.focus({ preventScroll: true })
@@ -783,26 +813,43 @@ export function Layout() {
 	useEffect(() => {
 		if (!prefs || !settingsState || extSeedRef.current) return
 		let seeded = false
-		try { seeded = localStorage.getItem('tf-ext-pages-seed') === '1' } catch { return }
-		if (seeded) { extSeedRef.current = true; return }
+		try {
+			seeded = localStorage.getItem('tf-ext-pages-seed') === '1'
+		} catch {
+			return
+		}
+		if (seeded) {
+			extSeedRef.current = true;
+			return
+		}
 		const next = seedHiddenForNewUser(settingsState.onboarding_completed, prefs.nav_hidden)
 		if (!next) {
 			extSeedRef.current = true
-			try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {}
+			try {
+				localStorage.setItem('tf-ext-pages-seed', '1')
+			} catch {
+			}
 			return
 		}
 		extSeedRef.current = true
 		api.saveNavHidden(next)
-			.then(() => { try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {} })
+			.then(() => {
+				try {
+					localStorage.setItem('tf-ext-pages-seed', '1')
+				} catch {
+				}
+			})
 			.then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
-			.catch(() => { /* 保存失败不写标记, 下次启动重试; 结果集幂等, 重复触发无害 */ })
+			.catch(() => { /* 保存失败不写标记, 下次启动重试; 结果集幂等, 重复触发无害 */
+			})
 	}, [prefs, settingsState, qc])
 
 	const doEnableRealtime = async () => {
 		await toggleQuote.mutateAsync(true)
 		// 仅在交易时段立即获取一次行情
 		if (isTrading) {
-			api.intradayRefresh().catch(() => {})
+			api.intradayRefresh().catch(() => {
+			})
 		}
 	}
 
@@ -879,8 +926,9 @@ export function Layout() {
 									<>
 										<span className="tsp-nav-label">{label}</span>
 										{to === '/monitor' && <MonitorBadge active={isActive} />}
-										{arch === 'ext' && <span className="tsp-nav-tag tsp-sidebar-note font-mono" aria-hidden="true">EXT</span>}
-										{badge && <span className="tsp-nav-tag tsp-sidebar-warning">{badge}</span>}
+										{badge && <span className="tsp-nav-tag tsp-sidebar-badge">{badge}</span>}
+										{arch === 'ext' &&
+											<span className="tsp-nav-tag tsp-sidebar-note font-mono" aria-hidden="true">EXT</span>}
 										{to === '/data' && isDataSyncing && (
 											<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" aria-label="数据同步中" />
 										)}
@@ -964,7 +1012,7 @@ export function Layout() {
 				<div className="tsp-sidebar-header">
 					<div className="tsp-sidebar-brand">
 						{/* 品牌红走 Logo.tsx 的 BRAND 常量(单一权威), 不用 --sidebar-accent:
-						    后者是导航强调色(蓝), 且红在本项目里另有「涨」的语义。 */}
+						 后者是导航强调色(蓝), 且红在本项目里另有「涨」的语义。 */}
 						<Logo size={24} style={{ color: BRAND }} />
 					</div>
 					{!railMode && <span className="tsp-sidebar-name">Tough Leek Quant</span>}
@@ -1030,10 +1078,13 @@ export function Layout() {
 								expanded={isGroupOpen(node)} rail={railMode} popupOpen={railGroupId === node.id}
 								onToggle={() => toggleGroup(node)} onPopupChange={open => setRailGroupId(open ? node.id : null)}
 								indicators={<>
-									{ids.includes('/data') && isDataSyncing && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-label="数据同步中" />}
-									{ids.includes('/monitor') && <MonitorBadge active={location.pathname === '/monitor'} />}
+									{ids.includes('/data') && isDataSyncing &&
+										<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-label="数据同步中" />}
+									{ids.includes('/monitor') &&
+										<MonitorBadge active={location.pathname === '/monitor'} />}
 								</>}>
-								{node.children.length === 0 && <p className="tsp-sidebar-note px-3 py-2 text-xs leading-5">暂无子菜单，请在菜单管理中移入页面。</p>}
+								{node.children.length === 0 &&
+									<p className="tsp-sidebar-note px-3 py-2 text-xs leading-5">暂无子菜单，请在菜单管理中移入页面。</p>}
 								{node.children.map(page => {
 									const entry = navById.get(page.id)
 									return entry ? renderNavItem(entry, true) : null
@@ -1150,7 +1201,7 @@ export function Layout() {
 				</div>
 
 				{/* 市场切换器 — 放在底部工具条上方独立一行: 展开态能容下作用范围说明,
-				    图标条退化为竖排 + tooltip。不进导航区, 避免被误读成「切了整站」。 */}
+				 图标条退化为竖排 + tooltip。不进导航区, 避免被误读成「切了整站」。 */}
 				{sidebarFullyVisible && (
 					<div className="shrink-0 px-2 pb-2">
 						<SidebarMarketSwitcher railMode={railMode} />
@@ -1174,7 +1225,8 @@ export function Layout() {
 						>
 							{({ isActive }) => (
 								<>
-									{isActive && <span className="pointer-events-none absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
+									{isActive &&
+										<span className="pointer-events-none absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
 									<Settings
 										className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')}
 										aria-hidden="true"
@@ -1307,7 +1359,10 @@ export function Layout() {
 						</p>
 						<div className="mt-4 flex justify-end gap-2">
 							<button type="button" onClick={() => setMiningQueuedWarning(null)} className="h-8 rounded-btn border border-border px-3 text-xs text-secondary hover:bg-elevated">取消</button>
-							<button type="button" onClick={() => { setMiningQueuedWarning(null); void doEnableRealtime() }} className="h-8 rounded-btn bg-accent px-3 text-xs font-semibold text-white hover:opacity-90">仍要开启</button>
+							<button type="button" onClick={() => {
+								setMiningQueuedWarning(null);
+								void doEnableRealtime()
+							}} className="h-8 rounded-btn bg-accent px-3 text-xs font-semibold text-white hover:opacity-90">仍要开启</button>
 						</div>
 					</div>
 				</div>

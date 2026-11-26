@@ -89,3 +89,11 @@ export function useMarket(): Market {
  * (CONTRIBUTING §4 fail closed: 宁可明说没做, 不可让人以为做了)。
  */
 export const MARKET_SWITCHER_SCOPE_HINT = '当前仅指数、个股详情与财务概况支持港股，其余页面仍为 A 股'
+
+/** A 股(缺省市场)的作用范围说明: 全链路皆 A 股, 无需「仍为 A 股」的对比措辞。 */
+export const MARKET_SWITCHER_SCOPE_HINT_CN = '当前所有页面均为 A 股数据，来源公开的 API 或平台，不支持港股数据'
+
+/** 切换器提示文案: 按市场查表, 组件不写市场分支。 */
+export function marketSwitcherScopeHint(market: Market): string {
+	return market === DEFAULT_MARKET ? MARKET_SWITCHER_SCOPE_HINT_CN : MARKET_SWITCHER_SCOPE_HINT
+}

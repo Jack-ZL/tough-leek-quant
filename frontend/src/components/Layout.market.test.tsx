@@ -10,7 +10,7 @@ import { api, type Preferences } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { DEFAULT_MARKET } from '@/lib/market'
 import { coreIndexes } from '@/lib/marketContent'
-import { MARKET_SWITCHER_SCOPE_HINT, getMarket, setMarket } from '@/lib/marketStore'
+import { MARKET_SWITCHER_SCOPE_HINT, MARKET_SWITCHER_SCOPE_HINT_CN, getMarket, setMarket } from '@/lib/marketStore'
 
 const layoutMocks = vi.hoisted(() => ({ desktop: true, prefs: {} as Partial<Preferences> }))
 
@@ -133,8 +133,9 @@ describe('缺省 = A 股: 侧栏指数条行为逐字不变', () => {
     expect(href!.getAttribute('href')).not.toContain('market=')
   })
 
-  it('A 股态不渲染作用范围说明 (只在切到港股后才需要提醒)', async () => {
+  it('A 股态渲染 A 股专属作用范围说明 (不复用港股提醒措辞)', async () => {
     await mount()
+    expect(text()).toContain(MARKET_SWITCHER_SCOPE_HINT_CN)
     expect(text()).not.toContain(MARKET_SWITCHER_SCOPE_HINT)
   })
 })

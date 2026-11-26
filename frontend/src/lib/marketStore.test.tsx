@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MARKET, MARKETS } from './market'
 import {
   MARKET_SWITCHER_SCOPE_HINT,
+  MARKET_SWITCHER_SCOPE_HINT_CN,
   getMarket,
+  marketSwitcherScopeHint,
   setMarket,
   subscribeMarket,
   useMarket,
@@ -156,5 +158,12 @@ describe('🔴 作用范围说明文案 (不误导的唯一防线)', () => {
   it('不是空壳措辞 (防止被改成「切换市场」这类无范围文案)', () => {
     expect(MARKET_SWITCHER_SCOPE_HINT.length).toBeGreaterThan(12)
     expect(MARKET_SWITCHER_SCOPE_HINT).not.toBe('切换市场')
+  })
+
+  it('A 股专属文案: helper 按市场返回各自措辞', () => {
+    expect(marketSwitcherScopeHint('CN')).toBe(MARKET_SWITCHER_SCOPE_HINT_CN)
+    expect(marketSwitcherScopeHint('HK')).toBe(MARKET_SWITCHER_SCOPE_HINT)
+    expect(MARKET_SWITCHER_SCOPE_HINT_CN).toContain('A 股')
+    expect(MARKET_SWITCHER_SCOPE_HINT_CN).not.toBe(MARKET_SWITCHER_SCOPE_HINT)
   })
 })

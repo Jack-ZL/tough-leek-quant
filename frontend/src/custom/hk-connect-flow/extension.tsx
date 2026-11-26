@@ -1,8 +1,8 @@
-import {lazy} from 'react'
-import {Wallet} from 'lucide-react'
-import type {FrontendExtension} from '@/extensions/types'
+import { lazy } from 'react'
+import { Wallet } from 'lucide-react'
+import type { FrontendExtension } from '@/extensions/types'
 
-export const HkConnectFlow = lazy(() => import('./Page').then(m => ({default: m.HkConnectFlow})))
+export const HkConnectFlow = lazy(() => import('./Page').then(m => ({ default: m.HkConnectFlow })))
 
 /**
  * 港股通资金流(南向) — 港股独有维度。
@@ -16,10 +16,10 @@ const extension: FrontendExtension = {
 	id: 'official.hk-connect-flow',
 	apiVersion: 1,
 	routes: [
-		{id: 'hk-connect-flow', path: '/hk-connect-flow', component: HkConnectFlow},
+		{ id: 'hk-connect-flow', path: '/hk-connect-flow', component: HkConnectFlow },
 	],
 	navigation: [
-		{id: 'hk-connect-flow', routeId: 'hk-connect-flow', label: '南向资金', icon: Wallet},
+		{ id: 'hk-connect-flow', routeId: 'hk-connect-flow', label: '南向资金', icon: Wallet, badge: 'HK' },
 	],
 }
 
