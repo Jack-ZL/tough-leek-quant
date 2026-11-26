@@ -634,19 +634,34 @@ async def shared_work_busy_handler(request: Request, exc: WorkBusyError) -> JSON
                         headers={"Retry-After": "3"})
 
 
+# CORS 允许来源白名单: 默认为空 (仅同源访问, 防止任意恶意网页跨域读/写本机面板)。
+# 生产/桌面/Docker/Vite 代理均天然同源; 确有独立外部前端需求时通过 CORS_ALLOW_ORIGINS 配置。
+# 🔴 该常量同时被下方认证中间件的 is_cross_origin_request(request, _CORS_ALLOW_ORIGINS)
+# 消费, 不只是 CORS 头的白名单 —— 改动它会一并影响跨站管理请求的判定。
+_CORS_ALLOW_ORIGINS = tuple(
+    origin.strip().rstrip("/")
+    for origin in settings.cors_allow_origins.split(",")
+    if origin.strip() and origin.strip() != "*"
+)
 # CORS: 仅允许本机来源 (前端与 API 同源部署, 跨域只发生在本地开发场景,
 # 如 Vite dev server)。此前的 allow_origins=["*"] 会让用户浏览的任意网页
 # 都能跨域读取 API 响应 — 在未设密码状态下可直接窃取明文密钥。
 # 注: allow_credentials=True 与通配来源不能共存 (浏览器规范), 会话走
 # SameSite=Lax cookie, 跨站请求本就不携带, 关闭 credentials 不影响同源前端。
 _LOCAL_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+# 🔴 本机正则与外部白名单必须合并成**一次**注册: CORSMiddleware 若被 add 两次,
+# 响应里会出现两个 Access-Control-Allow-Origin 头, 浏览器按规范直接判失败。
+# Starlette 的 is_allowed_origin 对 allow_origins 与 allow_origin_regex 取或, 故
+# 白名单为空时行为等价于「只放行本机」, 与原实现一致。
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=list(_CORS_ALLOW_ORIGINS),
     allow_origin_regex=_LOCAL_ORIGIN_RE,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 # ================================================================
@@ -700,12 +715,19 @@ async def auth_middleware(request: Request, call_next):
     # CORS 预检不带凭据, 直接放行 (CORSMiddleware 在外层应答)
     if request.method == "OPTIONS":
         return await call_next(request)
+    # 防跨站写请求 (CSRF / 恶意网页直打本机面板): 非 Bearer 写操作拒绝跨站 Origin / Sec-Fetch-Site
+    authz = request.headers.get("authorization", "")
+    if (
+        request.method in _MUTATING_METHODS
+        and not authz.startswith("Bearer ")
+        and auth_api.is_cross_origin_request(request, _CORS_ALLOW_ORIGINS)
+    ):
+        return JSONResponse(status_code=403, content={"detail": "拒绝跨站写请求"})
     # 白名单放行(设密码/登录/探活本身不拦)
     if path.startswith(_AUTH_WHITELIST_PREFIX) or path in _AUTH_WHITELIST_EXACT:
         return await call_next(request)
 
     # ── API Token 通道 (外部调用方; 与密码会话并行, 见 open-platform-plan §4) ──
-    authz = request.headers.get("authorization", "")
     if authz.startswith("Bearer "):
         from app.services import api_gateway
         # 网络门禁先行: 默认仅本机/内网可调 Token 通道 (API_TOKEN_LOCAL_ONLY=0 放开);
@@ -751,6 +773,11 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     # 未登录: 401(前端跳登录页)
     return JSONResponse(status_code=401, content={"detail": "未登录或会话已过期"})
+
+
+# 上游此处原有 `if _CORS_ALLOW_ORIGINS: app.add_middleware(CORSMiddleware, ...)`。
+# 已合并到文件上方的单次注册 (allow_origins + allow_origin_regex 一起给),
+# 保留会导致中间件重复注册与重复 CORS 响应头。
 
 
 # 路由

@@ -5687,6 +5687,14 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ ...(days ? { days } : {}), ...(extend ? { extend: true } : {}) }),
 		}),
+	// 按日期范围补分钟 K (上游 v0.4.2 新增)。与 syncMinute 的「最近 N 天」互补:
+	// 复用同一端点, 但传 start_date/end_date; quiet 由调用方 (MinuteSyncConfig) 自行汇总提示。
+	syncMinuteRange: (startDate: string, endDate: string) =>
+		request<{ status: string; job_id: string }>('/api/kline/sync_minute', {
+			method: 'POST',
+			body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+			quiet: true,
+		}),
 	syncMinuteSingle: (symbol: string, days?: number) =>
 		request<{ status: string; symbol: string; rows: number }>('/api/kline/sync_minute_single', {
 			method: 'POST',
