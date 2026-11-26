@@ -153,7 +153,7 @@ export function SettingsAboutPanel() {
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                         bg-elevated text-secondary hover:text-foreground transition-colors"
+                        bg-elevated text-secondary hover:text-foreground transition-colors"
             >
               <ExternalLink className="h-3.5 w-3.5" />
               官网
@@ -164,7 +164,7 @@ export function SettingsAboutPanel() {
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                           bg-accent text-white hover:bg-accent/90 transition-colors"
+                          bg-accent text-white hover:bg-accent/90 transition-colors"
               >
                 <Download className="h-3.5 w-3.5" />
                 前往下载 v{updateInfo.latest.replace(/^v/, '')}
@@ -174,8 +174,8 @@ export function SettingsAboutPanel() {
               onClick={checkUpdate}
               disabled={updateState === 'checking'}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs
-                         bg-elevated text-secondary hover:text-foreground transition-colors
-                         disabled:opacity-50"
+                        bg-elevated text-secondary hover:text-foreground transition-colors
+                        disabled:opacity-50"
             >
               {updateState === 'checking' ? (
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
