@@ -24,8 +24,10 @@ ALIASES.update(
         "V": "volume",
         "VOL": "volume",
         "MA": "ts_mean",
-        "EMA": "ts_ema",
-        "SMA": "ts_sma",
+        # EMA/SMA 落到 *_warmup: 图表沿用「凑满 n 根才出值」的既有口径 (旧配置不变);
+        # 裸名 ts_ema/ts_sma 是因子 DSL 的通达信口径, 两者语义不同, 见 dsl._CHART_OPERATORS。
+        "EMA": "ts_ema_warmup",
+        "SMA": "ts_sma_warmup",
         "EMA_FIRST": "ts_ema_first",
         "SMA_FIRST": "ts_sma_first",
         "STD": "ts_std",

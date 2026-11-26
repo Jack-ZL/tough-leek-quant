@@ -1,28 +1,8 @@
-<<<<<<< ours (dev)
-// 原创 logo:方括号 [ ] 包裹一根带 wick 的 K 线
-//
-// 概念:
-//   - 外层 brackets:终端 / 代码 / 引用边界 — 赛博 + quant 气质
-//   - 中央 wick+body:一根标准 K 线 — 直接的金融指代
-//   - body 偏上 + 下影长:bullish 站稳感 (上影短 / 下影长)
-//
-// 用 currentColor,继承父级 color 设定,方便切换品牌色。
+// 双引标的中央留白形成 K 线。界面沿用调用方的颜色和尺寸。
 
 // 品牌色 — 只用于 logo / brand 区域,不影响功能语义色 (= CSS --bull)
 export const BRAND = '#F04438'
 
-||||||| normalised base
-// 原创 logo:方括号 [ ] 包裹一根带 wick 的 K 线
-//
-// 概念:
-//   - 外层 brackets:终端 / 代码 / 引用边界 — 赛博 + quant 气质
-//   - 中央 wick+body:一根标准 K 线 — 直接的金融指代
-//   - body 偏上 + 下影长:bullish 站稳感 (上影短 / 下影长)
-//
-// 用 currentColor,继承父级 color 设定,方便切换品牌色。
-=======
-// 双引标的中央留白形成 K 线。界面沿用调用方的颜色和尺寸。
->>>>>>> theirs (main)
 interface LogoProps {
 	className?: string
 	size?: number

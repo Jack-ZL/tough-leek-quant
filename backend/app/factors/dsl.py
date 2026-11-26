@@ -79,9 +79,17 @@ TS_OPERATORS = frozenset({
     "ts_ema", "ts_sma", "ts_barslast", "ts_barssince",
 })
 CROSS_OPERATORS = frozenset({"rank", "zscore", "winsorize"})
+# 图表指标专用算子 (仅在 chart=True, 即显式传入 input_columns 时可用)。
+#
+# 🔴 命名说明: 上游图表层最初把「凑满 n 根才出值」的那档叫 ts_ema/ts_sma, 与因子
+# DSL 里既有的通达信口径 ts_ema/ts_sma (见 OPERATORS, 从首个有效值起递推) 撞名。
+# 两者语义确实不同, 不能合并也不能互相覆盖 —— 因子 DSL 的名字是**已落库的公式契约**
+# (用户存的因子定义里就写着 ts_ema(...)), 而图表层对用户暴露的是 EMA/SMA/EMA_FIRST
+# 这些别名 (见 app/indicators/chart.py 的 ALIASES), ts_* 只是内部落点。
+# 故把图表侧这一档改名为 *_warmup, 图表的公开写法与计算口径都不变。
 _CHART_OPERATORS = {
-    "ts_ema": (1, ("n",)),
-    "ts_sma": (1, ("n", "m")),
+    "ts_ema_warmup": (1, ("n",)),
+    "ts_sma_warmup": (1, ("n", "m")),
     "ts_ema_first": (1, ("n",)),
     "ts_sma_first": (1, ("n", "m")),
 }
@@ -391,7 +399,10 @@ def _check_call(node: dict, errors: list[DslError], *, chart: bool) -> dict[str,
                 errors.append(DslError(
                     "E004", f"窗口 n 必须在 [{WINDOW_MIN},{WINDOW_MAX}] 内", offset=node["offset"], detail={"n": n_int},
                 ))
-    if "m" in constants and not (0 < constants["m"] <= constants.get("n", 0)):
+    # 图表侧 SMA(*_warmup / *_first) 的权重校验。因子 DSL 的 ts_sma 走下面更严的通达信
+    # 口径(要求 m 是整数且 1 ≤ m ≤ n), 这里刻意跳过: 否则同一处会报两条 E004, 且较松
+    # 的这条排在 errors[0], 盖掉调用方(与既有测试)期望的错误文案。
+    if "m" in constants and name != "ts_sma" and not (0 < constants["m"] <= constants.get("n", 0)):
         errors.append(DslError("E004", "SMA 的权重 m 必须满足 0 < m ≤ n", offset=node["offset"]))
     if "q" in constants and not (0.0 < constants["q"] < 1.0):
         errors.append(DslError("E004", "ts_quantile 的 q 必须在 (0,1) 开区间内", offset=node["offset"], detail={"q": constants["q"]}))
@@ -477,9 +488,11 @@ def _rolling_apply(inner: pl.Expr, op: str, n: int, extra: dict[str, float]) -> 
     """对无 over 的内层序列应用窗口逻辑; 返回值同样不挂 over。"""
     if op == "ts_mean":
         return inner.rolling_mean(n, min_samples=n)
-    if op == "ts_ema":
+    # 图表专用: 凑满 n 根才出值 (min_samples=n)。因子 DSL 的 ts_ema/ts_sma 是通达信
+    # 口径(从首个有效值起递推), 在下方单独实现 —— 两者不可互换, 见 _CHART_OPERATORS。
+    if op == "ts_ema_warmup":
         return inner.ewm_mean(span=n, adjust=False, min_samples=n)
-    if op == "ts_sma":
+    if op == "ts_sma_warmup":
         return inner.ewm_mean(alpha=extra["m"] / n, adjust=False, min_samples=n)
     if op == "ts_ema_first":
         return inner.ewm_mean(span=n, adjust=False)
@@ -822,9 +835,9 @@ def compile_formula(
         if node["kind"] == "call" and node["value"] in _ALL_TS_OPERATORS:
             n = constants_by_call.get(id(node), {}).get("n", 0)
             if 0 <= n <= max(WINDOW_MAX, DELAY_MAX):
-                if node["value"] in {"ts_ema", "ts_ema_first"}:
+                if node["value"] in {"ts_ema", "ts_ema_first", "ts_ema_warmup"}:
                     n *= 10
-                elif node["value"] in {"ts_sma", "ts_sma_first"}:
+                elif node["value"] in {"ts_sma", "ts_sma_first", "ts_sma_warmup"}:
                     n *= 20 / max(constants_by_call.get(id(node), {}).get("m", 1), 1e-12)
                 bars += int(n)
         for child in node["children"]:

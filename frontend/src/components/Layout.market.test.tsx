@@ -41,7 +41,17 @@ vi.mock('@/lib/useQuoteStream', () => ({
 }))
 vi.mock('@/lib/updateCheck', () => ({ useUpdateCheck: () => ({ status: 'latest' }) }))
 vi.mock('@/lib/useMediaQuery', () => ({ useIsDesktop: () => layoutMocks.desktop }))
-vi.mock('@/extensions/registry', () => ({ getFrontendExtensionNavigation: () => [] }))
+// 🔴 /regime 已被上游迁进 custom/market-regime 扩展 (11 个页面从内置侧栏挪到 custom/),
+// 内置 CORE_NAVIGATION 只剩 7 项。本用例的契约是「核心页不按市场过滤, 全部可达」, 所以
+// mock 要把这条扩展导航补回来 —— 返回 [] 断言的是「扩展全未注册」的人造场景, 与真实
+// 启动状态不符。字段形状见 lib/navigation.ts 的 getNavigationEntries。
+vi.mock('@/extensions/registry', () => ({
+  getFrontendExtensionNavigation: () => [{
+    id: 'regime', routeId: 'regime', label: '市场环境', icon: () => null,
+    route: { id: 'regime', path: '/regime', component: () => null },
+    extensionId: 'official.market-regime',
+  }],
+}))
 vi.mock('@/extensions/ExtensionSlot', () => ({ ExtensionSlot: () => null }))
 vi.mock('@/components/Toast', () => ({ ToastContainer: () => null, toast: vi.fn() }))
 vi.mock('@/components/AlertToast', () => ({ AlertToastContainer: () => null }))

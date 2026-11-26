@@ -394,7 +394,14 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 	const canReuseSavedKey = !!s?.has_ai_key && !!activeOrigin && activeOrigin === apiOrigin(s.ai_base_url)
 	const needsNewKey = !!s?.has_ai_key && !canReuseSavedKey
 	const hasApiConfig = !!baseUrl.trim() && !!model.trim()
-	const canSave = isCodexProvider || (hasApiConfig && (!!draftApiKey || (!!s && !needsNewKey)))
+	// 「仅入库」= 新建态且档案库非空 ⇒ 走 saveAiProfile(apply=false), 生效配置一个字段都不碰。
+	// 首启 (档案库为空) 仍走 saveAiSettings, 由后端 new_profile 追加并激活。
+	// 刻意提前到 canSave 之前声明: 上游给 canSave 加了「必须有可用 Key」的守卫, 目的是别存出
+	// 一份连不上的**生效**配置; 但仅入库的档案允许缺 Key 后补 (profilePayload 的 api_key 本就
+	// 是可选的), 所以守卫只约束真正会生效的那条路径, 两条口径不同不是疏漏。
+	const libraryOnlySave = !editingProfileId && profiles.length > 0
+	const canSave = isCodexProvider
+		|| (hasApiConfig && (libraryOnlySave || !!draftApiKey || (!!s && !needsNewKey)))
 	const canTest = isCodexProvider || (hasApiConfig && (!!draftApiKey || canReuseSavedKey))
 
 	// 表单 ← settings 快照的单向同步 (初次加载与「从文件重新加载」共用)
@@ -629,9 +636,8 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
 		new_profile: !editingProfileId,
 	})
 
-	// 「新建」且档案库非空: 保存只入库不生效 — 保存按钮不能把在用的模型顶掉;
-	// 首启 (档案库为空) 仍走 saveAiSettings, 由后端 new_profile 追加并激活。
-	const libraryOnlySave = !editingProfileId && profiles.length > 0
+	// libraryOnlySave 已在上方 canSave 处声明 —— 保存守卫要按「仅入库 / 真生效」分口径。
+	// 语义: 「新建」且档案库非空 ⇒ 保存只入库不生效, 保存按钮不能把在用的模型顶掉。
 
 	const profilePayload = () => ({
 		name: profileName.trim(),

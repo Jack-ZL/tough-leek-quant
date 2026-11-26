@@ -149,7 +149,10 @@ const HK_SOURCE: IndexMarketSource = {
 	content: marketContent('HK'),
 	pinned: HK_PINNED,
 	supportsMinute: false,
-	headerTagline: '核心指数行情 · 日K与延时快照',
+	// 🔴 静态标语只描述「有哪些数据」, 不能出现「延时快照」四个字: 那是 quoteSourceLabel
+	// 专用于 source==='realtime' 的**状态**措辞, 快照降级时必须消失 (契约见
+	// Indices.market.test.tsx「快照降级时如实标注, 不伪装成实时」)。故这里写「延时行情」。
+	headerTagline: '核心指数行情 · 日K与延时行情',
 	headerHint: '港股指数使用独立 kline_hk_index_* parquet，不与 A 股混算；行情为交易所授权的延时数据。',
 	minuteUnavailableHint: '港股指数无分时数据源（腾讯/新浪仅提供日K）',
 	dailyEmptyHint: '港股指数日K未就绪。点右上角「同步港股指数日K」拉取；若已同步仍为空，说明该指数不在腾讯日K覆盖范围内（27 只白名单中仅 14 只有日K），实时快照仍可用。',

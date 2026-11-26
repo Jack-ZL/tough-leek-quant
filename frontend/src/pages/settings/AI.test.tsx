@@ -49,6 +49,34 @@ async function click(label: string) {
   await act(async () => button!.click())
 }
 
+// 上游用「预设卡片网格 + aria-pressed」渲染服务商选择器; 本仓库已改成下拉 (触发按钮
+// aria-haspopup="listbox", 选项 role="option" + aria-selected), 见 AI.tsx「服务商下拉」。
+// 下面两个 helper 按下拉的可达性语义取同一组预设, 让上游用例的断言意图 (预设顺序、
+// 优惠徽标、选中态、切换后的表单联动) 原样保留。
+async function openProviderList() {
+  const trigger = host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')
+  expect(trigger).toBeTruthy()
+  await act(async () => trigger!.click())
+}
+
+function providerOptions() {
+  return [...host.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+}
+
+// 本仓库挂载时还会拉模型档案库 (/api/settings/ai/profiles) 与密钥健康
+// (/api/settings/ai/key-health) —— 上游没有这两个端点, 会让「fetch 被调用 N 次」的
+// 计数失真。这里只统计用例真正要断言的两个端点: 生效配置保存与连通性测试。
+function aiCalls(fetcher: { mock: { calls: unknown[][] } }) {
+  return fetcher.mock.calls.filter(([url]) => {
+    const u = String(url)
+    return u === '/api/settings/ai' || u === '/api/settings/ai/test'
+  })
+}
+
+function bodyOf(init: unknown) {
+  return JSON.parse((init as RequestInit).body as string)
+}
+
 it('both test buttons show the complete routing error and clear it after a successful retry', async () => {
   // dev 侧面板挂载时还会拉档案/密钥健康等接口 — 按 URL 路由, 只给 ai/test 排队列响应
   const testResponses = [
@@ -97,27 +125,33 @@ it('edits a saved OpenAI configuration under Custom without an OpenAI preset car
     has_ai_key: true,
     ai_configured: true,
   }
-  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true })))
+  // 每次调用都要给一个新的 Response: body 只能读一次, 而挂载时的档案库/密钥健康也会
+  // 打到同一个 stub 上。
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ ok: true })))
   vi.stubGlobal('fetch', fetcher)
   await setup()
 
-  const cards = [...host.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')]
-  expect(cards.some(card => card.textContent?.startsWith('OpenAI'))).toBe(false)
-  const [custom, modelflare] = cards
+  await openProviderList()
+  const options = providerOptions()
+  expect(options.some(option => option.textContent?.startsWith('OpenAI'))).toBe(false)
+  const [custom, modelflare] = options
   expect(custom.textContent).toContain('自定义')
-  expect(custom.getAttribute('aria-pressed')).toBe('true')
+  expect(custom.getAttribute('aria-selected')).toBe('true')
   await act(async () => modelflare.click())
-  await act(async () => custom.click())
+  // 选中即收起下拉, 选项节点随之卸载 ⇒ 换回「自定义」要重新展开并重新取引用。
+  await openProviderList()
+  await act(async () => providerOptions()[0].click())
 
   await click('保存配置')
-  expect(fetcher).toHaveBeenCalledTimes(1)
-  const [url, init] = fetcher.mock.calls[0]
+  const saves = aiCalls(fetcher)
+  expect(saves).toHaveLength(1)
+  const [url, init] = saves[0]
   expect(url).toBe('/api/settings/ai')
-  expect(JSON.parse(init.body)).toMatchObject({
+  expect(bodyOf(init)).toMatchObject({
     provider: 'openai', protocol: 'responses', base_url: 'https://api.openai.com/v1',
     model: 'saved-openai-model', reasoning_effort: 'xhigh',
   })
-  expect(JSON.parse(init.body)).not.toHaveProperty('api_key')
+  expect(bodyOf(init)).not.toHaveProperty('api_key')
 })
 
 it('places Modelflare after Custom and tests its Chat Completions preset with its own key', async () => {
@@ -129,16 +163,17 @@ it('places Modelflare after Custom and tests its Chat Completions preset with it
     has_ai_key: true,
     ai_configured: true,
   }
-  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, model: 'gpt-5.6-sol' })))
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ ok: true, model: 'gpt-5.6-sol' })))
   vi.stubGlobal('fetch', fetcher)
   await setup()
 
-  const [custom, modelflare, runningHub] = host.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')
+  await openProviderList()
+  const [custom, modelflare, runningHub] = providerOptions()
   expect(custom.textContent).toContain('自定义')
   expect(modelflare.textContent).toContain('Modelflare')
   expect(modelflare.textContent).toContain('优惠')
   expect(runningHub.textContent).toContain('RunningHub')
-  expect(runningHub.getAttribute('aria-pressed')).toBe('true')
+  expect(runningHub.getAttribute('aria-selected')).toBe('true')
   await act(async () => modelflare.click())
 
   expect(host.textContent).toContain('US$20 解锁 GPT 0.015x')
@@ -155,7 +190,8 @@ it('places Modelflare after Custom and tests its Chat Completions preset with it
   await click('测试')
   await click('测试连接')
   await click('保存配置')
-  expect(fetcher).not.toHaveBeenCalled()
+  // 未填 Key 时测试按钮不可用、保存也被守卫拦住 ⇒ 这两个端点一次都不该打到。
+  expect(aiCalls(fetcher)).toHaveLength(0)
 
   const keyInput = host.querySelector<HTMLInputElement>('input[type="password"]')!
   await act(async () => {
@@ -164,18 +200,21 @@ it('places Modelflare after Custom and tests its Chat Completions preset with it
   })
   await click('测试连接')
 
-  expect(fetcher).toHaveBeenCalledTimes(1)
-  const [url, init] = fetcher.mock.calls[0]
+  const tested = aiCalls(fetcher)
+  expect(tested).toHaveLength(1)
+  const [url, init] = tested[0]
   expect(url).toBe('/api/settings/ai/test')
-  expect(JSON.parse(init.body)).toEqual({
+  expect(bodyOf(init)).toEqual({
     provider: 'openai_compat', protocol: 'chat_completions', base_url: 'https://modelflare.dev/v1',
     model: 'gpt-5.6-sol', api_key: 'test-modelflare-key',
   })
   expect(host.querySelector('[role=status]')?.textContent).toContain('连通成功')
 
-  await act(async () => runningHub.click())
+  // runningHub 节点已随下拉收起卸载, 重新展开后按同一序号 (第 3 个预设) 取回。
+  await openProviderList()
+  await act(async () => providerOptions()[2].click())
   expect(host.querySelector('[aria-label="获取模型列表"]')).not.toBeNull()
   expect(keyInput.value).toBe('')
   expect([...host.querySelectorAll('button')].find(button => button.textContent === '测试连接')?.disabled).toBe(false)
-  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(aiCalls(fetcher)).toHaveLength(1)
 })

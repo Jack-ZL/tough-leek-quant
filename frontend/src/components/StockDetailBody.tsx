@@ -26,6 +26,12 @@ export interface StockDetailProps {
 	dateRange?: { start: string; end: string }
 	/** 详情顶栏已有名称时可隐藏主体内重复的身份信息。 */
 	showQuoteIdentity?: boolean
+	/** 信息条自定义入口: 宿主偏好加载完成前禁用, 并共用宿主的配置弹窗。 */
+	showInfoBarCustomizer?: boolean
+	onCustomizeInfoBar?: () => void
+	customIndicators?: boolean
+	/** 初始可见蜡烛根数 (默认 60); 'all' = 初始适配显示全部数据。 */
+	visibleBars?: number | 'all'
 	showIntraday?: boolean
 	priceLines?: ChartPriceLine[]
 	onPriceDoubleClick?: (price: number, currentPrice: number) => void

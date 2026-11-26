@@ -147,7 +147,11 @@ it.each(['expanded', 'rail', 'mobile'])('keeps settings in the fixed footer with
   const settings = host.querySelectorAll<HTMLAnchorElement>('aside a[href="/settings"]')
   expect(settings).toHaveLength(1)
   expect(host.querySelector('aside nav')?.contains(settings[0])).toBe(false)
-  const theme = settings[0].closest('.tsp-sidebar-footer')?.querySelector('button[title="切换到亮色模式"]')
+  // 主题按钮的 title 随生效主题在「切换到亮色/暗色模式」之间变化。本仓库的主题模型是
+  // auto + 24h 手动覆盖 (上游是「非 light 即 dark」, 默认暗), jsdom 下 matchMedia 恒
+  // false ⇒ 生效为 light, 上游写死的暗色态文案在这里取不到。按前缀匹配, 只锁原意:
+  // 主题按钮位于固定 footer 内、且排在设置入口之前。
+  const theme = settings[0].closest('.tsp-sidebar-footer')?.querySelector('button[title^="切换到"]')
   expect(theme?.compareDocumentPosition(settings[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   if (mode === 'rail') expect(settings[0].title).toBe('设置')
   else {

@@ -59,7 +59,16 @@ def test_parameterized_mean_has_numeric_null_warmup_and_no_future():
 def test_chart_operators_are_available_only_with_chart_inputs():
     from app.factors.dsl import compile_formula
 
-    assert [error.code for error in compile_formula("ts_ema(close, 3)").errors] == ["E002"]
+    # 图表专用算子在普通因子 DSL 路径下必须不可用 (E002 未知函数)。
+    # ts_ema/ts_sma 不在此列 —— 它们是因子 DSL 既有的通达信口径算子; 图表侧对应的是
+    # ts_ema_warmup / ts_ema_first, 命名缘由见 dsl._CHART_OPERATORS。
+    for formula in (
+        "ts_ema_warmup(close, 3)",
+        "ts_ema_first(close, 3)",
+        "ts_sma_warmup(close, 3, 1)",
+        "ts_sma_first(close, 3, 1)",
+    ):
+        assert [error.code for error in compile_formula(formula).errors] == ["E002"], formula
     indicator = definition("EMA(C,N)")
     values = evaluate_frame(indicator, frame(), "daily")["outputs"][0]["values"]
     assert values[2] == pytest.approx(2.25)

@@ -56,7 +56,7 @@ import {
 	Download,
 	HardDriveDownload,
 } from 'lucide-react'
-import { Logo } from './Logo'
+import { BRAND, Logo } from './Logo'
 import { MarketClock } from './MarketClock'
 import { api, type CapabilityMatrix, type IndexQuote, type SettingsState } from '@/lib/api'
 import { cn } from '@/lib/cn'
@@ -70,6 +70,9 @@ import { toggleTheme, useTheme } from '@/lib/theme'
 import { setCurrentTotal as setAlertTotal, useUnreadAlerts } from '@/lib/monitorBadge'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 import './navigation/sidebar.css'
+
+// 品牌色统一由 Logo.tsx 的 BRAND 常量提供 (侧栏 logo 见下方 <Logo style={{ color: BRAND }}>);
+// 导航强调色另走 CSS 的 --sidebar-accent, 两者刻意不同色, 理由见 navigation/sidebar.css。
 
 // 核心四只指数 — 与后端 index_const.py 单一权威对齐 (前端展示层固定清单)
 // 清单本体住在 lib/marketContent.ts(市场差异的唯一居所)。
@@ -735,8 +738,8 @@ export function Layout() {
 					: realtimeEnabled
 						? (isTrading ? '正在连接' : '等待交易时段')
 						: '已关闭'
-	// 陈旧态与暂停态共用 tsp-sidebar-warning: theirs 的语义类只有一档警告色,
-	// 区分靠上面的文案(「数据为 N 分钟前」)与 title 提示, 不再靠透明度差。
+	// 陈旧态与暂停态共用 tsp-sidebar-warning: 侧栏语义类只有一档警告色,
+	// 两者靠文案(「数据为 N 分钟前」)与 title 提示区分, 不再靠透明度差。
 	const realtimeStatusClass = quoteDataStale
 		? 'tsp-sidebar-warning'
 		: realtimeActive
@@ -960,7 +963,9 @@ export function Layout() {
 			>
 				<div className="tsp-sidebar-header">
 					<div className="tsp-sidebar-brand">
-						<Logo size={24} />
+						{/* 品牌红走 Logo.tsx 的 BRAND 常量(单一权威), 不用 --sidebar-accent:
+						    后者是导航强调色(蓝), 且红在本项目里另有「涨」的语义。 */}
+						<Logo size={24} style={{ color: BRAND }} />
 					</div>
 					{!railMode && <span className="tsp-sidebar-name">Tough Leek Quant</span>}
 					{isDesktop ? (
