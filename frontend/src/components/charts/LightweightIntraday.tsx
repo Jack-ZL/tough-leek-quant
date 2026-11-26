@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import type { MinuteKlineRow, MinuteKlineSession, PriceLimitInfo } from '@/lib/api'
 import type { ChartPriceLine } from '@/lib/chart-types'
 import { buildIntradayModel, CHART_COLORS as C, minuteTime, type PlotSeries } from '@/lib/lightweight-model'
@@ -9,8 +9,15 @@ import { CHART_LAYOUT, plotPaneHeights } from '@/lib/chart-layout'
 import { formatAxisPercent, intradayScale } from '@/lib/intraday-scale'
 import { FinancialPlot } from './FinancialPlot'
 import type { AnnotationData } from './ChartAnnotations'
+import { indicatorPaneDrawings, indicatorPlotSeries, indicatorReadouts, type IndicatorEvaluation } from '@/lib/custom-chart-indicators'
 
-interface Props {
+export interface LightweightIntradayProps {
+	alignedLayout?: boolean
+	mainTimeAxis?: boolean
+	indicatorControls?: ReactNode
+	chartNotice?: ReactNode
+	indicatorRevision?: string | number
+	customIndicatorValues?: IndicatorEvaluation
 	symbol: string
 	assetType?: 'stock' | 'etf' | 'index'
 	data?: MinuteKlineRow[]
@@ -22,6 +29,7 @@ interface Props {
 	priceLimit?: PriceLimitInfo
 	showLimitLines?: boolean
 	showAvgLine?: boolean
+	showVolume?: boolean
 	currentPrice?: number
 	priceLines?: ChartPriceLine[]
 	onPriceHover?: (price: number | null) => void
@@ -39,12 +47,17 @@ export function LightweightIntraday({
 	height = 420,
 	showLimitLines = true,
 	showAvgLine = true,
+	showVolume = true,
 	priceLimit,
 	currentPrice,
 	priceLines,
 	onPriceHover,
-	onPriceDoubleClick
-}: Props) {
+	onPriceDoubleClick,
+	customIndicatorValues,
+	alignedLayout = false,
+	mainTimeAxis = false,
+	indicatorControls
+}: LightweightIntradayProps) {
 	const [yMode, setYMode] = useState<'adaptive' | 'limit'>('adaptive')
 	const precision = pricePrecision(assetType)
 	const fmt = (v: number | null | undefined) => v != null && Number.isFinite(v) ? v.toFixed(precision) : '—'
@@ -58,6 +71,27 @@ export function LightweightIntraday({
 	const [hover, setHover] = useState<{ scope: string; time: string } | null>(null)
 	const hovered = hover?.scope === scope ? model.points.get(hover.time) : null
 	const point = hovered ?? model.latest
+	const firstCustomPane = showVolume ? 2 : 1
+	const customSubs = useMemo(() => customIndicatorValues?.results.filter(r => r.pane === 'sub') ?? [], [customIndicatorValues])
+	const volumePanes = useMemo(() => new Map(customSubs.flatMap((indicator, index) => (
+		(indicator.id === 'builtin_volume' || indicator.id === 'preset_volume') && indicator.format === 'volume'
+			&& indicator.outputs.some(output => output.style === 'volume' && !output.hidden && !output.nodraw)
+			? [[firstCustomPane + index, indicator.id] as const] : []
+	))), [customSubs, firstCustomPane])
+	const indicatorSeries = useMemo(() => indicatorPlotSeries(customIndicatorValues, 'minute', firstCustomPane),
+		[customIndicatorValues, firstCustomPane])
+	const customSeries = useMemo(() => {
+		if (!volumePanes.size) return indicatorSeries
+		const volume = model.series.find(item => item.id === 'volume')
+		if (!volume) return indicatorSeries
+		// 分时量柱按上一分钟收盘价着色，共用分时的午间衔接与数据缺口处理。
+		return [
+			...indicatorSeries.filter(item => !volumePanes.has(item.pane)),
+			...Array.from(volumePanes, ([pane, id]) => ({ ...volume, id: `custom:${id}:minute-volume`, type: 'Volume' as const, pane })),
+		].sort((a, b) => a.pane - b.pane)
+	}, [indicatorSeries, model.series, volumePanes])
+	const customTime = point?.row.datetime.slice(0, 19).replace('T', ' ')
+	const customMain = indicatorReadouts(customIndicatorValues, customTime, 'main')
 	const sourceTimes = hovered || supplied ? point?.sourceTimes : undefined
 	const summary = useMemo(() => !supplied && data ? summarizeMinutes(data) : null, [data, supplied])
 	const daily = !supplied && dailySummary?.date === date ? dailySummary : null
@@ -73,16 +107,17 @@ export function LightweightIntraday({
 		const values = [
 			...model.series.filter(s => s.type === 'Area').flatMap(s => s.data.flatMap(p => 'value' in p ? [p.value] : [])),
 			...[...model.points.values()].flatMap(p => [p.row.low, p.row.high]),
+			...(mode === 'adaptive' ? customSeries.filter(s => s.pane === 0).flatMap(s => s.data.flatMap(p => 'value' in p ? [p.value] : [])) : []),
 			...(mode === 'limit' && limits ? [limits.limitDown, limits.limitUp] : []),
 		]
 		return intradayScale(values, reference, precision, limits ? {
 			min: limits.limitDown,
 			max: limits.limitUp
 		} : undefined, mode)
-	}, [reference, precision, mode, limits, model.points, model.series])
+	}, [reference, precision, mode, limits, model.points, model.series, customSeries])
 	const tickColor = (percent?: number) => percent == null || Math.abs(percent) < 1e-8 ? undefined : percent > 0 ? C.up : C.down
 	const plotSeries = useMemo<PlotSeries[]>(() => {
-		const result = model.series.map(s => s.pane === 0 ? {
+		const result = [...model.series.filter(s => showVolume || s.pane === 0), ...customSeries].map(s => s.pane === 0 ? {
 			...s, range: scale?.range,
 			...(s.type === 'Area' && reference ? { type: 'Baseline' as const, baseValue: reference } : {}),
 		} : s)
@@ -105,9 +140,11 @@ export function LightweightIntraday({
 			],
 		})
 		return result
-	}, [model.series, scale, reference, limits])
+	}, [model.series, scale, reference, limits, customSeries, showVolume])
 	const plotHeight = Math.max(250, height - CHART_LAYOUT.toolbar - CHART_LAYOUT.readout)
-	const paneHeights = useMemo(() => plotPaneHeights(plotHeight, 1), [plotHeight])
+	const paneHeights = useMemo(() => plotPaneHeights(plotHeight, Number(showVolume) + customSubs.length), [plotHeight, customSubs.length, showVolume])
+	const paneDrawings = useMemo(() => indicatorPaneDrawings(customIndicatorValues, 'minute', firstCustomPane)
+		.map((drawings, pane) => volumePanes.has(pane) ? [] : drawings), [customIndicatorValues, firstCustomPane, volumePanes])
 	const annotations = useMemo(() => {
 		// A daily holding range selects which minute session may show its fill
 		// prices. Within that session the lines span the minute axis, not day indices.
@@ -121,7 +158,7 @@ export function LightweightIntraday({
 				{ value: limits.limitDown, color: C.down, opacity: 0.35 })
 		}
 		return {
-			dates: sessions.map(s => s.date), priceLines: lines, precision,
+			dates: sessions.map(s => s.date), priceLines: lines, precision, drawings: paneDrawings[0],
 			axisTicks: scale ? [
 				...scale.ticks.map(t => ({
 					value: t.price,
@@ -149,11 +186,16 @@ export function LightweightIntraday({
 				color: '#71717A'
 			})) : []
 		}
-	}, [priceLines, reference, limits, sessions, precision, scale, showLimitLines])
-	const paneTitles = useMemo(() => ['', `成交量  ${fmtBigNum(shown?.volume)}`], [shown?.volume])
+	}, [priceLines, reference, limits, sessions, precision, scale, showLimitLines, paneDrawings])
+	const paneTitles = useMemo(() => ['', ...(showVolume ? [`成交量  ${fmtBigNum(shown?.volume)}`] : []), ...customSubs.map(d => d.name)], [shown?.volume, customIndicatorValues, showVolume])
+	const minuteVolume = point?.row.volume
+	const paneReadouts = useMemo(() => [[], ...(showVolume ? [[]] : []),
+		...indicatorReadouts(customIndicatorValues, customTime).map((items, index) => volumePanes.has(firstCustomPane + index)
+			? [{ text: `量 ${fmtBigNum(minuteVolume)}` }] : items),
+	], [customIndicatorValues, customTime, showVolume, firstCustomPane, volumePanes, minuteVolume])
 
-	return <div className="w-full min-w-0" data-testid="lightweight-intraday">
-		<div className={`flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border/50 bg-elevated/20 px-3 py-1.5 xl:h-10 xl:flex-nowrap xl:py-0 ${showLimitLines ? 'pr-10' : ''}`}>
+	return <div className={`w-full min-w-0 ${alignedLayout ? 'stock-chart-stack' : ''}`} data-testid="lightweight-intraday">
+		<div className={`flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border/50 bg-elevated/20 px-3 py-1.5 ${alignedLayout ? '' : 'xl:h-10 xl:flex-nowrap xl:py-0'} ${showLimitLines ? 'pr-10' : ''}`}>
 			<span className="shrink-0 text-xs font-semibold text-foreground">{supplied && sessions.length > 1 ? '多日分时' : '分时走势'}
 				<span className="ml-2 font-mono text-[10px] text-muted">{supplied ? `${sessions.length} 个交易日` : date}</span>
 			</span>
@@ -173,7 +215,8 @@ export function LightweightIntraday({
 						</button>)}
 				</div>}
 		</div>
-		<div className="min-h-16 border-b border-border/50 px-3 py-2 font-mono text-[11px] tabular-nums xl:h-16">
+		{indicatorControls}
+		<div className={`min-h-16 border-b border-border/50 px-3 py-2 font-mono text-[11px] tabular-nums ${alignedLayout || customMain.length ? '' : 'xl:h-16'}`}>
 			<div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1">
 				<span className="font-medium text-foreground">{sourceTimes
 					? `${point?.date} ${sourceTimes.join(' / ')}`
@@ -188,11 +231,12 @@ export function LightweightIntraday({
 				{showAvgLine && assetType !== 'index' && <span style={{ color: C.average }}>均价 {fmt(point?.average)}</span>}
 				<span className="text-muted">量 <span className="text-secondary">{fmtBigNum(shown?.volume)}</span></span>
 				<span className="text-muted">额 <span className="text-secondary">{fmtBigNum(shown?.amount)}</span></span>
+				{customMain.flat().map((item, index) => <span key={index} style={{ color: item.color }}>{item.text}</span>)}
 				{supplied && <span className="ml-auto text-muted">{[...model.points.values()].length} 分钟</span>}
 			</div>
 		</div>
-		<FinancialPlot scope={scope} series={plotSeries} height={plotHeight} paneHeights={paneHeights}
-			visibleBars="all" intraday annotations={annotations} paneTitles={paneTitles} pricePrecision={precision}
+		<FinancialPlot scope={scope} series={plotSeries} height={plotHeight} paneHeights={paneHeights} lockPaneHeights={alignedLayout} mainTimeAxis={mainTimeAxis}
+			visibleBars="all" intraday annotations={annotations} paneTitles={paneTitles} paneReadouts={paneReadouts} paneDrawings={paneDrawings} pricePrecision={precision}
 			currentPrice={currentPrice ?? model.latest?.row.close} onPriceDoubleClick={onPriceDoubleClick}
 			onHover={time => {
 				setHover(time ? { scope, time } : null);

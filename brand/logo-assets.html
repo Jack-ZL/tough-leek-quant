@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TLQ 品牌资产 · Tough Leek Quant</title>
+  <link rel="icon" type="image/svg+xml" href="./logo.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #101218;
+      --surface: #191c25;
+      --rule: #2f3340;
+      --ink: #eeedf5;
+      --muted: #aeb0c2;
+      --accent: #F79D97;
+      --paper: #f6f6f8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+    }
+    main { width: min(68rem, calc(100% - 2rem)); margin: 0 auto; padding: 2.75rem 0 3rem; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+    h1, h2, p, figure { margin: 0; }
+    h1 { font-size: clamp(1.7rem, 5vw, 2.45rem); line-height: 1.15; font-weight: 720; }
+    h2 { font-size: 1.12rem; font-weight: 640; margin-bottom: .85rem; }
+    section, details { margin-top: 2rem; }
+    a { color: var(--accent); text-underline-offset: .22em; }
+    a:hover { color: #FBD5D2; }
+    a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    .subtitle { color: var(--muted); margin-top: .45rem; }
+    .assets {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+      gap: .85rem;
+    }
+    .plate {
+      display: grid;
+      place-items: center;
+      min-height: 9rem;
+      border-radius: .65rem;
+      background: var(--surface);
+      border: 1px solid var(--rule);
+    }
+    .paper { background: var(--paper); border-color: var(--paper); }
+    .main-mark { min-height: clamp(10rem, 21vw, 15rem); }
+    img { display: block; max-width: 100%; height: auto; }
+    figcaption { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .85rem; margin-top: .45rem; }
+    figcaption a, .downloads a, .guide { font-size: .88rem; }
+    figcaption strong { font-weight: 620; }
+    .samples {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 1rem 2rem;
+      padding: .9rem 0;
+      margin: 0;
+      list-style: none;
+    }
+    .samples li { display: grid; min-width: 2.3rem; justify-items: center; gap: .4rem; }
+    .samples a { font-size: .82rem; }
+    .downloads { display: flex; flex-wrap: wrap; gap: .5rem 1.3rem; }
+    details { border-top: 1px solid var(--rule); padding-top: 1rem; }
+    summary { cursor: pointer; font-weight: 620; }
+    details img { border-radius: .6rem; margin-top: .9rem; }
+    @media (max-width: 34rem) {
+      main { padding-top: 1.5rem; }
+      header { align-items: flex-start; flex-direction: column; gap: .55rem; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>TLQ 品牌资产</h1>
+        <p class="subtitle">Tough Leek Quant · 双引精修版</p>
+      </div>
+      <a class="guide" href="./README.md">素材使用说明</a>
+      <a class="guide" href="./logo-proposals.html">设计提案存档</a>
+    </header>
+
+    <section aria-labelledby="primary-mark">
+      <h2 id="primary-mark">主标与配色</h2>
+      <div class="assets">
+        <figure>
+          <div class="plate paper main-mark">
+            <img src="./logo.svg" alt="浅底红色渐变主标" width="128" height="128">
+          </div>
+          <figcaption>
+            <strong>浅底渐变</strong><a href="./logo.svg" download>SVG</a><a href="./png/logo-512.png" download>PNG</a>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="plate main-mark">
+            <img src="./logo-dark.svg" alt="深底亮红渐变主标" width="128" height="128">
+          </div>
+          <figcaption>
+            <strong>深底亮红</strong><a href="./logo-dark.svg" download>SVG</a><a href="./png/logo-dark-512.png" download>PNG</a>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="plate main-mark">
+            <img src="./logo-white.svg" alt="纯白主标" width="128" height="128">
+          </div>
+          <figcaption>
+            <strong>纯白</strong><a href="./logo-white.svg" download>SVG</a><a href="./png/logo-white-512.png" download>PNG</a>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section aria-labelledby="social-and-desktop">
+      <h2 id="social-and-desktop">社群头像与桌面图标</h2>
+      <div class="assets">
+        <figure>
+          <div class="plate">
+            <img src="./png/logo-tile-light-128.png" alt="浅色圆角底卡" width="96" height="96">
+          </div>
+          <figcaption>
+            <strong>浅色圆角</strong><a href="./logo-tile-light.svg" download>SVG</a><a href="./png/logo-tile-light-512.png" download>512 px PNG</a>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="plate">
+            <img src="./png/logo-tile-dark-128.png" alt="深色圆角底卡" width="96" height="96">
+          </div>
+          <figcaption>
+            <strong>深色圆角</strong><a href="./logo-tile-dark.svg" download>SVG</a><a href="./png/logo-tile-dark-512.png" download>512 px PNG</a>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="plate">
+            <img src="./png/logo-badge-128.png" alt="红色方底白标徽章" width="96" height="96">
+          </div>
+          <figcaption>
+            <strong>方底徽章</strong><a href="./logo-badge.svg" download>SVG</a><a href="./png/logo-badge-1024.png" download>1024 px PNG</a>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section aria-labelledby="size-samples">
+      <h2 id="size-samples">小尺寸预览</h2>
+      <ul class="samples">
+        <li><img src="./png/logo-dark-16.png" alt="" width="16" height="16"><a href="./png/logo-dark-16.png" download>16 px</a></li>
+        <li><img src="./png/logo-dark-24.png" alt="" width="24" height="24"><a href="./png/logo-dark-24.png" download>24 px</a></li>
+        <li><img src="./png/logo-dark-32.png" alt="" width="32" height="32"><a href="./png/logo-dark-32.png" download>32 px</a></li>
+        <li><img src="./png/logo-dark-48.png" alt="" width="48" height="48"><a href="./png/logo-dark-48.png" download>48 px</a></li>
+        <li><img src="./png/logo-dark-64.png" alt="" width="64" height="64"><a href="./png/logo-dark-64.png" download>64 px</a></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="packaging-icons">
+      <h2 id="packaging-icons">安装包与文档素材</h2>
+      <div class="downloads">
+        <a href="./icon.ico" download>Windows 图标</a>
+        <a href="./icon.icns" download>macOS 图标</a>
+        <a href="./png/installer-wizard.png" download>安装向导图片</a>
+        <a href="./logo-title.svg" download>README 浅底标</a>
+        <a href="./logo-dark-title.svg" download>README 深底标</a>
+      </div>
+    </section>
+
+    <details>
+      <summary>侧栏图标系统</summary>
+      <img src="./png/menu-icons-preview.png" alt="看板、自选、策略、回测等功能的侧栏图标" width="724" height="716">
+    </details>
+  </main>
+</body>
+</html>

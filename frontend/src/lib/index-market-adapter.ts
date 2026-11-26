@@ -79,6 +79,8 @@ export interface IndexMarketSource {
 	readonly pinned: readonly CoreIndex[]
 	/** 该市场是否有指数分时端点。港股没有 —— 腾讯/新浪只提供日K。 */
 	readonly supportsMinute: boolean
+	/** 页头短标语 (PageHeader subtitle 首段, 全站统一的「A · B」句式)。 */
+	readonly headerTagline: string
 	/** 页面副标题: 说清数据住在哪、与别的市场是否混算。 */
 	readonly headerHint: string
 	/** 分时不可用时的原因(空态即契约, 方案 §8 规则 3)。 */
@@ -115,6 +117,7 @@ const CN_SOURCE: IndexMarketSource = {
 	content: marketContent('CN'),
 	pinned: coreIndexes('CN'),
 	supportsMinute: true,
+	headerTagline: '核心指数行情 · 日K与分时',
 	headerHint: '指数使用独立 kline_index_* parquet，不进入股票策略链路。',
 	minuteUnavailableHint: '分钟K(批量)数据不可用',
 	dailyEmptyHint: '暂无日K数据。可以先同步指数日K，或选择其他指数。',
@@ -146,6 +149,7 @@ const HK_SOURCE: IndexMarketSource = {
 	content: marketContent('HK'),
 	pinned: HK_PINNED,
 	supportsMinute: false,
+	headerTagline: '核心指数行情 · 日K与延时快照',
 	headerHint: '港股指数使用独立 kline_hk_index_* parquet，不与 A 股混算；行情为交易所授权的延时数据。',
 	minuteUnavailableHint: '港股指数无分时数据源（腾讯/新浪仅提供日K）',
 	dailyEmptyHint: '港股指数日K未就绪。点右上角「同步港股指数日K」拉取；若已同步仍为空，说明该指数不在腾讯日K覆盖范围内（27 只白名单中仅 14 只有日K），实时快照仍可用。',

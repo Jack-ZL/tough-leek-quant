@@ -12,24 +12,19 @@ import type {
 	OHLC,
 	VolumeCompareConfig
 } from '@/lib/chart-types'
-import { OVERLAY_INDICATORS, SUB_CHART_META } from '@/lib/chart-indicators'
+import { DEFAULT_VOLUME_COMPARE, normalizeVolumeCompare, OVERLAY_INDICATORS, SUB_CHART_META } from '@/lib/chart-indicators'
 import { CHART_LAYOUT, dailyChartHeight } from '@/lib/chart-layout'
 
 const EChartsCandlestick = lazy(() => import('./EChartsCandlestick').then(m => ({ default: m.EChartsCandlestick })))
 const LightweightDaily = lazy(() => import('./charts/LightweightDaily').then(m => ({ default: m.LightweightDaily })))
+const CustomDaily = lazy(() => import('./charts/CustomChart').then(m => ({ default: m.CustomDaily })))
 
 const SUB_INFO_H = 16
 const SUB_GAP = 4
-const DEFAULT_VOLUME_COMPARE: VolumeCompareConfig = { enabled: true, days: 1 }
-
-function normalizeVolumeCompare(config: VolumeCompareConfig): VolumeCompareConfig {
-	return {
-		enabled: config.enabled !== false,
-		days: Math.max(1, Math.min(20, Math.round(Number(config.days) || 1))),
-	}
-}
 
 interface Props {
+	alignedLayout?: boolean
+	customIndicators?: boolean
 	symbol: string
 	renderer?: ChartRenderer
 	height?: number
@@ -168,6 +163,7 @@ function ChartPill({
 }
 
 export function StockDailyKChart({
+	alignedLayout = false,
 	symbol,
 	renderer = 'echarts',
 	height = 520,
@@ -180,6 +176,7 @@ export function StockDailyKChart({
 	showIndicatorControls = true,
 	showMarkerToggle = true,
 	showMA = true,
+	customIndicators = false,
 	showInfoBar = true,
 	visibleBars,
 	linkedPrice,
@@ -235,7 +232,8 @@ export function StockDailyKChart({
 		storage.stockDailyMarkerStyle.set(style)
 	}
 
-	const activeSubDefs = activeIndicators
+	const customChart = renderer === 'lightweight' && customIndicators
+	const activeSubDefs = (customChart ? [] : activeIndicators)
 		.map(key => SUB_CHART_META.find(s => s.key === key))
 		.filter((d): d is typeof SUB_CHART_META[number] => !!d)
 	let subExtraH = 0
@@ -244,17 +242,17 @@ export function StockDailyKChart({
 	})
 	if (activeSubDefs.length > 0) subExtraH += activeSubDefs.length * SUB_GAP + 14
 	const chartHeight = renderer === 'lightweight' ? dailyChartHeight(height, activeSubDefs.length) : height + subExtraH
-	const Chart = renderer === 'lightweight' ? LightweightDaily : EChartsCandlestick
+	const Chart = customChart ? CustomDaily : renderer === 'lightweight' ? LightweightDaily : EChartsCandlestick
 
 	if (!symbol) return null
 
 	return (
 		<div className={className} style={{ minHeight: chartHeight }}>
 			{showIndicatorControls && rows.length > 0 && (
-				<div className={renderer === 'lightweight' ? 'flex min-h-10 flex-wrap items-center gap-1 border-b border-border/50 bg-elevated/20 px-3 py-1.5 xl:h-10 xl:flex-nowrap xl:py-0' : 'flex items-center gap-1.5 px-1 pb-0.5'}>
+				<div className={renderer === 'lightweight' ? `flex min-h-10 flex-wrap items-center gap-1 border-b border-border/50 bg-elevated/20 px-3 py-1.5 ${alignedLayout ? '' : 'xl:h-10 xl:flex-nowrap xl:py-0'}` : 'flex items-center gap-1.5 px-1 pb-0.5'}>
 					{renderer === 'lightweight' &&
 						<span className="mr-2 shrink-0 text-xs font-semibold text-foreground">日 K</span>}
-					{SUB_CHART_META.map(ind => (
+					{!customChart && SUB_CHART_META.map(ind => (
 						<ChartPill
 							key={ind.key}
 							active={activeIndicators.includes(ind.key)}
@@ -263,7 +261,7 @@ export function StockDailyKChart({
 							onClick={() => toggleIndicator(ind.key)}
 						/>
 					))}
-					{OVERLAY_INDICATORS.map(ind => (
+					{!customChart && OVERLAY_INDICATORS.map(ind => (
 						<ChartPill
 							key={ind.key}
 							active={activeIndicators.includes(ind.key)}
@@ -272,7 +270,7 @@ export function StockDailyKChart({
 							onClick={() => toggleIndicator(ind.key)}
 						/>
 					))}
-					{activeIndicators.includes('vol') && (
+					{!customChart && activeIndicators.includes('vol') && (
 						<div className="ml-0.5 flex h-5 items-center gap-1.5 border-l border-border/70 pl-2">
 							<span className="text-[10px] text-muted">量比</span>
 							<button
@@ -337,7 +335,8 @@ export function StockDailyKChart({
 					</div>
 				</div>
 			)}
-			{kline.isLoading && <div className="text-sm text-muted py-4">加载中…</div>}
+			<div className={alignedLayout ? 'stock-chart-body' : undefined}>
+			{kline.isLoading && <div className="stock-chart-full-state text-sm text-muted py-4">加载中…</div>}
 			{kline.isError && <div className="text-sm text-danger py-2">日K加载失败</div>}
 			{!kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) > 0 && rows.length === 0 && (
 				<div className="text-sm text-danger py-2">数据格式异常，请刷新页面</div>
@@ -347,16 +346,19 @@ export function StockDailyKChart({
 			{emptyHint && !kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) === 0 && (
 				<div className="text-sm text-muted py-4 max-w-[60ch] leading-relaxed">{emptyHint}</div>
 			)}
-			{rows.length > 0 && (
+			{(rows.length > 0 || customChart) && (
 				<Suspense fallback={
-					<div className="flex items-center justify-center text-xs text-muted" style={{ height }}>正在加载图表…</div>}>
+					<div className="stock-chart-full-state flex items-center justify-center text-xs text-muted" style={{ height }}>正在加载图表…</div>}>
 					<Chart
+						alignedLayout={alignedLayout}
 						data={rows}
+						{...(customChart
+							? { indicatorRows: kline.data?.rows, indicatorRevision: kline.dataUpdatedAt }
+							: { activeIndicators, showMA, volumeCompare })}
 						markers={allMarkers}
 						ranges={ranges}
 						priceLines={priceLines}
 						height={chartHeight - (renderer === 'lightweight' ? CHART_LAYOUT.toolbar : 22)}
-						showMA={showMA}
 						showInfoBar={showInfoBar}
 						showMarkers={showMarkers}
 						markerStyle={renderer === 'lightweight' ? markerStyle : undefined}
@@ -367,12 +369,11 @@ export function StockDailyKChart({
 						onDateClick={onDateClick}
 						onPriceDoubleClick={onPriceDoubleClick}
 						visibleBars={visibleBars ?? (renderer === 'lightweight' ? undefined : 60)}
-						activeIndicators={activeIndicators}
-						volumeCompare={volumeCompare}
 						addedDate={showAddedMark ? addedDate : null}
 					/>
 				</Suspense>
 			)}
+			</div>
 		</div>
 	)
 }

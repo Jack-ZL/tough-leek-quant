@@ -12,6 +12,8 @@ import type {
 } from 'lightweight-charts'
 import type { ChartRange, ChartPriceLine } from '@/lib/chart-types'
 import type { PlotAxisTick } from '@/lib/lightweight-model'
+import type { PlotDrawing } from '@/lib/custom-chart-indicators'
+import { paintIndicatorDrawings } from './IndicatorDrawings'
 
 export interface AnnotationData {
 	dates: string[]
@@ -36,6 +38,7 @@ export interface AnnotationData {
 	textColor?: string
 	title?: string
 	readouts?: { text: string; color?: string }[]
+	drawings?: PlotDrawing[]
 }
 
 export function axisLabelCoordinate(series: ISeriesApi<SeriesType> | undefined, value: number) {
@@ -142,6 +145,9 @@ export class ChartAnnotations implements ISeriesPrimitive<Time> {
 			ctx.rect(0, 0, width, height);
 			ctx.clip()
 			ctx.font = '10px "JetBrains Mono", monospace'
+			if (this.data.drawings?.length) {
+				paintIndicatorDrawings(ctx, chart, series, this.data.drawings.filter(drawing => drawing.kind === 'band'), width, height)
+			}
 			for (const value of this.data.gridTicks ?? []) {
 				const y = series.priceToCoordinate(value)
 				if (y == null) continue
@@ -261,6 +267,9 @@ export class ChartAnnotations implements ISeriesPrimitive<Time> {
 				ctx.fillStyle = label.color ?? this.data.textColor ?? '#A1A1AA'
 				ctx.fillText(label.text, x - textWidth / 2, Math.max(28, y - 4))
 				labelRight = x + textWidth / 2
+			}
+			if (this.data.drawings?.length) {
+				paintIndicatorDrawings(ctx, chart, series, this.data.drawings.filter(drawing => drawing.kind !== 'band'), width, height, headerBottom)
 			}
 			ctx.restore()
 		})

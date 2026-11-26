@@ -1,5 +1,5 @@
 /**
- * 关于面板 — 版权、更新、打赏三个区块。
+ * 关于面板 — 版权与许可、更新和打赏。
  */
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -18,7 +18,7 @@ import {
 import { useVersion } from '@/lib/useSharedQueries'
 import { useUpdateCheck } from '@/lib/updateCheck'
 import { Modal } from '@/components/Modal'
-import { OssLicenseDialog, LicenseComplianceNotice } from '@/components/OssLicenseDialog'
+import { OssLicenseDialog, LicenseComplianceNotice, TiveloLicenseNotice } from '@/components/OssLicenseDialog'
 import { PROJECT_LICENSE_NAME, PROJECT_REPO_URL } from '@/data/ossLicenses'
 
 export function SettingsAboutPanel() {
@@ -53,7 +53,7 @@ export function SettingsAboutPanel() {
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
             <Scale className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-medium text-foreground">版权</h3>
+            <h3 className="text-sm font-medium text-foreground">TSP 工作台许可</h3>
           </div>
           <span className="shrink-0 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
             {PROJECT_LICENSE_NAME}
@@ -78,11 +78,11 @@ export function SettingsAboutPanel() {
           </a>
         </div>
 
-        {/* 开源许可 — 点击弹窗查看完整内容 */}
+        {/* 查看工作台及依赖组件的许可 */}
         <div className="flex items-center justify-between gap-4 py-2">
           <div className="min-w-0">
-            <div className="text-sm text-foreground">开源许可</div>
-            <div className="text-[11px] text-muted truncate">本项目协议全文与第三方组件许可清单</div>
+            <div className="text-sm text-foreground">软件许可</div>
+            <div className="text-[11px] text-muted">工作台许可全文与依赖组件声明</div>
           </div>
           <button
             onClick={() => setLicenseOpen(true)}
@@ -110,6 +110,8 @@ export function SettingsAboutPanel() {
         {/* 许可合规声明 — 醒目警示 */}
         <LicenseComplianceNotice compact />
       </section>
+
+      <TiveloLicenseNotice />
 
       {/* ===== 更新 ===== */}
       <section className="rounded-card border border-border bg-surface p-5">
@@ -226,7 +228,7 @@ export function SettingsAboutPanel() {
               </button>
             </div>
             <p className="mt-3 text-[10px] leading-relaxed text-muted">
-              项目基于 MIT 协议永久免费, 打赏不会解锁任何功能; 数据源等第三方服务费用与本站无关。
+              打赏不会解锁功能。数据源等第三方服务费用由服务提供方确定。
             </p>
           </div>
 

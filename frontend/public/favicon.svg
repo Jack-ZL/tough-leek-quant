@@ -1,12 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-	<!-- Tough Leek Quant favicon — 涨色红 #F04438 单色版 (与侧边栏品牌色一致)
-		 32 网格小尺寸优化: 线幅加粗 (括号 3 / 影线 2.5@70%); 亮端朝上, 明暗标签页均可读 -->
-	<!-- 左方括号 -->
-	<path d="M10 4 L4 4 L4 28 L10 28" stroke="#F04438" stroke-width="3" stroke-linejoin="miter"/>
-	<!-- 右方括号 -->
-	<path d="M22 4 L28 4 L28 28 L22 28" stroke="#F04438" stroke-width="3" stroke-linejoin="miter"/>
-	<!-- K 线 wick(上下影) -->
-	<line x1="16" y1="7" x2="16" y2="25" stroke="#F04438" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.7"/>
-	<!-- K 线 body -->
-	<rect x="12.5" y="9" width="7" height="10" fill="#F04438" rx="0.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+		 role="img" aria-label="Tough Leek Quant">
+	<style>
+		@media (prefers-color-scheme: dark) {
+			stop:nth-child(1) { stop-color: #F79D97; }
+			stop:nth-child(2) { stop-color: #F47971; }
+			stop:nth-child(3) { stop-color: #F04438; }
+		}
+	</style>
+	<defs>
+		<linearGradient id="tlq-fav" x1="8.5" y1="32" x2="55.5" y2="32" gradientUnits="userSpaceOnUse">
+			<stop offset="0" stop-color="#F47971"/>
+			<stop offset=".5" stop-color="#F04438"/>
+			<stop offset="1" stop-color="#D51D10"/>
+		</linearGradient>
+	</defs>
+	<path fill="url(#tlq-fav)" d="M8.5 32.5C8.5 19.25 15.75 10.5 27.5 10.5H35.875L29.875 16.5V21.5H26.125V40H29.875V46.5L20.875 55.5H8.5Z"/>
+	<path fill="url(#tlq-fav)" d="M34.125 17.5L43.125 8.5H55.5V31.5C55.5 44.75 48.25 53.5 36.5 53.5H28.125L34.125 47.5V40H37.875V21.5H34.125Z"/>
 </svg>

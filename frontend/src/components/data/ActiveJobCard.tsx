@@ -166,9 +166,28 @@ export function ActiveJobCard({ job }: { job: PipelineJob }) {
 					label: '剩余缺口',
 					value: `${job.result.remaining_gaps} 条`
 				})
-				if (job.result.minute_rows != null) pills.push({
-					label: job.result.requested_gaps != null ? '新增分钟K' : '分钟K',
-					value: cell('sync_minute', `${job.result.minute_rows} 行`)
+				if (job.result.minute_added != null) {
+					pills.push({
+						label: '新增分钟',
+						value: `${job.result.minute_added} 根`
+					})
+				} else if (job.result.minute_rows != null) {
+					pills.push({
+						label: job.result.requested_gaps != null ? '新增分钟K' : '分钟K',
+						value: cell('sync_minute', `${job.result.minute_rows} 行`)
+					})
+				}
+				if (job.result.minute_updated != null) pills.push({
+					label: '更新分钟',
+					value: `${job.result.minute_updated} 根`
+				})
+				if (job.result.minute_received != null) pills.push({
+					label: '上游有效分钟',
+					value: `${job.result.minute_received} 根`
+				})
+				if (job.result.minute_missing != null) pills.push({
+					label: '预计仍缺',
+					value: `${job.result.minute_missing} 根`
 				})
 				if (pills.length === 0) return null
 				return (

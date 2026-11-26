@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { api, type AlertEvent, type DataStatus } from '@/lib/api'
+import { getFrontendExtensionRoutes } from '@/extensions/registry'
 import { QK } from '@/lib/queryKeys'
 import { DimensionMembersDialog, type DimensionMembersTarget } from '@/components/DimensionMembersDialog'
 import { useDataStatus, useCapabilities, useSettings, usePreferences } from '@/lib/useSharedQueries'
@@ -30,7 +31,7 @@ import { scoreColor, quoteAge } from '@/components/dashboard/shared'
 import { DashboardGrid } from '@/components/dashboard/DashboardGrid'
 import { AddWidgetPanel } from '@/components/dashboard/AddWidgetPanel'
 import { useDashboardLayout } from '@/components/dashboard/useDashboardLayout'
-import { DEFAULT_LAYOUT, widgetDef, type WidgetCtx } from '@/components/dashboard/registry'
+import { DEFAULT_LAYOUT, widgetDef, type DashboardPreviewSource, type WidgetCtx } from '@/components/dashboard/registry'
 import { cloneItems, GRID_COLS, type WidgetType } from '@/components/dashboard/layout'
 
 /** 兼容旧后端的预热标志; 同步/自动修复也会使统计暂不可用。 */
@@ -46,11 +47,9 @@ export function resolveHasNoData(ds?: DataStatus): boolean {
 	return (ds.enriched?.trading_days ?? 0) === 0 && (ds.daily?.trading_days ?? 0) === 0
 }
 
-/** 打开个股预览的来源榜 (用于行高亮与切股导航列表) */
-type PreviewSource = 'gain' | 'loss' | 'amount' | 'active' | 'concept' | 'industry' | 'alert'
-
 export function Dashboard() {
 	const qc = useQueryClient()
+	const extensionPaths = useMemo(() => new Set<string>(getFrontendExtensionRoutes().map(route => route.path)), [])
 	const [selectedDate, setSelectedDate] = useState<string | undefined>()
 	const [manualFetching, setManualFetching] = useState(false)
 	const [previewStock, setPreviewStock] = useState<{
@@ -58,7 +57,7 @@ export function Dashboard() {
 		name?: string
 		alert?: AlertEvent
 		/** 打开来源榜: 仅高亮来源榜的行 */
-		source?: PreviewSource
+		source?: DashboardPreviewSource
 		/** 切股导航列表 (来自来源榜) */
 		navList?: NavItem[]
 	} | null>(null)
@@ -225,9 +224,10 @@ export function Dashboard() {
 		hasDepth,
 		sealedReady,
 		isSealedDegrade,
+		hasExtensionRoute: path => extensionPaths.has(path),
 		activeSymbol: source => (previewStock?.source === source ? previewStock.symbol : undefined),
 		openStock: (source, symbol, name, navList) =>
-			setPreviewStock({ symbol, name, navList, source: source as PreviewSource }),
+			setPreviewStock({ symbol, name, navList, source }),
 		openDimension: setDimensionTarget,
 		openAlert: (event, navList) => {
 			if (event.symbol) setPreviewStock({
@@ -374,9 +374,9 @@ export function Dashboard() {
 			<DimensionMembersDialog
 				target={dimensionTarget}
 				onClose={() => setDimensionTarget(null)}
-				onStockClick={(symbol, name) => {
+				onStockClick={(symbol, name, navList) => {
 					setDimensionTarget(null)
-					setPreviewStock({ symbol, name })
+					setPreviewStock({ symbol, name, navList })
 				}}
 			/>
 		</div>

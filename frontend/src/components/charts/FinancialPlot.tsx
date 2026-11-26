@@ -10,6 +10,7 @@ import {
 	ColorType,
 	CrosshairMode,
 	type IChartApi,
+	type IPaneApi,
 	type ISeriesApi,
 	type ISeriesMarkersPluginApi,
 	type SeriesType,
@@ -24,6 +25,8 @@ import {formatAxisPercent} from '@/lib/intraday-scale'
 import {intradayTimeLabel, timeKey, type PlotSeries, type PlotData} from '@/lib/lightweight-model'
 import {axisLabelCoordinate, ChartAnnotations, type AnnotationData} from './ChartAnnotations'
 import {DailyVolumeSeries} from './DailyVolumeSeries'
+import {ChartTimeAxis} from './ChartTimeAxis'
+import type {PlotDrawing} from '@/lib/custom-chart-indicators'
 
 const PRICE_MARGINS = {daily: {top: 0.08, bottom: 0.06}, intraday: {top: 0, bottom: 0}}
 const markersForView = (markers: SeriesMarker<Time>[] = [], compact: boolean) => compact
@@ -41,11 +44,15 @@ interface Props {
 	series: PlotSeries[]
 	height: number
 	paneHeights: number[]
+	lockPaneHeights?: boolean
+	mainTimeAxis?: boolean
 	visibleBars?: number | 'all'
 	intraday?: boolean
 	markers?: SeriesMarker<Time>[]
 	annotations?: AnnotationData
 	volumeLabels?: AnnotationData['labels']
+	paneLabels?: (AnnotationData['labels'] | undefined)[]
+	paneDrawings?: PlotDrawing[][]
 	paneTitles?: string[]
 	paneReadouts?: AnnotationData['readouts'][]
 	linkedPrice?: number | null
@@ -85,6 +92,7 @@ export function FinancialPlot(props: Props) {
 	const propsRef = useRef(props);
 	propsRef.current = props
 	const scopeRef = useRef<string | null>(null)
+	const initialRange = useRef({ pending: false, frame: 0 })
 	const markerRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
 	const annotationRef = useRef(new ChartAnnotations())
 	const attachedMain = useRef<ISeriesApi<SeriesType> | null>(null)
@@ -99,6 +107,8 @@ export function FinancialPlot(props: Props) {
 	const themeRef = useRef(ct);
 	themeRef.current = ct
 	const compactRef = useRef(false)
+	const timeAxis = useRef(new ChartTimeAxis())
+	const axisPane = useRef<IPaneApi<Time> | null>(null)
 
 	useEffect(() => {
 		if (!host.current) return
@@ -114,7 +124,7 @@ export function FinancialPlot(props: Props) {
 				panes: {
 					separatorColor: theme.border,
 					separatorHoverColor: theme.crosshair,
-					enableResize: !propsRef.current.intraday
+					enableResize: !propsRef.current.intraday && !propsRef.current.lockPaneHeights
 				}
 			},
 			grid: {vertLines: {visible: false}, horzLines: {color: theme.grid}},
@@ -128,6 +138,7 @@ export function FinancialPlot(props: Props) {
 				scaleMargins: propsRef.current.intraday ? PRICE_MARGINS.intraday : PRICE_MARGINS.daily
 			},
 			timeScale: {
+				visible: !propsRef.current.mainTimeAxis,
 				borderColor: theme.border,
 				minimumHeight: CHART_LAYOUT.timeAxis,
 				// 右侧像素留白与 fixRightEdge 互斥: 固定右缘会钳制 rightOffset。
@@ -136,7 +147,7 @@ export function FinancialPlot(props: Props) {
 				fixRightEdge: !propsRef.current.intraday && !propsRef.current.rightOffsetPixels,
 				timeVisible: !!propsRef.current.intraday,
 				...(propsRef.current.rightOffsetPixels ? {rightOffsetPixels: propsRef.current.rightOffsetPixels} : {}),
-				lockVisibleTimeRangeOnResize: propsRef.current.visibleBars === 'all',
+				lockVisibleTimeRangeOnResize: propsRef.current.visibleBars !== undefined,
 				// 20 日约 4820 个分钟位置，窄屏也要能完整适配所选时段。
 				minBarSpacing: propsRef.current.intraday ? 0.01 : 0.5,
 				tickMarkFormatter: (time: Time, kind: number) => {
@@ -160,6 +171,7 @@ export function FinancialPlot(props: Props) {
 					leftAnnotation.current.setHoverY(y)
 				}
 				const time = event.time != null ? timeKey(event.time) : null
+				if (propsRef.current.mainTimeAxis) timeAxis.current.setHoverTime(event.time)
 				propsRef.current.onHover?.(time)
 				const reportCrosshair = propsRef.current.onCrosshairMove
 				if (reportCrosshair) {
@@ -211,6 +223,8 @@ export function FinancialPlot(props: Props) {
 		return () => {
 			cancelAnimationFrame(frame)
 			cancelAnimationFrame(resizeFrame)
+			cancelAnimationFrame(initialRange.current.frame)
+			initialRange.current.pending = false
 			chart.unsubscribeCrosshairMove(hover);
 			chart.unsubscribeClick(select);
 			chart.unsubscribeDblClick(doubleClick)
@@ -225,6 +239,7 @@ export function FinancialPlot(props: Props) {
 			paneAnnotations.current.clear();
 			attachedMain.current = null;
 			attachedLeft.current = null
+			axisPane.current = null
 		}
 	}, [])
 
@@ -247,23 +262,25 @@ export function FinancialPlot(props: Props) {
 		// 分时固定完整时段；不能锁到最后一根实值，否则尚未到达的时段会被挤到左侧。
 		chartRef.current?.applyOptions({
 			handleScale: !intraday, handleScroll: !intraday,
-			layout: {panes: {enableResize: !intraday}},
+			layout: {panes: {enableResize: !intraday && !props.lockPaneHeights}},
 			rightPriceScale: {
 				...(intraday ? {autoScale: true} : {}), entireTextOnly: intraday,
 				scaleMargins: intraday ? PRICE_MARGINS.intraday : PRICE_MARGINS.daily
 			},
 			timeScale: {
+				visible: !props.mainTimeAxis,
 				timeVisible: intraday, fixRightEdge: !intraday && !props.rightOffsetPixels, rightOffset: 0,
-				minBarSpacing: intraday ? 0.01 : 0.5, lockVisibleTimeRangeOnResize: props.visibleBars === 'all'
+				minBarSpacing: intraday ? 0.01 : 0.5, lockVisibleTimeRangeOnResize: props.visibleBars !== undefined
 			},
 		})
-	}, [props.intraday, props.visibleBars])
+	}, [props.intraday, props.visibleBars, props.lockPaneHeights, props.mainTimeAxis])
 
 	useEffect(() => {
 		const chart = chartRef.current
 		if (!chart) return
 		const reset = scopeRef.current !== props.scope
-		const paneChanged = props.series.some(spec => {
+		const initializeView = reset || initialRange.current.pending
+		const paneChanged = !!props.mainTimeAxis !== !!axisPane.current || props.series.some(spec => {
 			const old = seriesRef.current.get(spec.id)
 			return old && (old.pane !== spec.pane || old.type !== spec.type || old.scale !== spec.priceScaleId)
 		})
@@ -276,13 +293,25 @@ export function FinancialPlot(props: Props) {
 			grid: {horzLines: {visible: !props.annotations?.gridTicks}},
 		})
 		// 原生移除空 pane 会重排索引；拓扑变化时统一重建系列，图表实例与视口仍保留。
-		const view = reset || props.intraday ? null : chart.timeScale().getVisibleLogicalRange()
+		const view = initializeView || props.intraday ? null : chart.timeScale().getVisibleLogicalRange()
 		if (reset || paneChanged) {
+			if (reset) timeAxis.current.setHoverTime(undefined)
 			markerRef.current?.detach();
 			markerRef.current = null
 			for (const {api} of [...seriesRef.current.values()].reverse()) chart.removeSeries(api)
 			seriesRef.current.clear()
 			paneAnnotations.current.clear()
+		}
+		if (props.mainTimeAxis && !axisPane.current) {
+			// 保留主 pane，清空／重建指标时横轴和主图的位置不随空 pane 删除而变化。
+			const main = chart.panes()[0] ?? chart.addPane(true)
+			main.setPreserveEmptyPane(true)
+			axisPane.current = chart.addPane(true)
+			axisPane.current.attachPrimitive(timeAxis.current)
+		} else if (!props.mainTimeAxis && axisPane.current) {
+			chart.removePane(axisPane.current.paneIndex())
+			axisPane.current = null
+			chart.panes()[0]?.setPreserveEmptyPane(false)
 		}
 		const wanted = new Set(props.series.map(s => s.id))
 		for (const [id, item] of [...seriesRef.current].reverse()) if (!wanted.has(id)) {
@@ -293,10 +322,15 @@ export function FinancialPlot(props: Props) {
 			chart.removeSeries(item.api);
 			seriesRef.current.delete(id)
 		}
+		// 均量线与成交量柱共享价格轴，不能用最后一条曲线的边距覆盖标注留白。
+		const volumePanes = new Set(props.series.filter(s => s.id === 'volume' || s.type === 'Volume').map(s => s.pane))
 		for (const spec of props.series) {
 			const options = {
 				...(spec.color ? {color: spec.color} : {}),
 				lineWidth: spec.lineWidth ?? 1,
+				lineVisible: spec.lineVisible ?? true,
+				lineStyle: spec.lineStyle ?? 0,
+				pointMarkersVisible: spec.pointMarkersVisible ?? false,
 				lastValueVisible: false,
 				priceLineVisible: false,
 				...(spec.priceScaleId ? {priceScaleId: spec.priceScaleId, lineVisible: false} : {}),
@@ -353,8 +387,9 @@ export function FinancialPlot(props: Props) {
 			let item = seriesRef.current.get(spec.id)
 			if (!item) {
 				const definition = spec.type === 'Candlestick' ? CandlestickSeries : spec.type === 'Area' ? AreaSeries : spec.type === 'Baseline' ? BaselineSeries : spec.type === 'Histogram' ? HistogramSeries : LineSeries
-				const api = (spec.type === 'Volume' ? chart.addCustomSeries(new DailyVolumeSeries(), options, spec.pane)
-					: chart.addSeries(definition, options, spec.pane)) as ISeriesApi<SeriesType>
+				const pane = spec.pane + (props.mainTimeAxis && spec.pane > 0 ? 1 : 0)
+				const api = (spec.type === 'Volume' ? chart.addCustomSeries(new DailyVolumeSeries(), options, pane)
+					: chart.addSeries(definition, options, pane)) as ISeriesApi<SeriesType>
 				item = {api, data: [], pane: spec.pane, type: spec.type, scale: spec.priceScaleId};
 				seriesRef.current.set(spec.id, item)
 				api.setData(spec.data)
@@ -365,10 +400,9 @@ export function FinancialPlot(props: Props) {
 			item.data = spec.data
 			if (spec.pane > 0) item.api.priceScale().applyOptions({
 				entireTextOnly: !!props.intraday,
-				scaleMargins: spec.id === 'volume' ? {top: props.intraday ? 0.22 : 0.3, bottom: 0} : {
-					top: 0.28,
-					bottom: 0.08
-				},
+				scaleMargins: volumePanes.has(spec.pane)
+					? {top: props.intraday ? 0.22 : props.paneLabels?.[spec.pane]?.length ? 0.38 : 0.3, bottom: 0}
+					: {top: 0.28, bottom: 0.08},
 			})
 		}
 		const primarySpec = props.series.find(s => s.pane === 0 && s.visible !== false && s.priceScaleId !== 'left')
@@ -392,12 +426,15 @@ export function FinancialPlot(props: Props) {
 			if (paneAnnotations.current.get(pane)?.api !== api) {
 				const annotation = new ChartAnnotations();
 				api.attachPrimitive(annotation)
-				paneAnnotations.current.set(pane, {api, annotation, volume: spec.id === 'volume'})
+				paneAnnotations.current.set(pane, {api, annotation, volume: spec.id === 'volume' || spec.type === 'Volume'})
 			}
 		}
-		props.paneHeights.forEach((value, i) => chart.panes()[i]?.setStretchFactor(value))
+		// 原先最底部的 28px 横轴挪到主图下面，含上方 1px 分隔线；主副图高度保持不变。
+		const heights = props.mainTimeAxis
+			? [props.paneHeights[0], CHART_LAYOUT.timeAxis - CHART_LAYOUT.separator, ...props.paneHeights.slice(1)] : props.paneHeights
+		heights.forEach((value, i) => chart.panes()[i]?.setStretchFactor(value))
 		if (props.intraday) chart.timeScale().fitContent()
-		else if (reset) {
+		else if (initializeView) {
 			const count = Math.max(...props.series.map(s => s.data.length), 0)
 			if (props.visibleBars === 'all') chart.timeScale().fitContent()
 			else if (count > 0) {
@@ -412,11 +449,24 @@ export function FinancialPlot(props: Props) {
 				} else {
 					chart.timeScale().setVisibleLogicalRange({from: Math.max(0, count - bars), to: count - 1})
 				}
+				if (typeof props.visibleBars === 'number') {
+					// 原生图表在下一帧应用范围。期间更新指标时继续使用初始范围。
+					const initial = initialRange.current
+					initial.pending = true
+					cancelAnimationFrame(initial.frame)
+					initial.frame = requestAnimationFrame(() => { initial.pending = false })
+				}
 			}
 		} else if (view) chart.timeScale().setVisibleLogicalRange(view)
 		if (reset) props.onHover?.(null)
 		scopeRef.current = props.scope
-	}, [props.scope, props.series, props.paneHeights, props.intraday, props.visibleBars, props.pricePrecision])
+	}, [props.scope, props.series, props.paneHeights, props.intraday, props.visibleBars, props.pricePrecision, props.mainTimeAxis, props.paneLabels])
+
+	useEffect(() => {
+		if (props.mainTimeAxis) {
+			timeAxis.current.update(props.series.flatMap(series => series.data.map(row => row.time)), !!props.intraday, ct)
+		}
+	}, [props.mainTimeAxis, props.series, props.intraday, ct])
 
 	useEffect(() => {
 		const lines = [...(props.annotations?.priceLines ?? [])]
@@ -436,13 +486,14 @@ export function FinancialPlot(props: Props) {
 		})
 		paneAnnotations.current.forEach((item, pane) => item.annotation.update({
 			dates: [],
-			labels: item.volume ? props.volumeLabels : undefined,
+			labels: props.paneLabels?.[pane] ?? (item.volume ? props.volumeLabels : undefined),
+			drawings: props.paneDrawings?.[pane],
 			title: props.paneTitles?.[pane],
 			readouts: props.paneReadouts?.[pane],
 			textColor: ct.text
 		}))
 		markerRef.current?.setMarkers(markersForView(props.markers, compactRef.current))
-	}, [props.annotations, props.markers, props.volumeLabels, props.paneTitles, props.paneReadouts, props.linkedPrice, props.series, props.pricePrecision, ct])
+	}, [props.annotations, props.markers, props.volumeLabels, props.paneLabels, props.paneDrawings, props.paneTitles, props.paneReadouts, props.linkedPrice, props.series, props.pricePrecision, ct])
 
 	return <div ref={host} role="group" aria-label={props.intraday ? '分时价格与成交量图' : '日 K 与技术指标图'} data-chart-engine="lightweight" className="w-full min-w-0" style={{height: props.height}}/>
 }

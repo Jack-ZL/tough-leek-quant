@@ -1,15 +1,14 @@
-<!-- Tough Leek Quant · 方案 0 正式主标 — 亮红渐变 · 透明底 · 全直角
-     变体: 渐变·深底 (终端 / 暗色 UI)
-     与 logo.svg 同几何, 仅渐变换为深底优化亮度 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 57.6" fill="none" role="img" aria-label="Tough Leek Quant">
+<!-- Tough Leek Quant · 正式主标 — 标题裁切版 · 亮红渐变 · 透明底 (双引精修版)
+     与 logo-title.svg 同几何, 渐变换为深底优化亮度 #F79D97→#F47971→#F04438 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 55.5" width="64" height="55.5"
+     role="img" aria-label="Tough Leek Quant">
 	<defs>
-		<linearGradient id="tlq-grad-dark" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+		<linearGradient id="tlq-title-dark" x1="8.5" y1="32" x2="55.5" y2="32" gradientUnits="userSpaceOnUse">
 			<stop offset="0" stop-color="#F79D97"/>
+			<stop offset=".5" stop-color="#F47971"/>
 			<stop offset="1" stop-color="#F04438"/>
 		</linearGradient>
 	</defs>
-	<path d="M20 9 H11 V55 H20" stroke="url(#tlq-grad-dark)" stroke-width="5" stroke-linejoin="miter" stroke-linecap="butt"/>
-	<path d="M44 9 H53 V55 H44" stroke="url(#tlq-grad-dark)" stroke-width="5" stroke-linejoin="miter" stroke-linecap="butt"/>
-	<line x1="32" y1="15" x2="32" y2="49" stroke="url(#tlq-grad-dark)" stroke-width="3.5" stroke-linecap="butt" stroke-opacity="0.55"/>
-	<rect x="26.5" y="19.5" width="11" height="17" fill="url(#tlq-grad-dark)"/>
+	<path fill="url(#tlq-title-dark)" d="M8.5 32.5C8.5 19.25 15.75 10.5 27.5 10.5H35.875L29.875 16.5V21.5H26.125V40H29.875V46.5L20.875 55.5H8.5Z"/>
+	<path fill="url(#tlq-title-dark)" d="M34.125 17.5L43.125 8.5H55.5V31.5C55.5 44.75 48.25 53.5 36.5 53.5H28.125L34.125 47.5V40H37.875V21.5H34.125Z"/>
 </svg>
