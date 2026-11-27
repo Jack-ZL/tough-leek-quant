@@ -162,6 +162,18 @@ async def _application_lifespan(app: FastAPI):
             logger.info("custom factors loaded: %s", len(loaded_factors))
     except Exception as exc:  # noqa: BLE001
         logger.warning("custom factors load failed: %s", exc)
+    # 半日市日历: 从 data_dir/half_days.json 载入经交易所公告核实的日期。
+    # 表默认空 → 退化全日市 (宁可漏标不可误标, 见 app.market); fail-open,
+    # 缺失/损坏只警告不阻断启动。量比分母 (market_time) 据此半日市感知。
+    try:
+        with startup_phase(logger, "half-day calendar registration"):
+            from app.services.trading_day import load_half_days_config
+
+            _half_days = load_half_days_config(store.data_dir)
+        if _half_days:
+            logger.info("half-day dates registered: %d", _half_days)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("half-day calendar load failed (ignored): %s", e)
     with startup_phase(logger, "mining manager initialization"):
         from app.services.mining_jobs import MiningRunStore
         from app.services.mining_manager import MiningJobManager

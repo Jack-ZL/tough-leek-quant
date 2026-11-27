@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+from app.market import Market
 from app.strategy import custom_signals
 from app.strategy.intraday_features import build_feature_frame
 from app.strategy.intraday_signals import IntradaySignalEvaluator, uses_intraday_signals
@@ -62,6 +63,46 @@ def test_feature_frame_vwap_and_pct():
     # 缺昨收 → null
     frame2 = build_feature_frame(df)
     assert frame2["pct_vs_prev_close"][2] is None
+
+
+def _hk_bars(prices: list[float], volumes: list[float] | None = None) -> pl.DataFrame:
+    """港股分钟序列: volume 单位为股, amount = close*volume(元, 不乘 100)。"""
+    volumes = volumes or [100.0] * len(prices)
+    times = [datetime(2026, 9, 4, 9, 30) + timedelta(minutes=i) for i in range(len(prices))]
+    return pl.DataFrame({
+        "symbol": ["00700.HK"] * len(prices),
+        "datetime": times,
+        "open": prices,
+        "high": [p * 1.01 for p in prices],
+        "low": [p * 0.99 for p in prices],
+        "close": prices,
+        "volume": volumes,
+        "amount": [p * v for p, v in zip(prices, volumes, strict=True)],
+    })
+
+
+def test_feature_frame_vwap_hk_uses_share_unit():
+    # 港股 volume 单位是股 → 系数 1; vwap = 累计额/累计量 = 加权均价。
+    df = _hk_bars([10.0, 10.2, 9.8])
+    hk = build_feature_frame(df, market=Market.HK)
+    assert hk["vwap"][2] == pytest.approx((10.0 + 10.2 + 9.8) / 3)
+    # 同一帧按 A 股手口径(缺省 CN)会低 100 倍 —— 证明系数确实随市场而非硬编码。
+    cn = build_feature_frame(df)
+    assert cn["vwap"][2] == pytest.approx((10.0 + 10.2 + 9.8) / 3 / 100.0)
+
+
+def test_feature_frame_vwap_cn_default_unchanged():
+    # 缺省 market=CN 与显式 CN 逐字一致(存量 A 股调用方零行为变化)。
+    df = _bars([10.0, 10.2, 9.8])
+    assert build_feature_frame(df)["vwap"][2] == pytest.approx(
+        build_feature_frame(df, market=Market.CN)["vwap"][2]
+    )
+
+
+def test_feature_frame_unknown_market_raises():
+    # 未知市场抛错而非兜底 CN(与 shares_per_volume_unit 契约一致)。
+    with pytest.raises(ValueError):
+        build_feature_frame(_bars([10.0, 10.2, 9.8]), market="US")
 
 
 def test_feature_frame_vol_ratio_windows_and_nulls():

@@ -16,6 +16,7 @@ from datetime import datetime
 
 import polars as pl
 
+from app.market import Market, shares_per_volume_unit
 from app.market_time import CN_TZ
 
 # ── 特征白名单(供 custom_signals 校验与 /options 展示) ──────────
@@ -56,6 +57,7 @@ def build_feature_frame(
     *,
     prev_close: dict[str, float] | None = None,
     cutoff: datetime | None = None,
+    market: object = Market.CN,
 ) -> pl.DataFrame:
     """把分钟 K 帧编译为特征帧。
 
@@ -65,6 +67,10 @@ def build_feature_frame(
       prev_close: 映射 symbol → 昨收(已复权口径需与分钟价一致); 缺失标的的
                  pct_vs_prev_close 为 null。
       cutoff: 只使用严格早于 cutoff 的 bar(盘中传入当前分钟; 回放/回测传 None)。
+      market: 决定 VWAP 的 volume 单位系数(A 股手 ×100 / 港股股 ×1), 经
+              :func:`~app.market.shares_per_volume_unit` 取值, 不硬编码 ×100
+              (契约见 app.market 量纲注记)。缺省 CN, 存量 A 股调用方逐字不变;
+              未知市场抛错而非兜底 CN。港股分钟接入后须显式传 market=Market.HK。
 
     返回: symbol/datetime + INTRADAY_FEATURES 全部特征列(Float64, 可 null)。
     """
@@ -103,7 +109,7 @@ def build_feature_frame(
     if {"volume", "amount"}.issubset(df.columns):
         cum_vol = pl.col("volume").cast(pl.Float64).cum_sum().over(_DAY_KEY)
         cum_amt = pl.col("amount").cast(pl.Float64).cum_sum().over(_DAY_KEY)
-        cols["vwap"] = pl.when(cum_vol > 0).then(cum_amt / (cum_vol * 100.0))
+        cols["vwap"] = pl.when(cum_vol > 0).then(cum_amt / (cum_vol * shares_per_volume_unit(market)))
     else:
         cols["vwap"] = pl.lit(None, dtype=pl.Float64)
 

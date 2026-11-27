@@ -9,9 +9,10 @@ import { LastStockChip } from '@/components/LastStockChip'
 import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
 import { StockProfilePanel } from '@/components/stock-analysis/StockProfilePanel'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
-import { api } from '@/lib/api'
+import { api, type HkDailyResponse, type KlineDailyResponse } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
 import { QK } from '@/lib/queryKeys'
+import { symbolMarket } from '@/lib/marketContent'
 import { toast } from '@/components/Toast'
 import {
 	startAnalysis, findTodayReport, useHistoryReports,
@@ -188,14 +189,22 @@ export function StockAnalysis() {
 }
 
 // ===== 分析看板:日 K + 关键价位 =====
-function StockAnalysisBoard({ symbol }: { symbol: string }) {
-	const kline = useQuery({
+// 导出供市场路由回归测试 (Page.board.test.tsx) 直接挂载, 不经父页选股流程。
+export function StockAnalysisBoard({ symbol }: { symbol: string }) {
+	// 港股个股日K走独立端点 /api/hk/daily (前复权 + 全套指标): /api/kline/daily
+	// 只读 A 股 enriched, 港股代码会静默返回空 rows → 误报「暂无日K」。判据用
+	// symbolMarket (按显式后缀, 不兜底 CN); 两市场缓存键前缀互斥 (hk-daily / kline),
+	// 行类型同为 KlineRow[] 故图表直接复用, limit_* 恒 null 是港股无涨跌停的正确行为。
+	const isHk = symbolMarket(symbol) === 'HK'
+	const kline = useQuery<HkDailyResponse | KlineDailyResponse, Error>({
 		// QK 集中键 (start/end 空串 = 滚动最近窗口, 无日期边界)。收益: 键进集中
 		// 管理, 且 useQuoteStream 的焦点股增量合并对无边界键生效 — 此前私拼 3 元
 		// 键永远修补不到; 注意合并依赖 _focusSymbol (预览弹窗设置焦点), 看板单独
 		// 打开时仍靠 60s staleTime 重拉, 与其他日K入口的键 (带真实日期) 不共享。
-		queryKey: QK.kline(symbol, '', ''),
-		queryFn: () => api.klineDaily(symbol, 250),
+		// 港股未接入 quote_service 全市场轮询, 增量合并不适用, 同样靠 60s 重拉。
+		queryKey: isHk ? QK.hkDaily(symbol, '', '', 250) : QK.kline(symbol, '', ''),
+		queryFn: (): Promise<HkDailyResponse | KlineDailyResponse> =>
+			isHk ? api.hkDaily(symbol, { limit: 250 }) : api.klineDaily(symbol, 250),
 		enabled: !!symbol,
 		staleTime: 60_000,
 		placeholderData: (prev: any, prevQuery: any) =>
@@ -225,7 +234,15 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
 
 	const rows = kline.data?.rows ?? []
 	if (rows.length === 0) {
-		return <EmptyState icon={LineChart} title="暂无日 K 数据" hint="该标的尚未同步日 K,请先在数据页或自选页同步。" />
+		// 港股空态按 empty_reason 归因 (后端 enriched 缺失时刻意不回退原始价):
+		// no_daily → 引导同步港股日K; no_enriched → 引导重算 enriched (复权因子可能不全)。
+		const hkReason = isHk ? (kline.data as HkDailyResponse | undefined)?.empty_reason : null
+		const hint = isHk
+			? hkReason === 'no_enriched'
+				? '港股日 K 已同步但指标未算出(可能复权因子不全),请到「数据管理 → 港股」重算 enriched。'
+				: '该港股尚未同步日 K,请到「数据管理 → 港股」同步。'
+			: '该标的尚未同步日 K,请先在数据页或自选页同步。'
+		return <EmptyState icon={LineChart} title="暂无日 K 数据" hint={hint} />
 	}
 
 	const levels = (levelsQ.data?.levels ?? {}) as Record<LevelType, PriceLevel[]>

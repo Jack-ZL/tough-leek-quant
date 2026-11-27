@@ -142,16 +142,16 @@ class MarketTradingRules:
 | `indicators/pipeline.py:2422`（`_compute_limit_signals_today`） | 同上（盘中增量路径） | 同上 | ✅ 已改 |
 | ~~`strategy/scoring.py:179`~~ → **`packages/tivelo-backtest/src/tivelo_backtest/research/scoring.py:203`**（重构后收敛点，`strategy/scoring.py:102` 委托 `scoring_value_expr`） | `vwap = amount / (volume × 100)` | **VWAP 低 100 倍** | ⏸ 延后（见下） |
 | ~~`backtest/engine.py:1979`~~ → **同上收敛点**（`backtest/matrix.py:3905` 委托同一函数，旧位置已不存在） | 同上 | 同上 | ⏸ 延后 |
-| `strategy/intraday_features.py:106` | `vwap = cum_amt / (cum_vol × 100)` | 同上（分钟线） | ⏸ 延后 |
+| `strategy/intraday_features.py:106` | `vwap = cum_amt / (cum_vol × 100)` | 同上（分钟线） | ✅ 已改走 `shares_per_volume_unit`（`market` 关键字默认 CN；港股分钟未落库，属契约前置） |
 | `api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` | `封单额 = vol × 100 × close` | 港股无涨跌停封单概念 | ⏸ 延后（不可达） |
 
-**⏸ 延后的 4 处为什么可以延后**（不是遗漏，是范围判断）：
+**⏸ 延后的 3 处为什么可以延后**（不是遗漏，是范围判断）：
 
 - 打分/回测的 VWAP：重构后两条链路已收敛到 `tivelo_backtest/research/scoring.py:203` **一处**（旧 `scoring.py:179` / `engine.py:1979` 已不存在）。港股在 PR2a **不进入打分与回测链路**（选股器与回测仍只读 A 股 unified 视图，闸3 已用 `test_unified_views_exclude_hk` 钉死）。等港股接入打分/回测的那个 PR 必须一并改这一处，否则 VWAP 低 100 倍会让港股永远打不出分。⚠️ 换源后腾讯日K**无成交额列**（§3.1.1），港股 `amount` 缺失 ⇒ VWAP 对港股当前**根本不可算**；接打分前还需先解决 amount 来源（路径见 `tencent/hk_kline.py`「刻意不做」段）——单位修正与 amount 补齐是两件独立的事。
-- `intraday_features.py`：分钟线，港股分钟数据 PR2a 不落库（`kline_hk_minute` 目录尚未启用）。
+- ~~`intraday_features.py`：分钟线，港股分钟数据 PR2a 不落库（`kline_hk_minute` 目录尚未启用）。~~ **✅ 已修（2026-11-27）**：`build_feature_frame` 增 `market` 关键字（默认 CN），VWAP 改走 `shares_per_volume_unit(market)`，消除硬编码 ×100 契约违例。A 股缺省 CN 算术逐字不变（`test_feature_frame_vwap_cn_default_unchanged`）；港股 ×1 正确（`test_feature_frame_vwap_hk_uses_share_unit`）；未知市场抛错。港股分钟仍未落库，本修属契约前置，接港股分钟时调用方显式传 `market=Market.HK` 即可。
 - `monitor_rules.py` / `monitor.py` 的封单额：港股**无涨跌停制度**（`HK_RULES.has_price_limit=False`），封单监控对港股逻辑上不可达。
 
-这 4 处**必须在对应功能接入港股的同一个 PR 里改完**，不能靠「以后再说」——建议在接港股打分/回测时把本表当作 checklist。
+这 3 处**必须在对应功能接入港股的同一个 PR 里改完**，不能靠「以后再说」——建议在接港股打分/回测时把本表当作 checklist。
 
 注意 **量比（`vol_ratio_5d`）不受影响** —— 它是「今日量 / 前 5 日均量」的**比值**，分子分母同单位即约掉。半日市影响的是**时间**折算（330/150），与成交量单位是两件独立的事，不要混为一谈。
 
@@ -617,6 +617,18 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 
 **成份权重**：akshare 无恒生成份股接口，可走中证港股通系列（`index_stock_cons_weight_csindex`）。
 
+### 11.1 边际指数实测排除（2026-11-27 直连复核，防重复调研）
+
+白名单 27 只是经筛选的干净集。源里另有白名单外的港股指数代码，逐一**直连新浪/腾讯实测**均有数据质量缺陷，刻意不收（佐证 fail-closed 设计）：
+
+| 代码 | 新浪快照 | 腾讯日K | 排除理由 |
+| --- | --- | --- | --- |
+| `HSCI` 恒生综合 | 当前有效 | **陈旧停更于 2011-01-21**（2026-11 区间 0 行；`count=400` 返回 300 行全止于 2011） | 三态逻辑只判空帧不判陈旧 → 收它会写入 2011 数据冒充当前图表，**比无覆盖更误导** |
+| `HSMI` 恒生中国内地综合 | 有效但 name 返回英文 "HSMI"、`amount=0` | **无覆盖**（`day=[]`） | 仅快照、无图表、英文名，边际价值低 |
+| `CESHKB` | code/name 字段**全空**（有价格但无名） | — | 落库即无名指数 |
+
+🔴 `HSCI`/`HSMI`/`HSCASI` 走新浪**另一套降级馈送**（name=英文代码、volume 带小数、`amount=0`、无 52 周高低），与白名单 27 只的正规馈送（中文名、整数 volume、真实 amount）不同。**结论：「指数覆盖扩充」非真缺口**——多出的代码恰因质量差被排除。若将来要收 `HSCI`，须先给日K同步加**陈旧检测**（最新一根日期距今天过远 → 记 `no_coverage` 而非 `ok`），否则陈旧数据会污染图表。依据已同步钉进 `plugins/sina/hk_index.py` 白名单注释。
+
 ## 12. 财务概况
 
 **共用 A 股同页面同入口**（用户诉求 3）。
@@ -777,6 +789,8 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 1. **「CI grep 规则」改为 AST 测试。** grep 会命中 `market.py` 与 `trading_day.py` 里**引用该反模式作为警示**的 docstring，一上来就被自己的文档绊倒。AST 只看真实 `Compare` 节点，天然跳过注释/字符串，且 pytest 已在 CI 里跑，无需改 workflow。守卫自带自检（喂合成违规源码）与误报检查，注入 3 种违规写法实测全部命中并给出 `file:line`。
 2. **`assert_symbol_market` 对格式宽松，只拦「确实匹配到别的市场」。** 原设计「不匹配声明市场就报错」打断了存量路径：仓内大量内部路径用裸 6 位代码（`"000001"`/`"300001"`），且与带后缀代码**同列混用**（`test_st_limit_and_sharpe.py` 即是），`board_limit_pct → numpy_limit_pct_vectors → write_numpy_price_limit_matrix → build_market_data_matrix` 整条回测链会炸。格式校验是 `is_valid_symbol` 在边界上的职责，规范化是插件层的职责（§4），三者分工不同。已知盲区（裸的他市场代码如 `"00700"`）已写入 docstring 与 §3.5。
 3. **半日市表出厂为空**（机制完整、无日期）。风险不对称：漏标半日市 → 退化为全日市，量比低估约 2.2×（330/150）但不丢数据、补上日期即自愈；误标全日市为半日市 → **整个下午盘丢失且不可恢复**。HKEX 每年公告、无免费 API，且部分为农历日无法计算。**后果需知悉：登记日期前，港股每年约 3 个半日市的量比会被低估。**
+
+   **半日市日期装载（已实现）**：`services/trading_day.py:load_half_days_config(data_dir)` 在启动时（`main.py` lifespan，自定义因子注册之后、挖矿管理器初始化之前）读取 `data/half_days.json`，调用 `market.register_half_days` 登记。文件缺失/损坏/格式非法一律 **fail-open**（记 warning、返回 0、按全日市处理），绝不因配置问题阻断启动。Schema：顶层市场代码键（如 `HK`）→ `{"dates": ["YYYY-MM-DD", ...]}`（也接受裸日期列表）；`_` 前缀键为元数据跳过；所有日期**先整体校验再登记**（避免半登记）；按市场幂等。`market.py` 保持纯规则无 I/O，装载器落在日历服务层。**日期必须经 HKEX 官方公告核实后填入**（圣诞前夕 / 新年前夕 / 农历新年前夕；农历日不可推算），出厂 `dates` 为空，种子模板见 `data/half_days.json`（`data_dir` 已 gitignore）。
 4. **`Market` 用 `StrEnum` 而非 `(str, Enum)`。** 后者 `str(Market.CN)` 与 f-string 都得 `"Market.CN"`，导致 `f"{market}" == "CN"` 恒假、`cache[f"{market}"]` 与 `cache["CN"]` 变成两个键 —— 不报错，只让分支静默失效。与 QuantMind 印花税静默归零同形。仓库已有 `StrEnum` 先例（`app/tickflow/capabilities.py`），且 `Market(str, Enum)` 原本是全仓唯一一处。
 
 实施中**发现并修复**的既有缺陷（都不是港股新增功能，是 A 股路径上本来就错的）：
@@ -955,7 +969,7 @@ QuantMind 生产验证：`backend/services/api/market_analysis_hk/quanthk_feed.p
 | **能力矩阵 market 维** | 刻意延后：港股 kline 绕过偏好路由直连，矩阵暂无消费方。**在此登记以免被误读为漏做** | PR3 |
 | ~~**复权两源互验**~~ | **已取消**：腾讯 `hkfqkline` 的 qfq 实测是**等差**投影，与东财 `fqt=1` 的乘性口径不可能数值一致，该互验前提不成立（§3.6）。复权正确性改由「F10 分红额 ↔ 加性偏移逐位吻合」锚定，已 hermetic 化，不再需要真实网络 | — |
 | ~~**调度接线**~~ | **已完成（PR2e）**：独立 job `hk_daily_sync`，默认关闭，与 A 股盘后管道**单向让路**。实现与隔离理由见下方「PR2e 完成情况」 | — |
-| **成交量单位余量** | `pipeline.py:813,2422` 已修；打分/回测 VWAP 重构后收敛到 `packages/tivelo-backtest/.../research/scoring.py:203`（旧 `scoring.py:179` / `engine.py:1979` 已不存在）、`strategy/intraday_features.py:106`、`api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` **暂缓**，明细见 §3.1.2。港股进打分/回测链路的那个 PR 必须一并改，否则 VWAP 低 100 倍会让港股永远打不出分；且换源后港股日K无 `amount`（§3.1.1），VWAP 当前对港股不可算 | PR4+ |
+| **成交量单位余量** | `pipeline.py:813,2422`、`strategy/intraday_features.py:106`（2026-11-27，`market` 关键字默认 CN）已修；打分/回测 VWAP 重构后收敛到 `packages/tivelo-backtest/.../research/scoring.py:203`（旧 `scoring.py:179` / `engine.py:1979` 已不存在）、`api/monitor_rules.py:558,675`、`strategy/monitor.py:1766,1796` **暂缓**，明细见 §3.1.2。港股进打分/回测链路的那个 PR 必须一并改 scoring 收敛点，否则 VWAP 低 100 倍会让港股永远打不出分；且换源后港股日K无 `amount`（§3.1.1），VWAP 当前对港股不可算 | PR4+ |
 | **待复测（需网络，已降级为回退路径项）** | 港股 `pz` 上限（疑为 100）；全列表代码前缀分布（纯净性护栏用）；**`t:3=主板 / t:4=GEM / t:1=REITs / t:2=债券` 的语义**（`FS_HK_EQUITY` 目前只靠单次早期探针支撑）；东财港股 kline 的 **amount 单位**（元 vs 万元）。⚠️ 换源后前三项仅对 clist 回退路径有意义（`FS_HK_EQUITY` 当前无消费方），第四项在主路径已失效（腾讯日K无 amount 列），见下方块注 | ~~PR3 前~~ 回退启用前 |
 
 > 🔴 **复测当前被硬阻塞（2026-11 实测）**：`push2.eastmoney.com` 及其全部镜像（`82.push2` / `17.push2` / `push2delay` / `push2his`）对本机 IP 施加**应用层封禁** —— DNS 解析正常（`14.103.191.91`）、TCP 可连、**TLS 1.3 握手成功且证书有效**，随后服务端在**不返回任何 HTTP 响应**的情况下直接断开（`curl: (52) Empty reply`，`http=000`，耗时 0.12–0.19s）。加浏览器 UA + Referer 无变化。同期 `datacenter-web.eastmoney.com`（F10 报表）、`www.eastmoney.com`、腾讯 `web.ifzq.gtimg.cn`、新浪 `hq.sinajs.cn` **全部 200 正常**，故非本机网络/DNS/TLS 问题，而是 push2 集群的 IP 级反爬封禁（本会话早先 push2 尚可用，是密集探测触发）。

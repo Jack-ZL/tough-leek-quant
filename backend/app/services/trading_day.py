@@ -39,16 +39,21 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
-from app.market import Market, MarketTradingRules, rules_for
+from app.market import Market, MarketTradingRules, register_half_days, rules_for
 from app.market_time import market_now
 from app.services.shared_work import SharedWork, WorkBusyError
+
+logger = logging.getLogger(__name__)
 
 _TTL_TRADING_S = 3600.0   # 交易日结论每小时复探 (跨日天然失效)
 _TTL_HOLIDAY_S = 1800.0   # 休市结论 30 分钟复探, 误判自愈上限
@@ -263,3 +268,84 @@ def next_trading_day(now: datetime | None = None, *, market: object = Market.CN)
     while d.weekday() >= 5:
         d += timedelta(days=1)
     return d
+
+
+# ================================================================
+# 半日市日历配置载入
+#
+# app.market 的半日市表默认为空 (宁可漏标不可误标), 日期须经交易所年度公告
+# 核实后注入。本函数是「配置文件 → register_half_days」的桥: 启动时从
+# data_dir/half_days.json 读入已核实日期。表仍住在 app.market (纯规则, 无 I/O),
+# I/O 只发生在这里 (日历服务), 与探针「纯读不落盘」的约束不冲突 —— 本函数只读
+# 配置、只写内存登记表, 不落盘、不进行情管道。
+# ================================================================
+
+HALF_DAYS_FILENAME = "half_days.json"
+
+
+def load_half_days_config(data_dir: object) -> int:
+    """从 ``data_dir/half_days.json`` 载入经公告核实的半日市日期并注册。
+
+    文件按市场分桶 (目前仅港股有半日市), 下划线前缀键为元数据一律跳过::
+
+        {
+          "_comment": "可选说明",
+          "HK": {
+            "dates": ["2025-12-24", "2025-12-31"],
+            "provenance": "HKEX 公告编号/链接",
+            "verified_at": "2026-01-01"
+          }
+        }
+
+    也接受裸列表 ``{"HK": ["2025-12-24", ...]}``。
+
+    **fail-open**: 文件缺失/损坏/顶层非对象 → 不注册, 退化为全日市 (与
+    app.market「宁可漏标不可误标」的安全方向一致: 漏标只是下午多轮询一段、
+    量比低估, 补上日期即自愈)。单个市场非法 (未知市场/日期格式错) 只跳过该
+    市场 (fail-隔离), 不影响其他市场。日期先整体校验再注册, 避免半注册。
+
+    Returns:
+        成功注册的日期总数 (缺失/损坏时为 0)。
+    """
+    path = Path(data_dir) / HALF_DAYS_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return 0
+    except OSError as e:
+        logger.warning("half_days.json 读取失败 (忽略, 退化全日市): %s", e)
+        return 0
+    try:
+        doc = json.loads(raw)
+    except ValueError as e:
+        logger.warning("half_days.json 解析失败 (忽略, 退化全日市): %s", e)
+        return 0
+    if not isinstance(doc, dict):
+        logger.warning("half_days.json 顶层应为对象 (忽略, 退化全日市)")
+        return 0
+
+    total = 0
+    for key, entry in doc.items():
+        if key.startswith("_"):
+            continue  # 元数据 (_comment / _schema 等)
+        days = entry.get("dates") if isinstance(entry, dict) else entry
+        if not isinstance(days, (list, tuple)):
+            logger.warning("half_days.json 市场 %s 的 dates 非列表 (跳过)", key)
+            continue
+        try:
+            parsed = [
+                d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
+                for d in days
+            ]
+        except (ValueError, TypeError) as e:
+            logger.warning("half_days.json 市场 %s 日期非法 (跳过): %s", key, e)
+            continue
+        try:
+            register_half_days(key, parsed)
+        except (ValueError, KeyError) as e:
+            logger.warning("half_days.json 市场 %s 注册失败 (跳过): %s", key, e)
+            continue
+        total += len(parsed)
+    if total:
+        logger.info("半日市日期已注册: %d 条 (来源 %s)", total, path)
+    return total

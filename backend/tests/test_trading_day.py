@@ -8,13 +8,17 @@ tickflow 戳的 OR 语义与开盘缓冲窗、失败/无权限 → None、TTL �
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time as dt_time, timezone, timedelta, UTC
 
 import pytest
 
-from app.market import CN_RULES, HK_RULES, Market, rules_for
+from app.market import (
+    CN_RULES, HK_RULES, Market, clear_half_days, half_day_close, rules_for,
+    trading_total_minutes,
+)
 from app.services import trading_day
-from app.services.trading_day import is_trading_day, reset_cache
+from app.services.trading_day import is_trading_day, load_half_days_config, reset_cache
 
 CN = timezone(timedelta(hours=8))
 
@@ -684,3 +688,93 @@ def test_next_trading_day_accepts_market():
     friday = datetime(2026, 10, 16, 20, 0, tzinfo=CN)
     assert trading_day.next_trading_day(friday, market=Market.HK) == date(2026, 10, 19)
     assert trading_day.next_trading_day(friday, market=Market.CN) == date(2026, 10, 19)
+
+
+# ================================================================
+# 半日市日历配置载入 (load_half_days_config)
+#
+# 桥接「data_dir/half_days.json → register_half_days」。核心安全方向与
+# app.market 一致: 宁可漏标不可误标 ⇒ 任何读取/解析/市场/日期失败都 fail-open
+# (不注册, 退化全日市), 绝不因配置问题阻断启动或误标半日市丢掉下午行情。
+# ================================================================
+
+
+class TestLoadHalfDaysConfig:
+    @pytest.fixture(autouse=True)
+    def _clean_half_days(self):
+        """半日市表是模块级可变状态, 本类每个测试前后清空防泄漏。"""
+        clear_half_days()
+        yield
+        clear_half_days()
+
+    def _write(self, tmp_path, doc):
+        (tmp_path / "half_days.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    def test_missing_file_registers_nothing(self, tmp_path):
+        assert load_half_days_config(tmp_path) == 0
+        assert half_day_close(Market.HK, date(2026, 12, 24)) is None
+
+    def test_valid_config_registers_and_truncates(self, tmp_path):
+        self._write(tmp_path, {
+            "_comment": "经 HKEX 公告核实",
+            "HK": {
+                "dates": ["2026-12-24", "2026-12-31"],
+                "provenance": "HKEX 公告", "verified_at": "2026-01-01",
+            },
+        })
+        assert load_half_days_config(tmp_path) == 2
+        assert half_day_close(Market.HK, date(2026, 12, 24)) == dt_time(12, 0)
+        assert trading_total_minutes(Market.HK, date(2026, 12, 24)) == 150
+        # 非半日市日不受影响
+        assert trading_total_minutes(Market.HK, date(2026, 12, 23)) == 330
+        # 不得泄漏到 A 股
+        assert trading_total_minutes(Market.CN, date(2026, 12, 24)) == 240
+        assert half_day_close(Market.CN, date(2026, 12, 24)) is None
+
+    def test_bare_list_accepted(self, tmp_path):
+        self._write(tmp_path, {"HK": ["2026-12-24"]})
+        assert load_half_days_config(tmp_path) == 1
+        assert half_day_close(Market.HK, date(2026, 12, 24)) == dt_time(12, 0)
+
+    def test_malformed_json_fail_open(self, tmp_path):
+        (tmp_path / "half_days.json").write_text("{not json", encoding="utf-8")
+        assert load_half_days_config(tmp_path) == 0
+        assert half_day_close(Market.HK, date(2026, 12, 24)) is None
+
+    def test_top_level_not_object_fail_open(self, tmp_path):
+        self._write(tmp_path, ["2026-12-24"])
+        assert load_half_days_config(tmp_path) == 0
+        assert half_day_close(Market.HK, date(2026, 12, 24)) is None
+
+    def test_unknown_market_skipped_others_registered(self, tmp_path):
+        self._write(tmp_path, {
+            "XX": {"dates": ["2026-12-24"]},
+            "HK": {"dates": ["2026-12-31"]},
+        })
+        assert load_half_days_config(tmp_path) == 1
+        assert half_day_close(Market.HK, date(2026, 12, 31)) == dt_time(12, 0)
+
+    def test_invalid_date_skips_market_no_partial(self, tmp_path):
+        self._write(tmp_path, {"HK": {"dates": ["2026-12-24", "not-a-date"]}})
+        assert load_half_days_config(tmp_path) == 0
+        # 整体校验后再注册 ⇒ 合法的那条也不得半注册
+        assert half_day_close(Market.HK, date(2026, 12, 24)) is None
+
+    def test_metadata_keys_ignored(self, tmp_path):
+        self._write(tmp_path, {
+            "_comment": "x", "_schema": 1,
+            "HK": {"dates": ["2026-12-24"]},
+        })
+        assert load_half_days_config(tmp_path) == 1
+        assert half_day_close(Market.HK, date(2026, 12, 24)) == dt_time(12, 0)
+
+    def test_dates_not_list_skipped(self, tmp_path):
+        self._write(tmp_path, {"HK": {"dates": "2026-12-24"}})
+        assert load_half_days_config(tmp_path) == 0
+        assert half_day_close(Market.HK, date(2026, 12, 24)) is None
+
+    def test_idempotent_reload(self, tmp_path):
+        self._write(tmp_path, {"HK": {"dates": ["2026-12-24"]}})
+        assert load_half_days_config(tmp_path) == 1
+        assert load_half_days_config(tmp_path) == 1  # 幂等, 不重复累加
+        assert half_day_close(Market.HK, date(2026, 12, 24)) == dt_time(12, 0)
