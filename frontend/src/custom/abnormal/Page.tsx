@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import {
 	Activity, ChevronRight, Compass, FlaskConical, HelpCircle, History, Power,
-	Radar, RefreshCw, Ruler, Search, Settings2,
+	RefreshCw, Ruler, Search, Settings2,
 } from 'lucide-react'
 import {
 	api, type AbnormalIntradayRow, type AbnormalOverview, type AbnormalRow,
@@ -17,6 +17,7 @@ import { fmtPrice, fmtPct, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/components/stock-table/primitives'
 import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
+import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 import { useQuoteStatus } from '@/lib/useSharedQueries'
 
 /**
@@ -119,10 +120,11 @@ export function AbnormalMoves() {
 								type="button"
 								aria-pressed={active}
 								onClick={() => setTab(t.key)}
-								className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs transition-all ${active
-									? 'bg-accent/15 font-medium text-accent shadow-sm'
-									: 'text-secondary hover:text-foreground'
-									}`}
+								className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs transition-all ${
+									active
+										? 'bg-accent/15 font-medium text-accent shadow-sm'
+										: 'text-secondary hover:text-foreground'
+								}`}
 							>
 								<Icon className="h-3.5 w-3.5" />
 								{t.label}
@@ -173,61 +175,18 @@ function AuctionView({ onOpenStock }: {
 		retry: 1,
 	})
 
-	// fuyao 未配置: 整个 tab 的统一引导态 (风向标与全市场扫描都依赖 fuyao),
-	// 不再展示零散的降级卡/占位卡 — 与偏移 tab「监控未开启」空态同款式
-	if (q.data?.state === 'source_unavailable') {
-		return (
-			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-				<div className="m-auto rounded-card border border-border bg-surface p-8 text-center">
-					<span className="mx-auto grid h-10 w-10 place-items-center rounded-full bg-cyan-500/10 text-cyan-500 ring-1 ring-cyan-500/20">
-						<Compass className="h-5 w-5" />
-					</span>
-					<div className="mt-3 text-sm font-medium text-foreground">竞价数据源未配置</div>
-					<p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted">
-						竞价异动 (同花顺盘前风向标与全市场竞价扫描) 依赖 fuyao 数据源,
-						复盘页的龙虎榜同样来自该数据源。在「设置 → 数据源」配置 fuyao API Key 后即可使用。
-					</p>
-					<Link
-						to="/settings?tab=data-sources"
-						className="mt-5 inline-flex h-9 items-center gap-2 rounded-btn bg-accent px-4 text-xs font-medium text-white transition-colors hover:bg-accent/90"
-					>
-						前往配置数据源
-						<ChevronRight className="h-3.5 w-3.5" />
-					</Link>
-				</div>
-			</div>
-		)
-	}
-
 	return (
 		<div className="mx-auto flex w-full max-w-3xl flex-col gap-4 overflow-y-auto">
 			<BenchmarkCard q={q} onOpenStock={onOpenStock} />
 
-			{/* 全市场竞价扫描: 采集任务启用后填充 (接口与批量能力已验证) */}
-			<div className="rounded-card border border-dashed border-border bg-surface/50 px-4 py-4">
-				<div className="flex items-start gap-3">
-					<span className="grid h-8 w-8 shrink-0 place-items-center rounded bg-elevated/60">
-						<Radar className="h-4 w-4 text-muted/50" />
-					</span>
-					<div className="min-w-0 flex-1">
-						<div className="flex items-center gap-2">
-							<span className="text-xs font-medium text-foreground">全市场竞价扫描</span>
-							<span className="rounded-full border border-border bg-elevated px-2 py-px text-[9px] leading-tight text-muted">
-								待采集任务启用
-							</span>
-						</div>
-						<p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-							9:25 竞价终态后扫描全市场 (实测 5547 只约 2 秒), 自动筛出高开 ≥5% 且竞价量比 ≥10
-							的标的并按日落盘积累历史。竞价明细无历史接口, 数据从采集启用之日起积累。
-						</p>
-					</div>
-				</div>
-			</div>
+			<ExtensionSlot name="abnormal.auction.extra" context={{ onOpenStock }} />
 
-			<p className="px-1 text-[10px] leading-relaxed text-muted/70">
-				风向标为同花顺盘前竞价筛选名单 (每日约 5~6 只)。60 日回测: 名单当日开盘买入均值 +0.54%
-				(超额 +0.44%), 但高开 ≥5% 子集当日 -1.97% — 追高是陷阱, 次日无显著优势, 仅作当日观察。
-			</p>
+			{q.data?.state !== 'source_unavailable' && (
+				<p className="px-1 text-[10px] leading-relaxed text-muted/70">
+					风向标为同花顺盘前竞价筛选名单 (每日约 5~6 只)。60 日回测: 名单当日开盘买入均值 +0.54%
+					(超额 +0.44%), 但高开 ≥5% 子集当日 -1.97% — 追高是陷阱, 次日无显著优势, 仅作当日观察。
+				</p>
+			)}
 		</div>
 	)
 }
@@ -258,7 +217,29 @@ function BenchmarkCard({ q, onOpenStock }: {
 		)
 	}
 
-	// source_unavailable (fuyao 未配置) 由 AuctionView 统一引导态处理, 此处不再分支
+	// fuyao 未配置仅作用于盘前风向标本身，不阻断下方扩展槽位（如全市场竞价扫描）
+	if (d?.state === 'source_unavailable') {
+		return (
+			<div className="flex items-center gap-3 rounded-card border border-border bg-surface/60 px-4 py-3">
+				<span className="grid h-8 w-8 shrink-0 place-items-center rounded bg-cyan-500/10 text-cyan-500 ring-1 ring-cyan-500/20">
+					<Compass className="h-4 w-4" />
+				</span>
+				<div className="min-w-0 flex-1">
+					<div className="text-xs font-medium text-foreground">盘前风向标未配置</div>
+					<p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+						同花顺盘前风向标依赖 fuyao 数据源（不影响下方全市场竞价扫描）。
+					</p>
+				</div>
+				<Link
+					to="/settings?tab=data-sources"
+					className="inline-flex h-7 shrink-0 items-center gap-1 rounded border border-border bg-base px-2.5 text-[11px] text-secondary transition-colors hover:text-foreground"
+				>
+					配置数据源
+					<ChevronRight className="h-3 w-3" />
+				</Link>
+			</div>
+		)
+	}
 
 	if (!d || d.state === 'no_data') {
 		return (
@@ -336,14 +317,11 @@ function BenchmarkCard({ q, onOpenStock }: {
 								<span className="flex min-w-0 flex-1 items-center gap-1.5">
 									<span className="truncate text-foreground">{i.name ?? i.thscode}</span>
 									<span className="shrink-0 font-mono text-[9px] text-muted">{i.ticker ?? i.thscode}</span>
-									{(() => {
-										const b = boardTag(i.thscode);
-										return b && (
-											<span className={`shrink-0 inline-flex items-center rounded border px-1 text-[8px] font-bold leading-tight ${b.color}`}>
-												{b.label}
-											</span>
-										)
-									})()}
+									{(() => { const b = boardTag(i.thscode); return b && (
+										<span className={`shrink-0 inline-flex items-center rounded border px-1 text-[8px] font-bold leading-tight ${b.color}`}>
+											{b.label}
+										</span>
+									) })()}
 									{chase && (
 										<span
 											className="shrink-0 rounded border border-danger/30 bg-danger/10 px-1 text-[8px] font-medium leading-tight text-danger"
@@ -538,10 +516,11 @@ function SigChip({ active, onClick, label, count, cls }: {
 			type="button"
 			aria-pressed={active}
 			onClick={onClick}
-			className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${active
-				? (cls ?? 'border-accent/40 bg-accent/12 text-accent')
-				: 'border-border bg-elevated text-secondary hover:text-foreground'
-				}`}
+			className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+				active
+					? (cls ?? 'border-accent/40 bg-accent/12 text-accent')
+					: 'border-border bg-elevated text-secondary hover:text-foreground'
+			}`}
 		>
 			<span className="font-mono text-xs font-semibold tabular-nums">{count}</span>
 			{label}
@@ -794,10 +773,11 @@ function DeviationView({ onPreview }: {
 								aria-label="查看异动规则口径"
 								title="交易所异动规则口径 (阈值 / 偏离值计算方式)"
 								onClick={() => setRulesOpen(v => !v)}
-								className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${rulesOpen
-									? 'border-accent/40 bg-accent/10 text-accent'
-									: 'border-border bg-base text-secondary hover:text-foreground'
-									}`}
+								className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${
+									rulesOpen
+										? 'border-accent/40 bg-accent/10 text-accent'
+										: 'border-border bg-base text-secondary hover:text-foreground'
+								}`}
 							>
 								<HelpCircle className="h-3.5 w-3.5" />
 							</button>
@@ -819,10 +799,11 @@ function DeviationView({ onPreview }: {
 								aria-checked={enabled}
 								aria-label="启用异动监控计算"
 								onClick={() => toggleEnabled(!enabled)}
-								className={`inline-flex h-7 items-center gap-2 rounded border px-2.5 text-[11px] font-medium transition-colors ${enabled
-									? 'border-accent/40 bg-accent/12 text-accent'
-									: 'border-border bg-base text-secondary hover:text-foreground'
-									}`}
+								className={`inline-flex h-7 items-center gap-2 rounded border px-2.5 text-[11px] font-medium transition-colors ${
+									enabled
+										? 'border-accent/40 bg-accent/12 text-accent'
+										: 'border-border bg-base text-secondary hover:text-foreground'
+								}`}
 							>
 								<Power className="h-3 w-3" />
 								{enabled ? '监控中 · 每60秒计算' : '开启监控'}
@@ -1004,12 +985,7 @@ function fmtThreshold(v: number | undefined): string {
 }
 
 /** 全窗口里接近度最高的窗口 */
-function dominantWindow(r: AbnormalRow): {
-	key: WindowKey;
-	value: number;
-	threshold: number;
-	closeness: number
-} | undefined {
+function dominantWindow(r: AbnormalRow): { key: WindowKey; value: number; threshold: number; closeness: number } | undefined {
 	let best: { key: WindowKey; value: number; threshold: number; closeness: number } | undefined
 	for (const w of WINDOW_KEYS) {
 		const info = r.windows[w]
@@ -1128,8 +1104,9 @@ function SegmentedControl<T extends string>({ value, onChange, options }: {
 					type="button"
 					aria-pressed={value === o.value}
 					onClick={() => onChange(o.value)}
-					className={`px-2.5 text-[11px] transition-colors ${value === o.value ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'
-						}`}
+					className={`px-2.5 text-[11px] transition-colors ${
+						value === o.value ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'
+					}`}
 				>
 					{o.label}
 				</button>
@@ -1141,28 +1118,8 @@ function SegmentedControl<T extends string>({ value, onChange, options }: {
 /** 后端数据未到时的规则表兜底 (与后端 RULES_META 同步维护)
  *  阈值为 {正, 负} 双侧: 3日对称, 严重异动 10日+100%/−50%、30日+200%/−70% (负向更严)
  *  2026-07-06 起主板风险警示(ST)股票与普通股票同标准 (原±15%特别规定已废止) */
-const FALLBACK_RULES: Array<{
-	board: string;
-	st: boolean;
-	thresholds: Record<string, { up: number; down: number }>;
-	note: string
-}> = [
-		{
-			board: '主板',
-			st: false,
-			thresholds: { '3d': { up: 0.2, down: 0.2 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } },
-			note: ''
-		},
-		{
-			board: '创业板/科创板',
-			st: false,
-			thresholds: { '3d': { up: 0.3, down: 0.3 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } },
-			note: ''
-		},
-		{
-			board: '北交所',
-			st: false,
-			thresholds: { '3d': { up: 0.4, down: 0.4 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } },
-			note: ''
-		},
-	]
+const FALLBACK_RULES: Array<{ board: string; st: boolean; thresholds: Record<string, { up: number; down: number }>; note: string }> = [
+	{ board: '主板', st: false, thresholds: { '3d': { up: 0.2, down: 0.2 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } }, note: '' },
+	{ board: '创业板/科创板', st: false, thresholds: { '3d': { up: 0.3, down: 0.3 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } }, note: '' },
+	{ board: '北交所', st: false, thresholds: { '3d': { up: 0.4, down: 0.4 }, '10d': { up: 1.0, down: 0.5 }, '30d': { up: 2.0, down: 0.7 } }, note: '' },
+]
